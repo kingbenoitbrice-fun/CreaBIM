@@ -1,5 +1,5 @@
 use creabim_core::*;
-use creabim_geom::{plan::Pen, plan_view, PlanItem};
+use creabim_geom::{plan_view, PlanItem};
 use glam::DVec2;
 
 #[test]
@@ -42,13 +42,14 @@ fn door_splits_wall_into_two_cut_pieces_with_a_swing() {
     let cuts: Vec<_> = plan
         .items
         .iter()
-        .filter(|i| matches!(i, PlanItem::Polygon { pen: Pen::Cut, .. }))
+        .filter(|i| matches!(i, PlanItem::Fill { .. }))
         .collect();
     assert_eq!(cuts.len(), 2);
     assert!(plan.items.iter().any(|i| matches!(i, PlanItem::Arc { .. })));
 
     let svg = plan.to_svg(100.0);
     assert!(svg.starts_with("<svg"));
+    // two filled pieces; their outlines and the swing are polylines
     assert_eq!(svg.matches("<polygon").count(), 2);
-    assert!(svg.contains("<path"));
+    assert!(svg.matches("<polyline").count() >= 8);
 }

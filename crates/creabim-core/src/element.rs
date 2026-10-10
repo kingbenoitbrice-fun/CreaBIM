@@ -30,8 +30,10 @@ impl Element {
             ElementKind::FreeMesh(m) => m.level.into_iter().collect(),
             ElementKind::View(v) => match &v.kind {
                 ViewKind::Plan { level, .. } => vec![*level],
-                ViewKind::Section { .. } => vec![],
+                ViewKind::Section { .. } | ViewKind::Axonometric { .. } => vec![],
             },
+            ElementKind::Sheet(_) => vec![],
+            ElementKind::Viewport(v) => vec![v.sheet, v.view],
         }
     }
 
@@ -49,6 +51,8 @@ impl Element {
             ElementKind::FreeMesh(m) => &m.ifc_class,
             // Views are documentation, not building elements; they are not exported to IFC.
             ElementKind::View(_) => "View",
+            ElementKind::Sheet(_) => "Sheet",
+            ElementKind::Viewport(_) => "Viewport",
         }
     }
 
@@ -100,6 +104,24 @@ impl Element {
                         positive(*depth, "view depth")?;
                         positive(start.distance(*end), "section line length")
                     }
+                    ViewKind::Axonometric { altitude, .. } => {
+                        if altitude.is_finite() && altitude.abs() <= 90.0 {
+                            Ok(())
+                        } else {
+                            Err(format!("view altitude must be within ±90°, got {altitude}"))
+                        }
+                    }
+                }
+            }
+            ElementKind::Sheet(sh) => {
+                positive(sh.width, "sheet width")?;
+                positive(sh.height, "sheet height")
+            }
+            ElementKind::Viewport(v) => {
+                if v.center.is_finite() && v.target.is_finite() {
+                    Ok(())
+                } else {
+                    Err("viewport position must be finite".into())
                 }
             }
         }
@@ -115,6 +137,8 @@ pub enum ElementKind {
     Opening(Opening),
     FreeMesh(FreeMesh),
     View(View),
+    Sheet(Sheet),
+    Viewport(Viewport),
 }
 
 /// A storey. Walls and slabs hang off a level, so moving the level moves them.
@@ -217,6 +241,10 @@ pub enum ViewKind {
         depth: f64,
         cut: bool,
     },
+    /// A parallel-projection 3D view of the whole model, seen from compass
+    /// bearing `azimuth` (degrees, 0 = from the south, counter-clockwise)
+    /// and `altitude` degrees above the horizon.
+    Axonometric { azimuth: f64, altitude: f64 },
 }
 
 impl View {
@@ -241,6 +269,69 @@ impl View {
             scale: 100.0,
         }
     }
+}
+
+impl View {
+    pub fn axonometric(azimuth: f64, altitude: f64) -> Self {
+        Self {
+            kind: ViewKind::Axonometric { azimuth, altitude },
+            scale: 100.0,
+        }
+    }
+}
+
+/// A drawing sheet. Its name is the sheet title; sizes are in millimetres.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Sheet {
+    /// Sheet number, e.g. "A101".
+    pub number: String,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Sheet {
+    /// ISO A-series sizes, landscape.
+    pub const SIZES: &[(&str, f64, f64)] = &[
+        ("A0", 1189.0, 841.0),
+        ("A1", 841.0, 594.0),
+        ("A2", 594.0, 420.0),
+        ("A3", 420.0, 297.0),
+        ("A4", 297.0, 210.0),
+    ];
+
+    pub fn a(number: impl Into<String>, size: &str) -> Self {
+        let (_, width, height) = Self::SIZES
+            .iter()
+            .find(|(n, ..)| *n == size)
+            .copied()
+            .unwrap_or(Self::SIZES[3]);
+        Self {
+            number: number.into(),
+            width,
+            height,
+        }
+    }
+
+    /// The paper size's name, if it is a standard one.
+    pub fn size_name(&self) -> Option<&'static str> {
+        Self::SIZES
+            .iter()
+            .find(|(_, w, h)| (w - self.width).abs() < 0.5 && (h - self.height).abs() < 0.5)
+            .map(|(n, ..)| *n)
+    }
+}
+
+/// A view placed on a sheet. The view's drawing is generated live, so the
+/// sheet always shows the current model.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Viewport {
+    pub sheet: ElementId,
+    pub view: ElementId,
+    /// Where `target` sits on the sheet, mm from the sheet's lower-left corner.
+    pub center: DVec2,
+    /// The drawing point (model metres) pinned to `center`, so the drawing
+    /// stays put on the sheet as the model changes.
+    pub target: DVec2,
 }
 
 /// IFC classes a free mesh may be classified as.

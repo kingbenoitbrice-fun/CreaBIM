@@ -4,6 +4,7 @@ mod app;
 mod camera;
 mod planview;
 mod render3d;
+mod sheetview;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

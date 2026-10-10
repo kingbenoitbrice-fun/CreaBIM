@@ -53,42 +53,13 @@ pub fn section_view(model: &Model, start: DVec2, end: DVec2, depth: f64, cut: bo
     let scene = build_scene(model);
     let mut items = Vec::new();
 
-    // Faces beyond the cut plane, in drawing coordinates, per element.
-    let mut faces: Vec<(ElementId, Vec<[DVec3; 3]>)> = Vec::new();
-    for s in &scene {
-        let mut tris = Vec::new();
-        for t in s.mesh.indices.chunks(3) {
-            let p = |i: u32| frame.project(Vec3::from(s.mesh.positions[i as usize]).as_dvec3());
-            let tri = [p(t[0]), p(t[1]), p(t[2])];
-            tris.extend(clip_triangle(tri, frame.depth));
-        }
-        faces.push((s.id, tris));
-    }
-
-    let (lo, hi) = extents(&faces, &frame);
-
-    let zbuf = DepthBuffer::render(&faces, lo, hi);
-
-    // Projected feature edges, hidden parts removed.
-    for s in &scene {
-        for (a, b) in feature_edges(s) {
-            let (a, b) = (frame.project(a), frame.project(b));
-            let Some((a, b)) = clip_segment(a, b, 1e-4, frame.depth) else {
-                continue;
-            };
-            let Some((a, b)) = crop_along(a, b, 0.0, frame.length) else {
-                continue;
-            };
-            for (p, q) in zbuf.visible_runs(a, b) {
-                items.push(PlanItem::Line {
-                    id: s.id,
-                    pen: Pen::Projection,
-                    a: p,
-                    b: q,
-                });
-            }
-        }
-    }
+    let project = |p: DVec3| frame.project(p);
+    items.extend(hidden_lines(
+        &scene,
+        &project,
+        frame.depth,
+        Some((0.0, frame.length)),
+    ));
 
     // Cut fill, drawn over the projection.
     if cut {
@@ -106,6 +77,8 @@ pub fn section_view(model: &Model, start: DVec2, end: DVec2, depth: f64, cut: bo
             }
         }
     }
+
+    crate::plan::clean_up_cuts(model, &mut items);
 
     // Level datums across the drawing.
     for (e, l) in model.levels() {
@@ -126,6 +99,114 @@ pub fn section_view(model: &Model, start: DVec2, end: DVec2, depth: f64, cut: bo
 }
 
 /// Section of a view element, if it is a section or elevation.
+/// The frame of a parallel 3D view: unit vectors on screen and into it.
+#[derive(Clone, Copy, Debug)]
+pub struct AxoFrame {
+    pub center: DVec3,
+    pub right: DVec3,
+    pub up: DVec3,
+    pub forward: DVec3,
+    /// Depth offset that puts the whole model in front of the viewer.
+    pub radius: f64,
+}
+
+impl AxoFrame {
+    /// Viewer at compass `azimuth` (0 = south, counter-clockwise) and
+    /// `altitude` above the horizon, looking at the model's centre.
+    pub fn new(model: &Model, azimuth: f64, altitude: f64) -> Self {
+        let scene = build_scene(model);
+        let (lo, hi) = scene
+            .iter()
+            .filter_map(|s| s.mesh.bounds())
+            .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+            .map(|(a, b)| (a.as_dvec3(), b.as_dvec3()))
+            .unwrap_or((DVec3::ZERO, DVec3::ONE));
+        let (az, alt) = (azimuth.to_radians(), altitude.to_radians());
+        let flat = DVec3::new(-az.sin(), az.cos(), 0.0);
+        let forward = (flat * alt.cos() - DVec3::Z * alt.sin()).normalize();
+        let right = DVec3::new(az.cos(), az.sin(), 0.0);
+        Self {
+            center: (lo + hi) / 2.0,
+            right,
+            up: right.cross(forward),
+            forward,
+            radius: (hi - lo).length() / 2.0 + 1.0,
+        }
+    }
+
+    /// World point → (screen x, screen y, depth from the viewer).
+    pub fn project(&self, p: DVec3) -> DVec3 {
+        let d = p - self.center;
+        DVec3::new(
+            d.dot(self.right),
+            d.dot(self.up),
+            d.dot(self.forward) + self.radius,
+        )
+    }
+
+    /// The viewing ray through a drawing point.
+    pub fn ray(&self, p: DVec2) -> (DVec3, DVec3) {
+        let o = self.center + self.right * p.x + self.up * p.y - self.forward * self.radius;
+        (o, self.forward)
+    }
+}
+
+/// A hidden-line parallel 3D view of the whole model.
+pub fn axonometric_view(model: &Model, azimuth: f64, altitude: f64) -> Drawing {
+    let frame = AxoFrame::new(model, azimuth, altitude);
+    let scene = build_scene(model);
+    let project = |p: DVec3| frame.project(p);
+    PlanView {
+        items: hidden_lines(&scene, &project, frame.radius * 2.0, None),
+    }
+}
+
+/// Feature edges of `scene` seen through `project`, hidden parts removed.
+/// `project` maps world points to (x, y, depth); only `0..=depth` is drawn,
+/// and with `crop`, only `x` within that range.
+fn hidden_lines(
+    scene: &[SceneItem],
+    project: &dyn Fn(DVec3) -> DVec3,
+    depth: f64,
+    crop: Option<(f64, f64)>,
+) -> Vec<PlanItem> {
+    let mut faces: Vec<(ElementId, Vec<[DVec3; 3]>)> = Vec::new();
+    for s in scene {
+        let mut tris = Vec::new();
+        for t in s.mesh.indices.chunks(3) {
+            let p = |i: u32| project(Vec3::from(s.mesh.positions[i as usize]).as_dvec3());
+            tris.extend(clip_triangle([p(t[0]), p(t[1]), p(t[2])], depth));
+        }
+        faces.push((s.id, tris));
+    }
+    let (lo, hi) = extents(&faces, crop);
+    let zbuf = DepthBuffer::render(&faces, lo, hi);
+    let mut items = Vec::new();
+    for s in scene {
+        for (a, b) in feature_edges(s) {
+            let Some((a, b)) = clip_segment(project(a), project(b), 1e-4, depth) else {
+                continue;
+            };
+            let (a, b) = match crop {
+                Some((x0, x1)) => match crop_along(a, b, x0, x1) {
+                    Some(seg) => seg,
+                    None => continue,
+                },
+                None => (a, b),
+            };
+            for (p, q) in zbuf.visible_runs(a, b) {
+                items.push(PlanItem::Line {
+                    id: s.id,
+                    pen: Pen::Projection,
+                    a: p,
+                    b: q,
+                });
+            }
+        }
+    }
+    items
+}
+
 pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
     match &model.get(view)?.kind {
         ElementKind::View(v) => Some(match &v.kind {
@@ -138,24 +219,30 @@ pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
                 depth,
                 cut,
             } => section_view(model, *start, *end, *depth, *cut),
+            creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
+                axonometric_view(model, *azimuth, *altitude)
+            }
         }),
         _ => None,
     }
 }
 
-fn extents(faces: &[(ElementId, Vec<[DVec3; 3]>)], frame: &SectionFrame) -> (DVec2, DVec2) {
-    let mut lo = DVec2::new(0.0, f64::MAX);
-    let mut hi = DVec2::new(frame.length, f64::MIN);
+fn extents(faces: &[(ElementId, Vec<[DVec3; 3]>)], crop: Option<(f64, f64)>) -> (DVec2, DVec2) {
+    let mut lo = DVec2::splat(f64::MAX);
+    let mut hi = DVec2::splat(f64::MIN);
     for (_, tris) in faces {
         for t in tris {
             for p in t {
-                lo.y = lo.y.min(p.y);
-                hi.y = hi.y.max(p.y);
+                lo = lo.min(p.truncate());
+                hi = hi.max(p.truncate());
             }
         }
     }
-    if lo.y > hi.y {
-        (lo.y, hi.y) = (0.0, 1.0);
+    if let Some((x0, x1)) = crop {
+        (lo.x, hi.x) = (x0, x1);
+    }
+    if lo.x > hi.x || lo.y > hi.y {
+        (lo, hi) = (DVec2::ZERO, DVec2::ONE);
     }
     (lo - DVec2::splat(0.1), hi + DVec2::splat(0.1))
 }
@@ -466,9 +553,7 @@ mod tests {
             .items
             .iter()
             .filter_map(|i| match i {
-                PlanItem::Polygon {
-                    id, pen: Pen::Cut, ..
-                } => Some(m.get(*id).unwrap().name.clone()),
+                PlanItem::Fill { id, .. } => Some(m.get(*id).unwrap().name.clone()),
                 _ => None,
             })
             .collect();
@@ -493,11 +578,9 @@ mod tests {
             .items
             .iter()
             .filter_map(|i| match i {
-                PlanItem::Polygon {
-                    id,
-                    pen: Pen::Cut,
-                    points,
-                } if m.get(*id).unwrap().name == "GF Wall 1" => Some(points.clone()),
+                PlanItem::Fill { id, points, .. } if m.get(*id).unwrap().name == "GF Wall 1" => {
+                    Some(points.clone())
+                }
                 _ => None,
             })
             .collect();
@@ -520,10 +603,7 @@ mod tests {
             30.0,
             false,
         );
-        assert!(!d
-            .items
-            .iter()
-            .any(|i| matches!(i, PlanItem::Polygon { pen: Pen::Cut, .. })));
+        assert!(!d.items.iter().any(|i| matches!(i, PlanItem::Fill { .. })));
         let names: std::collections::BTreeSet<String> = d
             .items
             .iter()

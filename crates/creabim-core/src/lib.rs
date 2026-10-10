@@ -8,6 +8,7 @@ pub mod document;
 pub mod editmesh;
 pub mod element;
 pub mod id;
+pub mod joins;
 pub mod model;
 pub mod ops;
 pub mod sample;
@@ -15,9 +16,11 @@ pub mod sample;
 pub use document::Document;
 pub use editmesh::EditMesh;
 pub use element::{
-    Element, ElementKind, FreeMesh, Grid, Level, Opening, OpeningKind, Slab, View, ViewKind, Wall,
+    Element, ElementKind, FreeMesh, Grid, Level, Opening, OpeningKind, Sheet, Slab, View, ViewKind,
+    Viewport, Wall,
 };
 pub use id::ElementId;
+pub use joins::{wall_joins, WallEnds};
 pub use model::Model;
 pub use ops::{Op, Transaction};
 

@@ -4,7 +4,6 @@
 use crate::wall::Cut;
 use creabim_core::{ElementId, ElementKind, Model, OpeningKind};
 use glam::DVec2;
-use std::fmt::Write;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pen {
@@ -18,12 +17,158 @@ pub enum Pen {
     Grid,
 }
 
+/// Pattern drawn inside a cut fill.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hatch {
+    /// Plain grey fill.
+    Solid,
+    /// 45° lines, used for walls.
+    Diagonal,
+    /// Crossed 45° lines, used for slabs.
+    Cross,
+}
+
+impl Hatch {
+    /// The hatch used for an element's cut faces.
+    pub fn of(kind: &ElementKind) -> Hatch {
+        match kind {
+            ElementKind::Wall(_) => Hatch::Diagonal,
+            ElementKind::Slab(_) => Hatch::Cross,
+            _ => Hatch::Solid,
+        }
+    }
+
+    /// Hatch line segments clipped to `polygon`, `spacing` apart in drawing units.
+    pub fn lines(self, polygon: &[DVec2], spacing: f64) -> Vec<(DVec2, DVec2)> {
+        let angles: &[f64] = match self {
+            Hatch::Solid => &[],
+            Hatch::Diagonal => &[45.0],
+            Hatch::Cross => &[45.0, -45.0],
+        };
+        let mut out = Vec::new();
+        for &deg in angles {
+            out.extend(scan_lines(polygon, deg.to_radians(), spacing));
+        }
+        out
+    }
+}
+
+/// Parallel lines at `angle`, `spacing` apart, clipped to a polygon (even-odd).
+fn scan_lines(polygon: &[DVec2], angle: f64, spacing: f64) -> Vec<(DVec2, DVec2)> {
+    if polygon.len() < 3 || spacing <= 0.0 {
+        return vec![];
+    }
+    // rotate so the lines run along x; lines sit at y = k * spacing, so
+    // neighbouring polygons share one continuous pattern
+    let (dir, nrm) = (DVec2::from_angle(angle), DVec2::from_angle(angle).perp());
+    let local: Vec<DVec2> = polygon
+        .iter()
+        .map(|p| DVec2::new(p.dot(dir), p.dot(nrm)))
+        .collect();
+    let (y0, y1) = local
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
+    let mut out = Vec::new();
+    let mut k = (y0 / spacing).ceil() as i64;
+    while (k as f64) * spacing < y1 {
+        let y = k as f64 * spacing;
+        let mut xs: Vec<f64> = Vec::new();
+        for i in 0..local.len() {
+            let (a, b) = (local[i], local[(i + 1) % local.len()]);
+            if (a.y > y) != (b.y > y) {
+                xs.push(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x));
+            }
+        }
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for pair in xs.chunks(2) {
+            if let [xa, xb] = pair {
+                out.push((dir * *xa + nrm * y, dir * *xb + nrm * y));
+            }
+        }
+        k += 1;
+    }
+    out
+}
+
+/// Turn cut polygons into fills plus outlines, leaving out outline segments
+/// shared with a neighbouring cut so joined elements read as one mass.
+pub fn clean_up_cuts(model: &Model, items: &mut Vec<PlanItem>) {
+    let mut polys: Vec<(ElementId, Vec<DVec2>)> = Vec::new();
+    for it in items.iter_mut() {
+        if let PlanItem::Polygon {
+            id,
+            pen: Pen::Cut,
+            points,
+        } = it
+        {
+            let hatch = model.get(*id).map_or(Hatch::Solid, |e| Hatch::of(&e.kind));
+            polys.push((*id, points.clone()));
+            *it = PlanItem::Fill {
+                id: *id,
+                points: std::mem::take(points),
+                hatch,
+            };
+        }
+    }
+    let edges = |pts: &Vec<DVec2>| -> Vec<(DVec2, DVec2)> {
+        (0..pts.len())
+            .map(|i| (pts[i], pts[(i + 1) % pts.len()]))
+            .collect()
+    };
+    let eps = 1e-4;
+    for (i, (id, pts)) in polys.iter().enumerate() {
+        for (a, b) in edges(pts) {
+            let len = a.distance(b);
+            if len < eps {
+                continue;
+            }
+            let d = (b - a) / len;
+            let on_line = |p: DVec2| (p - a).perp_dot(d).abs() < eps;
+            // parts of this edge covered by another cut's edge
+            let mut covered: Vec<(f64, f64)> = Vec::new();
+            for (j, (_, other)) in polys.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                for (p, q) in edges(other) {
+                    if on_line(p) && on_line(q) {
+                        let (tp, tq) = ((p - a).dot(d), (q - a).dot(d));
+                        let (lo, hi) = (tp.min(tq).max(0.0), tp.max(tq).min(len));
+                        if hi > lo + eps {
+                            covered.push((lo, hi));
+                        }
+                    }
+                }
+            }
+            covered.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+            let mut t = 0.0;
+            for (lo, hi) in covered.into_iter().chain([(len, len)]) {
+                if lo > t + eps {
+                    items.push(PlanItem::Line {
+                        id: *id,
+                        pen: Pen::Cut,
+                        a: a + d * t,
+                        b: a + d * lo,
+                    });
+                }
+                t = t.max(hi);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlanItem {
     Polygon {
         id: ElementId,
         pen: Pen,
         points: Vec<DVec2>,
+    },
+    /// Fill of cut material, with no outline (outlines are `Pen::Cut` lines).
+    Fill {
+        id: ElementId,
+        points: Vec<DVec2>,
+        hatch: Hatch,
     },
     Line {
         id: ElementId,
@@ -51,6 +196,7 @@ impl PlanItem {
     pub fn id(&self) -> ElementId {
         match self {
             PlanItem::Polygon { id, .. }
+            | PlanItem::Fill { id, .. }
             | PlanItem::Line { id, .. }
             | PlanItem::Arc { id, .. }
             | PlanItem::Label { id, .. } => *id,
@@ -58,7 +204,7 @@ impl PlanItem {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlanView {
     pub items: Vec<PlanItem>,
 }
@@ -68,7 +214,9 @@ impl PlanView {
         let mut pts = Vec::new();
         for it in &self.items {
             match it {
-                PlanItem::Polygon { points, .. } => pts.extend(points.iter().copied()),
+                PlanItem::Polygon { points, .. } | PlanItem::Fill { points, .. } => {
+                    pts.extend(points.iter().copied())
+                }
                 PlanItem::Line { a, b, .. } => pts.extend([*a, *b]),
                 PlanItem::Arc { center, radius, .. } => pts.extend([
                     *center - DVec2::splat(*radius),
@@ -91,108 +239,23 @@ impl PlanView {
     /// Render as SVG at a drawing scale, e.g. `100.0` for 1:100. Units are millimetres on paper.
     pub fn to_svg(&self, scale: f64) -> String {
         let (lo, hi) = self.bounds().unwrap_or((DVec2::ZERO, DVec2::ONE));
-        let margin = 1.0;
-        let (lo, hi) = (lo - DVec2::splat(margin), hi + DVec2::splat(margin));
-        let k = 1000.0 / scale; // metres in model -> mm on paper
-        let size = (hi - lo) * k;
-        let tx = |p: DVec2| DVec2::new((p.x - lo.x) * k, (hi.y - p.y) * k);
-        let mut s = String::new();
-        let _ = writeln!(
-            s,
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{:.1}mm" height="{:.1}mm" viewBox="0 0 {:.3} {:.3}">"#,
-            size.x, size.y, size.x, size.y
-        );
-        let _ = writeln!(s, r#"<rect width="100%" height="100%" fill="white"/>"#);
-        let style = |pen: Pen| match pen {
-            Pen::Cut => r##"stroke="#000" stroke-width="0.5" fill="#bbb""##,
-            Pen::Projection => r##"stroke="#444" stroke-width="0.18" fill="none""##,
-            Pen::Symbol => r##"stroke="#000" stroke-width="0.18" fill="none""##,
-            Pen::Grid => {
-                r##"stroke="#888" stroke-width="0.13" stroke-dasharray="4 1 1 1" fill="none""##
-            }
+        let margin = DVec2::splat(1.0);
+        let (lo, hi) = (lo - margin, hi + margin);
+        let map = crate::paper::PaperMap {
+            model: lo,
+            paper: DVec2::ZERO,
+            scale,
         };
-        for it in &self.items {
-            match it {
-                PlanItem::Polygon { pen, points, .. } => {
-                    let pts: Vec<String> = points
-                        .iter()
-                        .map(|p| {
-                            let q = tx(*p);
-                            format!("{:.3},{:.3}", q.x, q.y)
-                        })
-                        .collect();
-                    let _ = writeln!(
-                        s,
-                        r#"<polygon points="{}" {}/>"#,
-                        pts.join(" "),
-                        style(*pen)
-                    );
-                }
-                PlanItem::Line { pen, a, b, .. } => {
-                    let (a, b) = (tx(*a), tx(*b));
-                    let _ = writeln!(
-                        s,
-                        r#"<line x1="{:.3}" y1="{:.3}" x2="{:.3}" y2="{:.3}" {}/>"#,
-                        a.x,
-                        a.y,
-                        b.x,
-                        b.y,
-                        style(*pen)
-                    );
-                }
-                PlanItem::Arc {
-                    pen,
-                    center,
-                    radius,
-                    start,
-                    end,
-                    ..
-                } => {
-                    let a = tx(*center + DVec2::from_angle(*start) * *radius);
-                    let b = tx(*center + DVec2::from_angle(*end) * *radius);
-                    let r = radius * k;
-                    let large = if (end - start).abs() > std::f64::consts::PI {
-                        1
-                    } else {
-                        0
-                    };
-                    // y is flipped on paper, so a CCW arc in the model is CW on paper (sweep 0)
-                    let _ = writeln!(
-                        s,
-                        r#"<path d="M {:.3} {:.3} A {r:.3} {r:.3} 0 {large} 0 {:.3} {:.3}" {}/>"#,
-                        a.x,
-                        a.y,
-                        b.x,
-                        b.y,
-                        style(*pen)
-                    );
-                }
-                PlanItem::Label { at, text, .. } => {
-                    let p = tx(*at);
-                    let _ = writeln!(
-                        s,
-                        r#"<text x="{:.3}" y="{:.3}" font-family="sans-serif" font-size="3" text-anchor="middle" dominant-baseline="middle">{}</text>"#,
-                        p.x,
-                        p.y,
-                        xml_escape(text)
-                    );
-                }
-            }
-        }
-        s.push_str("</svg>\n");
-        s
+        let mut svg = crate::paper::SvgCanvas::new((hi - lo) * map.k());
+        crate::paper::draw(&mut svg, self, &map);
+        svg.finish()
     }
-}
-
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// Generate the plan of one level, cut `cut_height` metres above it.
 pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
     let mut items = Vec::new();
+    let joins = creabim_core::wall_joins(model);
     for e in model.iter() {
         match &e.kind {
             ElementKind::Grid(g) => {
@@ -213,7 +276,19 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                 let d = w.direction();
                 let n = DVec2::new(-d.y, d.x);
                 let t = w.thickness / 2.0;
-                let at = |u: f64, s: f64| w.start + d * u + n * s;
+                let ends = joins.get(&e.id).copied().unwrap_or_default();
+                let len = w.length();
+                // wall-local point; the wall's own ends follow its joins
+                let at = |u: f64, s: f64| {
+                    let u = if u <= 0.0 {
+                        ends.start_u(s)
+                    } else if u >= len {
+                        ends.end_u(w, s)
+                    } else {
+                        u
+                    };
+                    w.start + d * u + n * s
+                };
                 let cut_v = cut_height - w.base_offset;
                 if cut_v <= 0.0 || cut_v >= w.height {
                     // wall entirely below or above the cut: show its outline in projection
@@ -221,12 +296,7 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                         items.push(PlanItem::Polygon {
                             id: e.id,
                             pen: Pen::Projection,
-                            points: vec![
-                                at(0.0, -t),
-                                at(w.length(), -t),
-                                at(w.length(), t),
-                                at(0.0, t),
-                            ],
+                            points: ends.footprint(w).to_vec(),
                         });
                     }
                     continue;
@@ -336,6 +406,7 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
             _ => {}
         }
     }
+    clean_up_cuts(model, &mut items);
     PlanView { items }
 }
 
