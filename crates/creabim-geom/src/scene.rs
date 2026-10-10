@@ -13,6 +13,7 @@ pub struct SceneItem {
 /// Build viewport geometry for every element with a body.
 pub fn build_scene(model: &Model) -> Vec<SceneItem> {
     let mut out = Vec::new();
+    let joins = creabim_core::wall_joins(model);
     for e in model.iter() {
         let (mesh, color) = match &e.kind {
             ElementKind::Wall(w) => {
@@ -27,7 +28,11 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                         _ => None,
                     })
                     .collect();
-                (wall_mesh(w, level.elevation, &openings), [0.86, 0.84, 0.80])
+                let ends = joins.get(&e.id).copied().unwrap_or_default();
+                (
+                    wall_mesh(w, level.elevation, &openings, &ends),
+                    [0.86, 0.84, 0.80],
+                )
             }
             ElementKind::Slab(s) => {
                 let Some(level) = model.level(s.level) else {
@@ -57,8 +62,17 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                     [0.62, 0.75, 0.90],
                 )
             }
-            ElementKind::Level(_) | ElementKind::Grid(_) => continue,
+            ElementKind::Level(_)
+            | ElementKind::Grid(_)
+            | ElementKind::View(_)
+            | ElementKind::Sheet(_)
+            | ElementKind::Viewport(_)
+            | ElementKind::Material(_)
+            | ElementKind::Dimension(_)
+            | ElementKind::Tag(_) => continue,
         };
+        // a material's colour wins over the element type's default
+        let color = creabim_core::material_of(model, e).map_or(color, |(_, m)| m.color);
         out.push(SceneItem {
             id: e.id,
             mesh,

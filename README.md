@@ -4,12 +4,19 @@ CreaBIM is an open-source, BIM-native architectural modeler: one model for freef
 
 ![CreaBIM showing the sample house in 3D beside its generated ground-floor plan](docs/screenshot.png)
 
-**Status: Phase 0 prototype.** It proves the core architecture end to end. It is not yet a tool for real projects.
+**Status: Phase 1 in progress (dimensions, tags and schedules).** It proves the core architecture end to end. It is not yet a tool for real projects.
 
 ## What works today
 
 - **One model, many views.** The 3D view and the plan read the same element store. An edit in either shows up in both at once.
-- **Plan view in three places:** docked beside 3D, in its own window (for a second monitor), or overlaid inside the 3D workspace. *View → Show plan cut in 3D space* draws the plan's cut lines at their real height in 3D.
+- **Views are model elements:** plans, sections and elevations live in the model, so they save, undo and update with it. Pick one from the *View* list or the *Views* group in the model list.
+- **2D view in three places:** docked beside 3D, in its own window (for a second monitor), or overlaid inside the 3D workspace. *View → Show the 2D view in 3D space* draws a plan at its cut height, or a section standing on its section line.
+- **Sheets with live views:** place plans, sections, elevations and 3D views on A0 to A4 sheets with a title block. Views on a sheet are generated from the current model, so they never go stale. Drag a view to move it; double-click it to work on the model right there, with the same tools as the view itself (orbit a 3D view by dragging). *File → Export sheets as PDF* writes every sheet as a vector PDF page.
+- **Clean joins and materials:** wall corners are mitred and walls meeting another wall's side are trimmed to its face, in 3D, plans, sections and IFC. Walls cut through the slabs that sit in them. Each material has its own hatch pattern and colour, used for cut faces, shaded views and 3D, and exported to IFC.
+- **Dimensions and tags:** draw dimensions that snap to wall corners, openings and levels. They stay attached, so moving a door updates its dimensions. Tag doors and windows with their marks (D01, W01) and walls with their material and thickness, one at a time or all at once.
+- **Schedules:** door, window, wall and slab schedules are views too. Edit sizes and materials right in the table, place them on sheets and export them as CSV.
+- **Shaded and cropped views:** 3D views and elevations can be shaded in material colours, on screen, on sheets and in the PDF. Crop any view on a sheet by dragging its crop frame.
+- **Sections and elevations generated from the model:** cut walls, slabs and openings are drawn heavy; what lies beyond is projected with hidden lines removed. Level datums are labelled. Section and elevation marks appear in plans. Draw new ones with the *Section* and *Elevation* tools, in plans or inside another section, and drag a selected section line by its ends or middle. Walls, doors, windows, slabs and masses can be drawn in sections and elevations too. Progress screenshots are in [docs/evolution](docs/evolution).
 - **BIM elements:** levels, grids, walls, slabs, doors and windows. Doors and windows are hosted by walls and cut real openings.
 - **Freeform meshes:** add a mass, click a face in 3D and extrude (E), taper, move or subdivide it (Catmull-Clark). Give any mesh an IFC class such as `IfcRoof` and it exports as that.
 - **Undo and redo** for every edit. Dragging a value in the properties panel undoes as one step.
@@ -33,6 +40,11 @@ On Linux the app also needs a Vulkan or GL driver and `libxkbcommon-x11` at runt
 cargo run -p creabim-cli -- sample house.creabim.json            # write the sample house
 cargo run -p creabim-cli -- ifc house.creabim.json house.ifc     # export IFC4
 cargo run -p creabim-cli -- plan house.creabim.json "Ground Floor" gf.svg
+cargo run -p creabim-cli -- views house.creabim.json             # list plans, sections, elevations
+cargo run -p creabim-cli -- view house.creabim.json "Section A" a.svg
+cargo run -p creabim-cli -- sheets house.creabim.json            # list sheets
+cargo run -p creabim-cli -- pdf house.creabim.json house.pdf      # every sheet, one PDF
+cargo run -p creabim-cli -- schedule house.creabim.json windows w.csv  # doors, windows, walls or slabs
 python3 tools/validate_ifc.py house.ifc                          # needs: pip install ifcopenshell pytest
 ```
 
@@ -44,12 +56,22 @@ python3 tools/validate_ifc.py house.ifc                          # needs: pip in
 | Pan, zoom (plan) | Right drag, wheel |
 | Draw walls | Wall tool, click points; Esc or right-click ends; Shift keeps it orthogonal |
 | Doors, windows | Door or Window tool, click on a wall |
-| Slab | Slab tool, click two corners |
+| Slab | Slab tool, click two corners. In a section, click the two ends of its edge: the top snaps to the nearest level |
+| Section, elevation | In a plan: Section or Elevation tool, click two points; it looks to the left of the direction you draw. In a section: click where it cuts, then the side it looks towards |
+| Move a section line | Select it in a plan, drag the square end handles or the round middle handle |
+| Draw in a section | Wall: click two points (length along the line, height as drawn). Door, Window: click on a wall. Mass: click to place |
+| Sheets | Pick a sheet from the View list. *Place view…* adds a view, drag to move it, double-click to edit through it, Esc to finish |
+| Orbit a 3D view | Drag in it, on its own or on a sheet |
+| Dimension | Dimension tool, click two points (they snap to corners and levels), then a third for the offset. Drag a selected dimension to move its line |
+| Tag | Tag tool, click a door, window or wall. *Tag doors and windows* tags every untagged one in the view. Drag a tag to move it |
+| Schedule | *File → New schedule*, then edit cells in the table. *Export CSV* saves it |
+| Crop a view on a sheet | Select the viewport, drag the dashed frame's edge handles, or set the crop in Properties |
+| Materials | Select a material in the model list to change its hatch and colour; pick a wall's or slab's material in Properties |
 | Freeform mass | Mass tool, click to place; click a face in 3D, then E to extrude |
 | Undo, redo | Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y |
-| Delete | Delete key (also removes doors and windows hosted on a wall) |
+| Delete | Delete key (also removes doors, windows, tags and dimensions attached to it) |
 
-Files: *File → Save/Open* use the path in the toolbar (`.creabim.json`). *Export IFC4* and *Export plan as SVG* write next to it.
+Files: *File → Save/Open* use the path in the toolbar (`.creabim.json`). *Export IFC4* and *Export view as SVG* write next to it.
 
 ## How it is built
 
@@ -61,7 +83,7 @@ Files: *File → Save/Open* use the path in the toolbar (`.creabim.json`). *Expo
 | `creabim-app` | Desktop app: egui UI, wgpu 3D viewport rendered offscreen so any number of live views can exist. |
 | `creabim-cli` | Command-line export tools. |
 
-Next steps follow the roadmap's Phase 0 to Phase 1 plan: a SQLite project file, IFC import, sections and elevations, sheets with live views, dimensions and tags, OpenCascade integration, and a Windows installer.
+Next steps follow the roadmap's Phase 1 plan: a modifier stack and workplane sketches, a SQLite project file with IFC import, and a Windows installer.
 
 ## License
 

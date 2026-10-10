@@ -1,17 +1,22 @@
 use crate::camera::OrbitCamera;
-use crate::planview::{self, PlanState, Tool};
+use crate::planview::{self, PaneStyle, PlanState, Tool};
 use crate::render3d::{Vertex, Viewport3d};
+use crate::sheetview::{self, SheetState};
 use creabim_core::{
     element::FREE_MESH_CLASSES, sample::sample_house, Document, Element, ElementId, ElementKind,
-    Model, Transaction,
+    Hatch, Material, Model, ScheduleCategory, Sheet, Transaction, View, ViewKind, ViewStyle,
 };
-use creabim_geom::{build_scene, pick, plan::Pen, plan_view, PlanItem, SceneItem};
+use creabim_geom::sheet::{self as sheets, PlacedView, SheetInfo};
+use creabim_geom::{
+    build_scene, pick, plan::Pen, section::view_drawing, section::Drawing, PlanItem, SceneItem,
+};
 use eframe::egui::{self, Color32, Rect, Sense, Vec2};
 use eframe::egui_wgpu;
 use glam::{DVec2, Vec2 as GVec2};
+use std::collections::HashMap;
 
 /// What the 3D geometry was last built from; rebuild when any of it changes.
-/// (model revision, selection, selected face, plan shown in 3D, active level)
+/// (model revision, selection, selected face, drawing shown in 3D, active view)
 type GeometryKey = (
     u64,
     Option<ElementId>,
@@ -37,7 +42,11 @@ pub struct CreaBimApp {
     selection: Option<ElementId>,
     /// Selected face when a free mesh is selected (mesh edit mode).
     face: Option<usize>,
-    level: Option<ElementId>,
+    /// What the 2D pane shows: a view (plan, section, elevation, 3D) or a sheet.
+    active_view: Option<ElementId>,
+    sheet: SheetState,
+    /// Generated drawings by view, with the model revision they were made at.
+    drawings: HashMap<ElementId, (u64, Drawing)>,
     camera: OrbitCamera,
     /// Aspect ratio of the 3D view as last drawn, for framing.
     aspect: f32,
@@ -63,7 +72,9 @@ impl CreaBimApp {
             doc: Document::new(),
             selection: None,
             face: None,
-            level: None,
+            active_view: None,
+            sheet: SheetState::default(),
+            drawings: HashMap::new(),
             camera: OrbitCamera::default(),
             aspect: 0.65,
             viewport,
@@ -81,12 +92,96 @@ impl CreaBimApp {
     }
 
     fn load_model(&mut self, model: Model) {
-        self.doc = Document::from_model(model);
+        self.doc = Document::from_model(with_plan_views(model));
         self.selection = None;
         self.face = None;
-        self.level = self.doc.model().levels().next().map(|(e, _)| e.id);
+        self.active_view = None;
+        self.sheet = SheetState::default();
+        self.drawings.clear();
         self.geometry_key = None;
+        self.drop_stale_selection();
         self.frame_all();
+    }
+
+    /// Sheets in number order, as (id, "A101 Floor Plans").
+    fn sheet_list(&self) -> Vec<(ElementId, String)> {
+        sheets::sheets(self.doc.model())
+            .into_iter()
+            .map(|(id, s)| {
+                let name = self.doc.model().get(id).map_or("", |e| e.name.as_str());
+                (id, format!("{} {name}", s.number))
+            })
+            .collect()
+    }
+
+    fn is_sheet(&self, id: ElementId) -> bool {
+        sheets::sheet_of(self.doc.model(), id).is_some()
+    }
+
+    fn sheet_info(&self) -> SheetInfo {
+        SheetInfo {
+            project: stem(&self.path),
+            date: sheets::today(),
+        }
+    }
+
+    /// A sheet's views with their (cached) drawings.
+    fn placed_views(&mut self, sheet: ElementId) -> Vec<PlacedView> {
+        let ids: Vec<ElementId> = self
+            .doc
+            .model()
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::Viewport(vp) if vp.sheet == sheet => Some(vp.view),
+                _ => None,
+            })
+            .collect();
+        for id in ids {
+            self.drawing(id);
+        }
+        let cache = &self.drawings;
+        sheets::placed_views(self.doc.model(), sheet, &mut |v| {
+            cache.get(&v).map(|(_, d)| d.clone())
+        })
+    }
+
+    /// Every view in the model, plans first, in model order.
+    fn views(&self) -> Vec<(ElementId, String, bool)> {
+        let mut v: Vec<_> = self
+            .doc
+            .model()
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::View(v) => Some((
+                    e.id,
+                    e.name.clone(),
+                    matches!(v.kind, ViewKind::Plan { .. }),
+                )),
+                _ => None,
+            })
+            .collect();
+        v.sort_by_key(|(_, _, plan)| !plan);
+        v
+    }
+
+    fn view(&self, id: ElementId) -> Option<&View> {
+        match self.doc.model().get(id).map(|e| &e.kind) {
+            Some(ElementKind::View(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// The drawing of a view, regenerated only when the model has changed.
+    fn drawing(&mut self, id: ElementId) -> Option<Drawing> {
+        let revision = self.doc.model().revision();
+        if let Some((r, d)) = self.drawings.get(&id) {
+            if *r == revision {
+                return Some(d.clone());
+            }
+        }
+        let d = view_drawing(self.doc.model(), id)?;
+        self.drawings.insert(id, (revision, d.clone()));
+        Some(d)
     }
 
     fn frame_all(&mut self) {
@@ -97,9 +192,8 @@ impl CreaBimApp {
             .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
         if let Some((lo, hi)) = bounds {
             self.camera.frame(lo, hi, self.aspect);
-            self.plan.center =
-                DVec2::new(((lo.x + hi.x) / 2.0) as f64, ((lo.y + hi.y) / 2.0) as f64);
         }
+        self.plan.cameras.clear();
     }
 
     fn report(&mut self, r: Result<(), impl ToString>, ok: impl Into<String>) {
@@ -153,10 +247,10 @@ impl CreaBimApp {
             self.face = None;
         }
         if self
-            .level
-            .is_none_or(|id| self.doc.model().level(id).is_none())
+            .active_view
+            .is_none_or(|id| self.view(id).is_none() && !self.is_sheet(id))
         {
-            self.level = self.doc.model().levels().next().map(|(e, _)| e.id);
+            self.active_view = self.views().first().map(|v| v.0);
         }
     }
 
@@ -170,7 +264,7 @@ impl CreaBimApp {
             .unwrap_or_default();
         let tx = Transaction::new(format!("Delete {name}")).remove_cascade(self.doc.model(), id);
         let r = self.doc.commit(tx);
-        self.report(r, format!("Deleted {name} and anything hosted on it."));
+        self.report(r, format!("Deleted {name} and anything attached to it."));
         self.drop_stale_selection();
     }
 
@@ -200,7 +294,7 @@ impl CreaBimApp {
             self.selection,
             self.face,
             self.plan_in_3d,
-            self.level,
+            self.active_view,
         );
         if self.geometry_key == Some(key) {
             return;
@@ -268,21 +362,50 @@ impl CreaBimApp {
         // 2D drawing shown in 3D space, on its level
         let mut overlay = Vec::new();
         if self.plan_in_3d {
-            if let Some(level) = self.level {
-                let z = self
-                    .doc
-                    .model()
-                    .level(level)
-                    .map_or(0.0, |l| l.elevation + self.plan.cut_height)
-                    as f32;
-                let plan = plan_view(self.doc.model(), level, self.plan.cut_height);
+            let placed = self.active_view.and_then(|id| {
+                let kind = self.view(id)?.kind.clone();
+                Some((kind, self.drawing(id)?))
+            });
+            if let Some((kind, plan)) = placed {
+                // drawing coordinates → world: plans lie flat at their cut
+                // height, sections stand on their section line
+                let to_world: Option<Box<dyn Fn(DVec2) -> [f32; 3]>> = match kind {
+                    ViewKind::Plan { level, cut_height } => {
+                        let z = self
+                            .doc
+                            .model()
+                            .level(level)
+                            .map_or(0.0, |l| l.elevation + cut_height)
+                            as f32;
+                        Some(Box::new(move |p| [p.x as f32, p.y as f32, z]))
+                    }
+                    ViewKind::Section { start, end, .. } => {
+                        let along = (end - start).normalize_or_zero();
+                        Some(Box::new(move |p| {
+                            let w = start + along * p.x;
+                            [w.x as f32, w.y as f32, p.y as f32]
+                        }))
+                    }
+                    // 3D views and schedules have no place of their own in the model
+                    ViewKind::Axonometric { .. } | ViewKind::Schedule { .. } => None,
+                };
+                let to_world = to_world.unwrap_or_else(|| Box::new(|_| [0.0; 3]));
+                let plan = if matches!(
+                    kind,
+                    ViewKind::Axonometric { .. } | ViewKind::Schedule { .. }
+                ) {
+                    Drawing::default()
+                } else {
+                    plan
+                };
                 let mut seg = |a: DVec2, b: DVec2, c: [f32; 3]| {
-                    overlay.push(line_vertex([a.x as f32, a.y as f32, z], c));
-                    overlay.push(line_vertex([b.x as f32, b.y as f32, z], c));
+                    overlay.push(line_vertex(to_world(a), c));
+                    overlay.push(line_vertex(to_world(b), c));
                 };
                 for it in &plan.items {
                     let c = match it {
-                        PlanItem::Polygon { pen: Pen::Cut, .. } => [0.85, 0.15, 0.10],
+                        PlanItem::Polygon { pen: Pen::Cut, .. }
+                        | PlanItem::Line { pen: Pen::Cut, .. } => [0.85, 0.15, 0.10],
                         _ => [0.15, 0.25, 0.55],
                     };
                     match it {
@@ -310,7 +433,15 @@ impl CreaBimApp {
                                 );
                             }
                         }
-                        PlanItem::Label { .. } => {}
+                        PlanItem::Dimension { a, b, offset, .. } => {
+                            let n = (*b - *a).normalize_or_zero().perp() * *offset;
+                            seg(*a + n, *b + n, [0.12, 0.24, 0.47]);
+                        }
+                        PlanItem::Label { .. }
+                        | PlanItem::Fill { .. }
+                        | PlanItem::Text { .. }
+                        | PlanItem::Tag { .. }
+                        | PlanItem::Image { .. } => {}
                     }
                 }
             }
@@ -389,21 +520,78 @@ impl CreaBimApp {
     }
 
     fn show_plan(&mut self, ui: &mut egui::Ui, rect: Rect, background: Color32) {
-        let Some(level) = self.level else { return };
+        let Some(view) = self.active_view else { return };
         let (before, revision) = (self.selection, self.doc.model().revision());
-        if let Some(err) = planview::show(
-            ui,
-            rect,
-            &mut self.doc,
-            level,
-            &mut self.plan,
-            &mut self.selection,
-            background,
-        ) {
+        let schedule = match self.view(view).map(|v| &v.kind) {
+            Some(ViewKind::Schedule { category }) => Some(*category),
+            _ => None,
+        };
+        let result = if let Some(category) = schedule {
+            let csv = with_extension(
+                &self.path,
+                &format!("{}.csv", category.label().to_lowercase()),
+            );
+            let msg = crate::schedulepane::show(
+                ui,
+                rect,
+                &mut self.doc,
+                view,
+                category,
+                &mut self.selection,
+                &csv,
+            );
+            if let Some(m) = msg {
+                self.status = m;
+            }
+            None
+        } else if self.is_sheet(view) {
+            let views = self.placed_views(view);
+            let info = self.sheet_info();
+            sheetview::show(
+                ui,
+                rect,
+                &mut self.doc,
+                view,
+                &views,
+                &info,
+                &mut self.sheet,
+                &mut self.plan,
+                &mut self.selection,
+            )
+        } else {
+            let Some(kind) = self.view(view).map(planview::pane_kind) else {
+                return;
+            };
+            let Some(drawing) = self.drawing(view) else {
+                return;
+            };
+            let style = PaneStyle {
+                background: Some(background),
+                decorations: true,
+                camera: None,
+                scale: self.view(view).map_or(100.0, |v| v.scale),
+            };
+            planview::show(
+                ui,
+                rect,
+                &mut self.doc,
+                view,
+                kind,
+                &drawing,
+                &mut self.plan,
+                &mut self.selection,
+                style,
+            )
+        };
+        if let Some(err) = result {
             self.status = format!("Couldn't do that: {err}");
         } else if self.doc.model().revision() != revision {
             if let Some(label) = self.doc.undo_label() {
                 self.status = format!("{label}. Ctrl+Z to undo.");
+                if label.starts_with("Add Section") || label.starts_with("Add Elevation") {
+                    self.status
+                        .push_str(" Open it from the View list or the Views group.");
+                }
             }
         }
         if self.selection != before {
@@ -416,13 +604,23 @@ impl CreaBimApp {
         let name = self
             .doc
             .model()
-            .get(level)
+            .get(view)
             .map(|e| e.name.clone())
             .unwrap_or_default();
+        let label = match (self.view(view), sheets::sheet_of(self.doc.model(), view)) {
+            (Some(_), _) if schedule.is_some() => format!("{name}  ·  schedule"),
+            (Some(v), _) => format!("{name}  ·  1:{:.0}", v.scale),
+            (_, Some(s)) => format!(
+                "Sheet {} {name}  ·  {}",
+                s.number,
+                s.size_name().unwrap_or("custom size")
+            ),
+            _ => name,
+        };
         ui.painter().text(
             rect.left_top() + Vec2::new(8.0, 8.0),
             egui::Align2::LEFT_TOP,
-            format!("Plan · {name}"),
+            label,
             egui::FontId::proportional(13.0),
             Color32::from_gray(80),
         );
@@ -451,6 +649,16 @@ impl CreaBimApp {
                     self.status =
                         "New project with one level. Pick the Wall tool to start drawing.".into();
                 }
+                if ui.button("New sheet").clicked() {
+                    self.new_sheet();
+                }
+                ui.menu_button("New schedule", |ui| {
+                    for c in ScheduleCategory::ALL {
+                        if ui.button(c.label()).clicked() {
+                            self.new_schedule(c);
+                        }
+                    }
+                });
                 ui.separator();
                 if ui.button("Open").clicked() {
                     let r = std::fs::read_to_string(&self.path)
@@ -478,19 +686,42 @@ impl CreaBimApp {
                     let r = std::fs::write(&out, creabim_ifc::export_ifc4(self.doc.model(), &opts));
                     self.report(r, format!("Exported {out}"));
                 }
-                if ui.button("Export plan as SVG").clicked() {
-                    if let Some(level) = self.level {
+                if ui.button("Export sheets as PDF").clicked() {
+                    let out = with_extension(&self.path, "pdf");
+                    if sheets::sheets(self.doc.model()).is_empty() {
+                        self.status = "There are no sheets to export yet.".into();
+                    } else {
+                        let pdf = sheets::sheets_pdf(self.doc.model(), &self.sheet_info());
+                        let r = std::fs::write(&out, pdf);
+                        let n = sheets::sheets(self.doc.model()).len();
+                        self.report(r, format!("Exported {n} sheets to {out}"));
+                    }
+                }
+                if ui.button("Export view or sheet as SVG").clicked() {
+                    if let Some(sheet) = self.active_view.filter(|id| self.is_sheet(*id)) {
+                        let number = sheets::sheet_of(self.doc.model(), sheet)
+                            .map(|s| s.number.clone())
+                            .unwrap_or_default();
+                        let out = with_extension(&self.path, &format!("{number}.svg"));
+                        if let Some(svg) =
+                            sheets::sheet_svg(self.doc.model(), sheet, &self.sheet_info())
+                        {
+                            let r = std::fs::write(&out, svg);
+                            self.report(r, format!("Exported {out}"));
+                        }
+                    } else if let Some(view) = self.active_view {
                         let name = self
                             .doc
                             .model()
-                            .get(level)
+                            .get(view)
                             .map(|e| e.name.replace(' ', "-"))
                             .unwrap_or_default();
+                        let scale = self.view(view).map_or(100.0, |v| v.scale);
                         let out = with_extension(&self.path, &format!("{name}.svg"));
-                        let svg =
-                            plan_view(self.doc.model(), level, self.plan.cut_height).to_svg(100.0);
-                        let r = std::fs::write(&out, svg);
-                        self.report(r, format!("Exported {out} at 1:100"));
+                        if let Some(d) = self.drawing(view) {
+                            let r = std::fs::write(&out, d.to_svg(scale));
+                            self.report(r, format!("Exported {out} at 1:{scale:.0}"));
+                        }
                     }
                 }
             });
@@ -531,7 +762,7 @@ impl CreaBimApp {
                 }
             });
             ui.menu_button("View", |ui| {
-                ui.label("Plan view");
+                ui.label("2D view");
                 ui.radio_value(
                     &mut self.placement,
                     PlanPlacement::Docked,
@@ -549,7 +780,7 @@ impl CreaBimApp {
                 );
                 ui.radio_value(&mut self.placement, PlanPlacement::Hidden, "Hidden");
                 ui.separator();
-                ui.checkbox(&mut self.plan_in_3d, "Show plan cut in 3D space");
+                ui.checkbox(&mut self.plan_in_3d, "Show the 2D view in 3D space");
                 if ui.button("Frame all").clicked() {
                     self.frame_all();
                 }
@@ -569,36 +800,99 @@ impl CreaBimApp {
                     .clicked()
                 {
                     self.plan.tool = t;
-                    self.plan.pending = None;
+                    self.plan.cancel();
                 }
             }
             ui.separator();
-            ui.label("Level:");
+            ui.label("View:");
             let current = self
-                .level
+                .active_view
                 .and_then(|id| self.doc.model().get(id))
                 .map(|e| e.name.clone())
                 .unwrap_or_default();
-            egui::ComboBox::from_id_salt("level")
+            let views = self.views();
+            let sheet_list = self.sheet_list();
+            let current = match self
+                .active_view
+                .and_then(|id| sheets::sheet_of(self.doc.model(), id))
+            {
+                Some(s) => format!("{} {current}", s.number),
+                None => current,
+            };
+            egui::ComboBox::from_id_salt("view")
                 .selected_text(current)
+                .width(190.0)
                 .show_ui(ui, |ui| {
-                    let levels: Vec<(ElementId, String)> = self
-                        .doc
-                        .model()
-                        .levels()
-                        .map(|(e, _)| (e.id, e.name.clone()))
-                        .collect();
-                    for (id, name) in levels {
-                        ui.selectable_value(&mut self.level, Some(id), name);
+                    for (id, name, _) in views {
+                        ui.selectable_value(&mut self.active_view, Some(id), name);
+                    }
+                    if !sheet_list.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Sheets").weak());
+                    }
+                    for (id, name) in sheet_list {
+                        ui.selectable_value(&mut self.active_view, Some(id), name);
                     }
                 });
-            ui.label("Cut height:");
-            ui.add(
-                egui::DragValue::new(&mut self.plan.cut_height)
-                    .speed(0.05)
-                    .range(0.1..=10.0)
-                    .suffix(" m"),
-            );
+            if let Some(id) = self.active_view.filter(|id| self.is_sheet(*id)) {
+                self.place_view_combo(ui, id);
+            }
+            if let Some(id) = self.active_view {
+                if let Some(mut v) = self.view(id).cloned() {
+                    let shadable = matches!(
+                        v.kind,
+                        ViewKind::Section { .. } | ViewKind::Axonometric { .. }
+                    );
+                    let (text, value, unit) = match &mut v.kind {
+                        ViewKind::Plan { cut_height, .. } => ("Cut height:", cut_height, " m"),
+                        ViewKind::Section { depth, .. } => ("Depth:", depth, " m"),
+                        ViewKind::Axonometric { altitude, .. } => ("Altitude:", altitude, "°"),
+                        ViewKind::Schedule { .. } => return,
+                    };
+                    ui.label(text);
+                    let changed = ui
+                        .add(
+                            egui::DragValue::new(value)
+                                .speed(0.05)
+                                .range(if unit == "°" {
+                                    -89.0..=89.0
+                                } else {
+                                    0.1..=200.0
+                                })
+                                .suffix(unit),
+                        )
+                        .changed();
+                    let mut shaded = v.style == ViewStyle::Shaded;
+                    let restyled = shadable && ui.checkbox(&mut shaded, "Shaded").changed();
+                    if restyled {
+                        v.style = if shaded {
+                            ViewStyle::Shaded
+                        } else {
+                            ViewStyle::HiddenLine
+                        };
+                    }
+                    if changed || restyled {
+                        let r = self.doc.edit_merged(id, "Change view", |e| {
+                            e.kind = ElementKind::View(v.clone())
+                        });
+                        self.report(r, "View changed.");
+                    }
+                    if ui
+                        .button("Tag doors and windows")
+                        .on_hover_text("Tag every door and window in this view that has no tag yet")
+                        .clicked()
+                    {
+                        let r = planview::tag_openings(&mut self.doc, id);
+                        self.status = match r {
+                            Ok(0) => "Every door and window here is tagged already.".into(),
+                            Ok(n) => {
+                                format!("Tagged {n} doors and windows. Drag a tag to move it.")
+                            }
+                            Err(e) => format!("Couldn't do that: {e}"),
+                        };
+                    }
+                }
+            }
             ui.label("Wall thickness:");
             ui.add(
                 egui::DragValue::new(&mut self.plan.wall_thickness)
@@ -607,6 +901,132 @@ impl CreaBimApp {
                     .suffix(" m"),
             );
         });
+    }
+
+    /// "Place view" picker shown while a sheet is open.
+    fn place_view_combo(&mut self, ui: &mut egui::Ui, sheet: ElementId) {
+        let placed: Vec<ElementId> = self
+            .doc
+            .model()
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::Viewport(vp) if vp.sheet == sheet => Some(vp.view),
+                _ => None,
+            })
+            .collect();
+        let mut chosen = None;
+        egui::ComboBox::from_id_salt("place_view")
+            .selected_text("Place view…")
+            .width(150.0)
+            .show_ui(ui, |ui| {
+                for (id, name, _) in self.views() {
+                    let label = if placed.contains(&id) {
+                        format!("{name} (placed)")
+                    } else {
+                        name
+                    };
+                    if ui.selectable_label(false, label).clicked() {
+                        chosen = Some(id);
+                    }
+                }
+            });
+        let Some(view) = chosen else { return };
+        let at = sheets::free_spot(self.doc.model(), sheet, view);
+        let vp = sheets::new_viewport(self.doc.model(), sheet, view, at);
+        let e = Element::new("Viewport", ElementKind::Viewport(vp));
+        let id = e.id;
+        let r = self
+            .doc
+            .commit(Transaction::new("Place view on sheet").insert(e));
+        self.selection = Some(id);
+        self.report(
+            r,
+            "Placed the view. Drag it to where it belongs on the sheet.",
+        );
+    }
+
+    fn new_sheet(&mut self) {
+        let used: Vec<String> = sheets::sheets(self.doc.model())
+            .into_iter()
+            .map(|(_, s)| s.number.clone())
+            .collect();
+        let number = (301..)
+            .map(|n| format!("A{n}"))
+            .find(|n| !used.contains(n))
+            .expect("unbounded");
+        let e = Element::new("New Sheet", ElementKind::Sheet(Sheet::a(number, "A3")));
+        let id = e.id;
+        let r = self.doc.commit(Transaction::new("New sheet").insert(e));
+        self.active_view = Some(id);
+        self.selection = Some(id);
+        self.report(
+            r,
+            "New A3 sheet. Use Place view… in the toolbar to put views on it.",
+        );
+    }
+
+    fn new_schedule(&mut self, category: ScheduleCategory) {
+        let label = category.label();
+        let e = Element::new(
+            format!("{} Schedule", &label[..label.len() - 1]),
+            ElementKind::View(View::schedule(category)),
+        );
+        let id = e.id;
+        let r = self
+            .doc
+            .commit(Transaction::new(format!("New {} schedule", label.to_lowercase())).insert(e));
+        self.active_view = Some(id);
+        self.report(
+            r,
+            "New schedule. Edit cells to change the model, or place it on a sheet with Place view….",
+        );
+    }
+
+    fn materials(&self) -> Vec<(ElementId, String)> {
+        self.doc
+            .model()
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Material(_)))
+            .map(|e| (e.id, e.name.clone()))
+            .collect()
+    }
+
+    /// A material picker; "New material" adds one and picks it.
+    fn material_combo(&mut self, ui: &mut egui::Ui, current: &mut Option<ElementId>) -> bool {
+        let materials = self.materials();
+        let name = current
+            .and_then(|id| materials.iter().find(|m| m.0 == id))
+            .map_or("By type", |m| m.1.as_str())
+            .to_string();
+        let mut changed = false;
+        let mut create = false;
+        egui::ComboBox::from_label("Material")
+            .selected_text(name)
+            .show_ui(ui, |ui| {
+                changed |= ui.selectable_value(current, None, "By type").changed();
+                for (id, n) in &materials {
+                    changed |= ui.selectable_value(current, Some(*id), n).changed();
+                }
+                ui.separator();
+                create = ui.button("New material…").clicked();
+            });
+        if create {
+            let e = Element::new(
+                format!("Material {}", materials.len() + 1),
+                ElementKind::Material(Material {
+                    hatch: Hatch::Diagonal,
+                    color: [0.8, 0.8, 0.8],
+                }),
+            );
+            *current = Some(e.id);
+            let r = self.doc.commit(Transaction::new("New material").insert(e));
+            self.report(
+                r,
+                "New material. Select it in the Model list to set its hatch and colour.",
+            );
+            changed = true;
+        }
+        changed
     }
 
     fn outliner(&mut self, ui: &mut egui::Ui) {
@@ -621,8 +1041,14 @@ impl CreaBimApp {
                 }
             }
             for (class, items) in groups {
-                egui::CollapsingHeader::new(format!("{class} ({})", items.len()))
-                    .default_open(class == "IfcBuildingStorey")
+                let opens = class == "View" || class == "Sheet";
+                let title = match class.as_str() {
+                    "View" => format!("Views ({}), click to open", items.len()),
+                    "Sheet" => format!("Sheets ({}), click to open", items.len()),
+                    _ => format!("{class} ({})", items.len()),
+                };
+                egui::CollapsingHeader::new(title)
+                    .default_open(class == "IfcBuildingStorey" || opens)
                     .show(ui, |ui| {
                         for (id, name) in items {
                             if ui
@@ -631,6 +1057,9 @@ impl CreaBimApp {
                             {
                                 self.selection = Some(id);
                                 self.face = None;
+                                if opens {
+                                    self.active_view = Some(id);
+                                }
                             }
                         }
                     });
@@ -694,6 +1123,9 @@ impl CreaBimApp {
                 if num(ui, "Base offset", &mut w.base_offset, -10.0, 50.0) {
                     label = "Wall base offset"
                 }
+                if self.material_combo(ui, &mut w.material) {
+                    label = "Wall material"
+                }
                 ui.label(format!("Length {:.2} m", w.length()));
                 if num(ui, "Start X", &mut w.start.x, -1e4, 1e4)
                     | num(ui, "Start Y", &mut w.start.y, -1e4, 1e4)
@@ -710,6 +1142,9 @@ impl CreaBimApp {
                 if num(ui, "Thickness", &mut s.thickness, 0.02, 3.0) {
                     label = "Slab thickness"
                 }
+                if self.material_combo(ui, &mut s.material) {
+                    label = "Slab material"
+                }
                 ui.label(format!("{} boundary points", s.boundary.len()));
             }
             ElementKind::Opening(o) => {
@@ -724,6 +1159,245 @@ impl CreaBimApp {
                 }
                 if num(ui, "Offset along wall", &mut o.offset, 0.0, 1e4) {
                     label = "Move opening"
+                }
+            }
+            ElementKind::View(v) if matches!(v.kind, ViewKind::Schedule { .. }) => {
+                if let ViewKind::Schedule { category } = &mut v.kind {
+                    egui::ComboBox::from_label("Lists")
+                        .selected_text(category.label())
+                        .show_ui(ui, |ui| {
+                            for c in ScheduleCategory::ALL {
+                                if ui.selectable_value(category, c, c.label()).changed() {
+                                    label = "Schedule category"
+                                }
+                            }
+                        });
+                }
+                if self.active_view != Some(id) && ui.button("Open this schedule").clicked() {
+                    self.active_view = Some(id);
+                }
+            }
+            ElementKind::View(v) => {
+                ui.horizontal(|ui| {
+                    ui.label("Scale 1:");
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut v.scale)
+                                .speed(1.0)
+                                .range(1.0..=5000.0),
+                        )
+                        .changed()
+                    {
+                        label = "View scale"
+                    }
+                });
+                match &mut v.kind {
+                    ViewKind::Plan { cut_height, .. } => {
+                        if num(ui, "Cut height", cut_height, 0.1, 50.0) {
+                            label = "View cut height"
+                        }
+                    }
+                    ViewKind::Section {
+                        start,
+                        end,
+                        depth,
+                        cut,
+                    } => {
+                        if ui
+                            .checkbox(cut, "Cut through the model (section)")
+                            .changed()
+                        {
+                            label = "Section or elevation"
+                        }
+                        if num(ui, "Depth", depth, 0.1, 500.0) {
+                            label = "View depth"
+                        }
+                        if num(ui, "Start X", &mut start.x, -1e4, 1e4)
+                            | num(ui, "Start Y", &mut start.y, -1e4, 1e4)
+                            | num(ui, "End X", &mut end.x, -1e4, 1e4)
+                            | num(ui, "End Y", &mut end.y, -1e4, 1e4)
+                        {
+                            label = "Move section line"
+                        }
+                    }
+                    ViewKind::Axonometric { azimuth, altitude } => {
+                        let deg = |ui: &mut egui::Ui, text: &str, v: &mut f64, lo: f64, hi: f64| {
+                            ui.horizontal(|ui| {
+                                ui.label(text);
+                                ui.add(
+                                    egui::DragValue::new(v)
+                                        .speed(0.5)
+                                        .range(lo..=hi)
+                                        .suffix("°"),
+                                )
+                                .changed()
+                            })
+                            .inner
+                        };
+                        if deg(ui, "Azimuth", azimuth, 0.0, 360.0)
+                            | deg(ui, "Altitude", altitude, -89.0, 89.0)
+                        {
+                            label = "Orbit 3D view"
+                        }
+                        ui.label(egui::RichText::new("Or drag in the view to orbit it.").weak());
+                    }
+                    ViewKind::Schedule { .. } => {}
+                }
+                if matches!(
+                    v.kind,
+                    ViewKind::Section { .. } | ViewKind::Axonometric { .. }
+                ) {
+                    let mut shaded = v.style == ViewStyle::Shaded;
+                    if ui.checkbox(&mut shaded, "Shaded surfaces").changed() {
+                        v.style = if shaded {
+                            ViewStyle::Shaded
+                        } else {
+                            ViewStyle::HiddenLine
+                        };
+                        label = "View style"
+                    }
+                }
+                if self.active_view != Some(id) && ui.button("Open this view").clicked() {
+                    self.active_view = Some(id);
+                }
+            }
+            ElementKind::Sheet(sh) => {
+                ui.horizontal(|ui| {
+                    ui.label("Number");
+                    if ui.text_edit_singleline(&mut sh.number).changed() {
+                        label = "Sheet number"
+                    }
+                });
+                let current = sh.size_name().unwrap_or("Custom");
+                egui::ComboBox::from_label("Paper")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (name, w, h) in Sheet::SIZES {
+                            if ui.selectable_label(current == *name, *name).clicked() {
+                                (sh.width, sh.height) = (*w, *h);
+                                label = "Sheet size"
+                            }
+                        }
+                    });
+                if self.active_view != Some(id) && ui.button("Open this sheet").clicked() {
+                    self.active_view = Some(id);
+                }
+            }
+            ElementKind::Viewport(vp) => {
+                let view_name = self
+                    .doc
+                    .model()
+                    .get(vp.view)
+                    .map(|e| e.name.clone())
+                    .unwrap_or_default();
+                ui.label(format!("Shows {view_name}"));
+                let mm = |ui: &mut egui::Ui, text: &str, v: &mut f64| {
+                    ui.horizontal(|ui| {
+                        ui.label(text);
+                        ui.add(egui::DragValue::new(v).speed(1.0).suffix(" mm"))
+                            .changed()
+                    })
+                    .inner
+                };
+                if mm(ui, "Centre X", &mut vp.center.x) | mm(ui, "Centre Y", &mut vp.center.y) {
+                    label = "Move view on sheet"
+                }
+                let mut cropped = vp.crop.is_some();
+                if ui.checkbox(&mut cropped, "Crop the view").changed() {
+                    vp.crop = if cropped {
+                        let view = vp.view;
+                        self.drawing(view)
+                            .and_then(|d| d.bounds())
+                            .map(|(lo, hi)| [lo, hi])
+                    } else {
+                        None
+                    };
+                    label = "Crop view"
+                }
+                if let Some([lo, hi]) = &mut vp.crop {
+                    if num(ui, "Crop left", &mut lo.x, -1e4, hi.x - 0.1)
+                        | num(ui, "Crop right", &mut hi.x, lo.x + 0.1, 1e4)
+                        | num(ui, "Crop bottom", &mut lo.y, -1e4, hi.y - 0.1)
+                        | num(ui, "Crop top", &mut hi.y, lo.y + 0.1, 1e4)
+                    {
+                        label = "Crop view"
+                    }
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "Drag the view on the sheet to move it; double-click it to edit the model through it.",
+                    )
+                    .weak(),
+                );
+                if ui.button("Open the view itself").clicked() {
+                    self.active_view = Some(vp.view);
+                }
+            }
+            ElementKind::Material(m) => {
+                egui::ComboBox::from_label("Cut hatch")
+                    .selected_text(m.hatch.label())
+                    .show_ui(ui, |ui| {
+                        for h in Hatch::ALL {
+                            if ui.selectable_value(&mut m.hatch, h, h.label()).changed() {
+                                label = "Material hatch"
+                            }
+                        }
+                    });
+                ui.horizontal(|ui| {
+                    ui.label("Colour");
+                    if ui.color_edit_button_rgb(&mut m.color).changed() {
+                        label = "Material colour"
+                    }
+                });
+                let users = self
+                    .doc
+                    .model()
+                    .iter()
+                    .filter(|u| {
+                        creabim_core::material_of(self.doc.model(), u)
+                            .is_some_and(|(x, _)| x.id == id)
+                    })
+                    .count();
+                ui.label(egui::RichText::new(format!("Used by {users} elements.")).weak());
+            }
+            ElementKind::Dimension(d) => {
+                let measured = self
+                    .drawing(d.view)
+                    .and_then(|dr| {
+                        dr.items.into_iter().find_map(|i| match i {
+                            PlanItem::Dimension { id: i, text, .. } if i == id => Some(text),
+                            _ => None,
+                        })
+                    })
+                    .unwrap_or_else(|| "-".into());
+                ui.label(format!("Measures {measured} mm"));
+                let attached = [d.a.host, d.b.host].iter().flatten().count();
+                ui.label(
+                    egui::RichText::new(match attached {
+                        0 => "Not attached: it stays where it was drawn.".to_string(),
+                        n => format!("Attached at {n} end(s): it follows what it measures."),
+                    })
+                    .weak(),
+                );
+                if num(ui, "Line offset", &mut d.offset, -100.0, 100.0) {
+                    label = "Move dimension line"
+                }
+            }
+            ElementKind::Tag(t) => {
+                let host = self
+                    .doc
+                    .model()
+                    .get(t.host)
+                    .map(|e| e.name.clone())
+                    .unwrap_or_default();
+                ui.label(format!("Tags {host}"));
+                if num(ui, "Offset X", &mut t.offset.x, -100.0, 100.0)
+                    | num(ui, "Offset Y", &mut t.offset.y, -100.0, 100.0)
+                {
+                    label = "Move tag"
+                }
+                if ui.button("Select the tagged element").clicked() {
+                    self.selection = Some(t.host);
                 }
             }
             ElementKind::Grid(g) => {
@@ -747,6 +1421,9 @@ impl CreaBimApp {
                             }
                         }
                     });
+                if self.material_combo(ui, &mut m.material) {
+                    label = "Mesh material"
+                }
                 if num(ui, "X", &mut m.origin.x, -1e4, 1e4)
                     | num(ui, "Y", &mut m.origin.y, -1e4, 1e4)
                     | num(ui, "Z", &mut m.origin.z, -1e3, 1e3)
@@ -820,7 +1497,7 @@ impl CreaBimApp {
         ui.add_space(10.0);
         let deps = self.doc.model().dependents(id).len();
         let text = if deps > 0 {
-            format!("Delete (and {deps} hosted)")
+            format!("Delete (and {deps} attached)")
         } else {
             "Delete".into()
         };
@@ -949,4 +1626,36 @@ fn with_extension(path: &str, ext: &str) -> String {
     dir.join(format!("{}.{ext}", stem(path)))
         .to_string_lossy()
         .into_owned()
+}
+
+/// Give every level a plan view so older files open with something to show.
+fn with_plan_views(model: Model) -> Model {
+    let planned: Vec<ElementId> = model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::View(View {
+                kind: ViewKind::Plan { level, .. },
+                ..
+            }) => Some(*level),
+            _ => None,
+        })
+        .collect();
+    let mut tx = Transaction::new("Add plan views");
+    let mut any = false;
+    for (e, _) in model.levels() {
+        if !planned.contains(&e.id) {
+            tx = tx.insert(Element::new(
+                format!("{} plan", e.name),
+                ElementKind::View(View::plan(e.id)),
+            ));
+            any = true;
+        }
+    }
+    if !any {
+        return model;
+    }
+    let mut doc = Document::from_model(model);
+    // a failed insert leaves the model as it was, which still opens
+    let _ = doc.commit(tx);
+    doc.model().clone()
 }

@@ -21,6 +21,7 @@ fn wall(level: ElementId) -> Element {
             thickness: 0.2,
             height: 3.0,
             base_offset: 0.0,
+            material: None,
         }),
     )
 }

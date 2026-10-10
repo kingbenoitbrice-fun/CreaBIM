@@ -20,6 +20,8 @@ fn sample_house_exports_a_complete_ifc4_file() {
     assert_eq!(count("IFCRELVOIDSELEMENT"), 13);
     assert_eq!(count("IFCRELFILLSELEMENT"), 13);
     assert_eq!(count("IFCROOF"), 1);
+    assert_eq!(count("IFCMATERIAL"), 4);
+    assert_eq!(count("IFCRELASSOCIATESMATERIAL"), 4);
 
     // Element GlobalIds are the model's own ids, so re-exports keep identity.
     for e in model.iter().filter(|e| e.ifc_class() == "IfcWall") {

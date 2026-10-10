@@ -172,6 +172,8 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
 
     let mut contained: HashMap<Option<ElementId>, Vec<Ref>> = HashMap::new();
     let mut wall_refs: HashMap<ElementId, (Ref, Ref)> = HashMap::new(); // entity, placement
+    let joins = creabim_core::wall_joins(model);
+    let mut by_material: HashMap<ElementId, Vec<Ref>> = HashMap::new();
 
     for e in model.iter() {
         match &e.kind {
@@ -185,18 +187,35 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     DVec3::new(wall.start.x, wall.start.y, wall.base_offset),
                     Some(DVec3::new(d.x, d.y, 0.0)),
                 );
+                // footprint in wall-local coordinates, following its joins
+                let ends = joins.get(&e.id).copied().unwrap_or_default();
+                let t = wall.thickness / 2.0;
+                let local = [
+                    DVec2::new(ends.start_u(1.0), t),
+                    DVec2::new(ends.end_u(wall, 1.0), t),
+                    DVec2::new(ends.end_u(wall, -1.0), -t),
+                    DVec2::new(ends.start_u(-1.0), -t),
+                ];
+                let mut pts: Vec<Ref> = local
+                    .iter()
+                    .map(|p| c.w.add("IFCCARTESIANPOINT", point2(p.x, p.y)))
+                    .collect();
+                pts.push(pts[0]);
+                let poly = c.w.add("IFCPOLYLINE", list(&pts));
+                let prof =
+                    c.w.add("IFCARBITRARYCLOSEDPROFILEDEF", format!(".AREA.,$,{poly}"));
                 let pos = c.placement3d(DVec3::ZERO, None, None);
-                let solid = c.rect_extrusion(
-                    DVec2::new(wall.length() / 2.0, 0.0),
-                    wall.length(),
-                    wall.thickness,
-                    pos,
-                    wall.height,
+                let solid = c.w.add(
+                    "IFCEXTRUDEDAREASOLID",
+                    format!("{prof},{pos},{},{}", c.z_axis, real(wall.height)),
                 );
                 let shape = c.shape("SweptSolid", &[solid]);
                 let r = product(&mut c, "IFCWALL", e, pl, shape, ",$,.STANDARD.");
                 wall_refs.insert(e.id, (r, pl));
                 contained.entry(Some(wall.level)).or_default().push(r);
+                if let Some((m, _)) = creabim_core::material_of(model, e) {
+                    by_material.entry(m.id).or_default().push(r);
+                }
             }
             ElementKind::Slab(slab) => {
                 let Some(&(_, spl)) = storeys.get(&slab.level) else {
@@ -220,6 +239,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let shape = c.shape("SweptSolid", &[solid]);
                 let r = product(&mut c, "IFCSLAB", e, pl, shape, ",$,.FLOOR.");
                 contained.entry(Some(slab.level)).or_default().push(r);
+                if let Some((m, _)) = creabim_core::material_of(model, e) {
+                    by_material.entry(m.id).or_default().push(r);
+                }
             }
             ElementKind::FreeMesh(f) => {
                 let spl = f
@@ -256,6 +278,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let tail = ",$,.NOTDEFINED.";
                 let r = product(&mut c, class, e, pl, shape, tail);
                 contained.entry(f.level).or_default().push(r);
+                if let Some((m, _)) = creabim_core::material_of(model, e) {
+                    by_material.entry(m.id).or_default().push(r);
+                }
             }
             _ => {}
         }
@@ -335,6 +360,19 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             _ => continue,
         };
         contained.entry(Some(level)).or_default().push(fill);
+    }
+
+    // Materials, each associated with the elements made of it.
+    for e in model.iter() {
+        let Some(users) = by_material.get(&e.id) else {
+            continue;
+        };
+        let m = c.w.add("IFCMATERIAL", format!("{},$,$", string(&e.name)));
+        let g = c.guid();
+        c.w.add(
+            "IFCRELASSOCIATESMATERIAL",
+            format!("{g},$,$,$,{},{m}", list(users)),
+        );
     }
 
     // Spatial structure.
