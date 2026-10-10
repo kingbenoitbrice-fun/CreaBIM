@@ -4,7 +4,7 @@ CreaBIM is an open-source, BIM-native architectural modeler: one model for freef
 
 ![CreaBIM showing the sample house in 3D beside its generated ground-floor plan](docs/screenshot.png)
 
-**Status: Phase 1 in progress (dimensions, tags and schedules).** It proves the core architecture end to end. It is not yet a tool for real projects.
+**Status: Phase 1 in progress (modifier stack, sketches, move, rotate and stretch).** It proves the core architecture end to end. It is not yet a tool for real projects.
 
 ## What works today
 
@@ -19,6 +19,9 @@ CreaBIM is an open-source, BIM-native architectural modeler: one model for freef
 - **Sections and elevations generated from the model:** cut walls, slabs and openings are drawn heavy; what lies beyond is projected with hidden lines removed. Level datums are labelled. Section and elevation marks appear in plans. Draw new ones with the *Section* and *Elevation* tools, in plans or inside another section, and drag a selected section line by its ends or middle. Walls, doors, windows, slabs and masses can be drawn in sections and elevations too. Progress screenshots are in [docs/evolution](docs/evolution).
 - **BIM elements:** levels, grids, walls, slabs, doors and windows. Doors and windows are hosted by walls and cut real openings.
 - **Freeform meshes:** add a mass, click a face in 3D and extrude (E), taper, move or subdivide it (Catmull-Clark). Give any mesh an IFC class such as `IfcRoof` and it exports as that.
+- **Modifier stack:** give a mass array, mirror, solidify and subdivision modifiers. They change its shape without touching its mesh, so you can turn them off, reorder them or change their values at any time, and apply the top one to make it permanent. Faces stay clickable through the modifiers.
+- **Sketches on workplanes:** the Sketch tool draws lines on any face in 3D, on a level in a plan, or on the section plane in a section. A closed sketch extrudes (E) into a mass; an open one into a surface that Solidify thickens.
+- **Move, rotate, scale, duplicate and stretch:** G, R and S (and Shift+D to copy) work Blender-style on the selected element in 3D, plans and sections, with axis keys and typed values. In plans, drag a selected element to move it, or its square grips to stretch walls, slabs and grids; joined walls follow.
 - **Undo and redo** for every edit. Dragging a value in the properties panel undoes as one step.
 - **Plan drawings generated from the model:** walls cut at a set height, door swings, window symbols, slabs and masses in projection. Export as SVG at 1:100.
 - **IFC4 export** with storeys, walls, slabs, openings, doors, windows and tessellated freeform elements. CI checks every export against the IFC schema and builds its geometry with [IfcOpenShell](https://ifcopenshell.org).
@@ -68,6 +71,10 @@ python3 tools/validate_ifc.py house.ifc                          # needs: pip in
 | Crop a view on a sheet | Select the viewport, drag the dashed frame's edge handles, or set the crop in Properties |
 | Materials | Select a material in the model list to change its hatch and colour; pick a wall's or slab's material in Properties |
 | Freeform mass | Mass tool, click to place; click a face in 3D, then E to extrude |
+| Modifiers | Select a mass, then *Add modifier…* in Properties. Tick to turn one off; Up, Down, Remove; Apply bakes the top one into the mesh |
+| Sketch | Sketch tool. In 3D, click a face to sketch on it (or the ground); in a plan or section, click on the drawing. Click corners; click the first corner to close it, Enter or right-click to leave it open. Shift keeps lines square. Then E extrudes it by the distance in Properties |
+| Move, rotate, scale | Pointer over a view, selected element: G, R or S. Move the pointer or type a value; X, Y or Z keeps to an axis; Ctrl snaps; click or Enter finishes, Esc or right-click cancels. Shift+D copies first |
+| Stretch, drag (plan) | Drag a selected element to move it, or its square grips: wall ends, slab corners and edge midpoints, grid ends |
 | Undo, redo | Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y |
 | Delete | Delete key (also removes doors, windows, tags and dimensions attached to it) |
 
@@ -77,13 +84,13 @@ Files: *File → Save/Open* use the path in the toolbar (`.creabim.json`). *Expo
 
 | Crate | Role |
 | --- | --- |
-| `creabim-core` | Element store, edit transactions, undo history, Blender-style edit mesh. Every edit is a reversible op, which later also powers version history and live collaboration. |
+| `creabim-core` | Element store, edit transactions, undo history, Blender-style edit mesh, modifier stack, workplanes and transforms. Every edit is a reversible op, which later also powers version history and live collaboration. |
 | `creabim-geom` | Element geometry (walls with openings, slabs, meshes), plan drawing generation, picking. This is where OpenCascade plugs in for NURBS and B-rep work. |
 | `creabim-ifc` | IFC4 STEP writer. Element ids are IFC GlobalIds, so re-exports keep identity. |
 | `creabim-app` | Desktop app: egui UI, wgpu 3D viewport rendered offscreen so any number of live views can exist. |
 | `creabim-cli` | Command-line export tools. |
 
-Next steps follow the roadmap's Phase 1 plan: a modifier stack and workplane sketches, a SQLite project file with IFC import, and a Windows installer.
+Next steps follow the roadmap's Phase 1 plan: a SQLite project file with IFC import, then a Windows installer.
 
 ## License
 

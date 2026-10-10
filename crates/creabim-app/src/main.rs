@@ -2,10 +2,12 @@
 
 mod app;
 mod camera;
+mod modal;
 mod planview;
 mod render3d;
 mod schedulepane;
 mod sheetview;
+mod sketch;
 mod textures;
 
 fn main() -> eframe::Result {

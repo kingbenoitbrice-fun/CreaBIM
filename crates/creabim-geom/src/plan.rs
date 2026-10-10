@@ -635,16 +635,29 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                     },
                 );
             }
+            ElementKind::Sketch(sk) if sk.level == Some(level) => {
+                for (a, b) in sk.segments() {
+                    if a.truncate().distance(b.truncate()) > 1e-6 {
+                        items.push(PlanItem::Line {
+                            id: e.id,
+                            pen: Pen::Symbol,
+                            a: a.truncate(),
+                            b: b.truncate(),
+                        });
+                    }
+                }
+            }
             ElementKind::FreeMesh(f) if f.level == Some(level) => {
                 let mut seen = std::collections::HashSet::new();
-                for face in &f.mesh.faces {
+                let mesh = f.evaluated().mesh;
+                for face in &mesh.faces {
                     for i in 0..face.len() {
                         let (a, b) = (face[i], face[(i + 1) % face.len()]);
                         if !seen.insert((a.min(b), a.max(b))) {
                             continue;
                         }
-                        let pa = f.mesh.vertices[a as usize] + f.origin;
-                        let pb = f.mesh.vertices[b as usize] + f.origin;
+                        let pa = mesh.vertices[a as usize] + f.origin;
+                        let pb = mesh.vertices[b as usize] + f.origin;
                         if pa.truncate().distance(pb.truncate()) < 1e-6 {
                             continue;
                         }

@@ -250,8 +250,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     .map(|s| s.1)
                     .unwrap_or(bldg_pl);
                 let pl = c.local_placement(Some(spl), f.origin, None);
-                let coords: Vec<String> = f
-                    .mesh
+                // the shape as shown, with its modifiers applied
+                let mesh = f.evaluated().mesh;
+                let coords: Vec<String> = mesh
                     .vertices
                     .iter()
                     .map(|v| point3(v.x, v.y, v.z))
@@ -259,14 +260,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let pts =
                     c.w.add("IFCCARTESIANPOINTLIST3D", format!("({})", coords.join(",")));
                 let mut tris = Vec::new();
-                for face in &f.mesh.faces {
-                    for i in 1..face.len() - 1 {
-                        tris.push(format!(
-                            "({},{},{})",
-                            face[0] + 1,
-                            face[i] + 1,
-                            face[i + 1] + 1
-                        ));
+                for face in 0..mesh.faces.len() {
+                    for [a, b, d] in mesh.face_triangles(face) {
+                        tris.push(format!("({},{},{})", a + 1, b + 1, d + 1));
                     }
                 }
                 let fs = c.w.add(
