@@ -11,20 +11,26 @@ pub mod id;
 pub mod joins;
 pub mod marks;
 pub mod model;
+pub mod modifiers;
 pub mod ops;
+pub mod polygon;
 pub mod sample;
+pub mod transform;
 
 pub use document::Document;
 pub use editmesh::EditMesh;
 pub use element::{
     Dimension, Element, ElementKind, FreeMesh, Grid, Hatch, HostPoint, Level, Material, Opening,
-    OpeningKind, ScheduleCategory, Sheet, Slab, Tag, View, ViewKind, ViewStyle, Viewport, Wall,
+    OpeningKind, ScheduleCategory, Sheet, Sketch, Slab, Tag, View, ViewKind, ViewStyle, Viewport,
+    Wall, Workplane,
 };
 pub use id::ElementId;
 pub use joins::{wall_joins, WallEnds};
 pub use marks::{marks, material_of};
 pub use model::Model;
+pub use modifiers::{Axis, Modifier, ModifierKind};
 pub use ops::{Op, Transaction};
+pub use transform::Xform;
 
 /// Errors raised when an edit would leave the model inconsistent.
 #[derive(Debug, thiserror::Error, PartialEq)]

@@ -164,19 +164,54 @@ pub fn sample_house() -> Model {
     tx = tx.insert(Element::new(
         "Entrance Canopy",
         ElementKind::FreeMesh(FreeMesh {
-            level: Some(g),
-            origin: DVec3::new(2.1, -0.95, 2.6),
-            mesh: canopy,
             ifc_class: "IfcRoof".into(),
             material: Some(timber_id),
+            ..FreeMesh::new(Some(g), DVec3::new(2.1, -0.95, 2.6), canopy)
         }),
     ));
+
+    // A garden pergola built with modifiers: one post repeated by two
+    // arrays into four, and one rafter repeated along the beam.
+    let array = |count, x, y| {
+        Modifier::new(ModifierKind::Array {
+            count,
+            offset: DVec3::new(x, y, 0.0),
+        })
+    };
+    let pergola = DVec3::new(6.5, -5.4, 0.0);
+    tx = tx
+        .insert(Element::new(
+            "Pergola Posts",
+            ElementKind::FreeMesh(FreeMesh {
+                ifc_class: "IfcColumn".into(),
+                material: Some(timber_id),
+                modifiers: vec![array(2, 3.0, 0.0), array(2, 0.0, 2.0)],
+                ..FreeMesh::new(
+                    Some(g),
+                    pergola,
+                    EditMesh::cuboid(DVec3::new(0.15, 0.15, 2.4)),
+                )
+            }),
+        ))
+        .insert(Element::new(
+            "Pergola Rafters",
+            ElementKind::FreeMesh(FreeMesh {
+                ifc_class: "IfcBeam".into(),
+                material: Some(timber_id),
+                modifiers: vec![array(7, 0.5, 0.0)],
+                ..FreeMesh::new(
+                    Some(g),
+                    pergola + DVec3::new(0.0, 1.0, 2.4),
+                    EditMesh::cuboid(DVec3::new(0.08, 2.8, 0.2)),
+                )
+            }),
+        ));
 
     // Views: a plan per level, two sections, four elevations and a 3D view.
     let plan_g = Element::new("Ground Floor plan", ElementKind::View(View::plan(g)));
     let plan_f = Element::new("First Floor plan", ElementKind::View(View::plan(f)));
     let mut axo = View::axonometric(35.0, 30.0);
-    axo.scale = 50.0;
+    axo.scale = 60.0;
     let axo = Element::new("3D View South-East", ElementKind::View(axo));
     let (plan_g_id, plan_f_id) = (plan_g.id, plan_f.id);
     // a cropped 1:50 plan of the entrance, for the details sheet

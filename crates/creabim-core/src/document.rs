@@ -109,6 +109,18 @@ impl Document {
         true
     }
 
+    /// Take back the last edit for good, without offering it for redo: for
+    /// a drag or a keyboard move that was cancelled.
+    pub fn discard_last(&mut self) -> bool {
+        let Some(tx) = self.undo.pop() else {
+            return false;
+        };
+        tx.inverse()
+            .apply(&mut self.model)
+            .expect("undoing a committed transaction cannot fail");
+        true
+    }
+
     pub fn redo(&mut self) -> bool {
         let Some(tx) = self.redo.pop() else {
             return false;
