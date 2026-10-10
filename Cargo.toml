@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/kingbenoitbrice-fun/creabim"
+rust-version = "1.85"
+
+[workspace.dependencies]
+creabim-core = { path = "crates/creabim-core" }
+creabim-geom = { path = "crates/creabim-geom" }
+creabim-ifc = { path = "crates/creabim-ifc" }
+glam = { version = "0.30", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+indexmap = { version = "2", features = ["serde"] }
+thiserror = "2"
