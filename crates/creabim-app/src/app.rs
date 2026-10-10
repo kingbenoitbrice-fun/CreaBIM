@@ -1,17 +1,20 @@
 use crate::camera::OrbitCamera;
-use crate::planview::{self, PlanState, Tool};
+use crate::planview::{self, PaneKind, PlanState, Tool};
 use crate::render3d::{Vertex, Viewport3d};
 use creabim_core::{
     element::FREE_MESH_CLASSES, sample::sample_house, Document, Element, ElementId, ElementKind,
-    Model, Transaction,
+    Model, Transaction, View, ViewKind,
 };
-use creabim_geom::{build_scene, pick, plan::Pen, plan_view, PlanItem, SceneItem};
+use creabim_geom::{
+    build_scene, pick, plan::Pen, section::view_drawing, section::Drawing, PlanItem, SceneItem,
+};
 use eframe::egui::{self, Color32, Rect, Sense, Vec2};
 use eframe::egui_wgpu;
 use glam::{DVec2, Vec2 as GVec2};
+use std::collections::HashMap;
 
 /// What the 3D geometry was last built from; rebuild when any of it changes.
-/// (model revision, selection, selected face, plan shown in 3D, active level)
+/// (model revision, selection, selected face, drawing shown in 3D, active view)
 type GeometryKey = (
     u64,
     Option<ElementId>,
@@ -37,7 +40,10 @@ pub struct CreaBimApp {
     selection: Option<ElementId>,
     /// Selected face when a free mesh is selected (mesh edit mode).
     face: Option<usize>,
-    level: Option<ElementId>,
+    /// The view shown in the 2D pane (a plan, section or elevation).
+    active_view: Option<ElementId>,
+    /// Generated drawings by view, with the model revision they were made at.
+    drawings: HashMap<ElementId, (u64, Drawing)>,
     camera: OrbitCamera,
     /// Aspect ratio of the 3D view as last drawn, for framing.
     aspect: f32,
@@ -63,7 +69,8 @@ impl CreaBimApp {
             doc: Document::new(),
             selection: None,
             face: None,
-            level: None,
+            active_view: None,
+            drawings: HashMap::new(),
             camera: OrbitCamera::default(),
             aspect: 0.65,
             viewport,
@@ -81,12 +88,53 @@ impl CreaBimApp {
     }
 
     fn load_model(&mut self, model: Model) {
-        self.doc = Document::from_model(model);
+        self.doc = Document::from_model(with_plan_views(model));
         self.selection = None;
         self.face = None;
-        self.level = self.doc.model().levels().next().map(|(e, _)| e.id);
+        self.active_view = None;
+        self.drawings.clear();
         self.geometry_key = None;
+        self.drop_stale_selection();
         self.frame_all();
+    }
+
+    /// Every view in the model, plans first, in model order.
+    fn views(&self) -> Vec<(ElementId, String, bool)> {
+        let mut v: Vec<_> = self
+            .doc
+            .model()
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::View(v) => Some((
+                    e.id,
+                    e.name.clone(),
+                    matches!(v.kind, ViewKind::Plan { .. }),
+                )),
+                _ => None,
+            })
+            .collect();
+        v.sort_by_key(|(_, _, plan)| !plan);
+        v
+    }
+
+    fn view(&self, id: ElementId) -> Option<&View> {
+        match self.doc.model().get(id).map(|e| &e.kind) {
+            Some(ElementKind::View(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// The drawing of a view, regenerated only when the model has changed.
+    fn drawing(&mut self, id: ElementId) -> Option<Drawing> {
+        let revision = self.doc.model().revision();
+        if let Some((r, d)) = self.drawings.get(&id) {
+            if *r == revision {
+                return Some(d.clone());
+            }
+        }
+        let d = view_drawing(self.doc.model(), id)?;
+        self.drawings.insert(id, (revision, d.clone()));
+        Some(d)
     }
 
     fn frame_all(&mut self) {
@@ -97,9 +145,8 @@ impl CreaBimApp {
             .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
         if let Some((lo, hi)) = bounds {
             self.camera.frame(lo, hi, self.aspect);
-            self.plan.center =
-                DVec2::new(((lo.x + hi.x) / 2.0) as f64, ((lo.y + hi.y) / 2.0) as f64);
         }
+        self.plan.cameras.clear();
     }
 
     fn report(&mut self, r: Result<(), impl ToString>, ok: impl Into<String>) {
@@ -152,11 +199,8 @@ impl CreaBimApp {
             self.selection = None;
             self.face = None;
         }
-        if self
-            .level
-            .is_none_or(|id| self.doc.model().level(id).is_none())
-        {
-            self.level = self.doc.model().levels().next().map(|(e, _)| e.id);
+        if self.active_view.is_none_or(|id| self.view(id).is_none()) {
+            self.active_view = self.views().first().map(|v| v.0);
         }
     }
 
@@ -200,7 +244,7 @@ impl CreaBimApp {
             self.selection,
             self.face,
             self.plan_in_3d,
-            self.level,
+            self.active_view,
         );
         if self.geometry_key == Some(key) {
             return;
@@ -268,17 +312,34 @@ impl CreaBimApp {
         // 2D drawing shown in 3D space, on its level
         let mut overlay = Vec::new();
         if self.plan_in_3d {
-            if let Some(level) = self.level {
-                let z = self
-                    .doc
-                    .model()
-                    .level(level)
-                    .map_or(0.0, |l| l.elevation + self.plan.cut_height)
-                    as f32;
-                let plan = plan_view(self.doc.model(), level, self.plan.cut_height);
+            let placed = self.active_view.and_then(|id| {
+                let kind = self.view(id)?.kind.clone();
+                Some((kind, self.drawing(id)?))
+            });
+            if let Some((kind, plan)) = placed {
+                // drawing coordinates → world: plans lie flat at their cut
+                // height, sections stand on their section line
+                let to_world: Box<dyn Fn(DVec2) -> [f32; 3]> = match kind {
+                    ViewKind::Plan { level, cut_height } => {
+                        let z = self
+                            .doc
+                            .model()
+                            .level(level)
+                            .map_or(0.0, |l| l.elevation + cut_height)
+                            as f32;
+                        Box::new(move |p| [p.x as f32, p.y as f32, z])
+                    }
+                    ViewKind::Section { start, end, .. } => {
+                        let along = (end - start).normalize_or_zero();
+                        Box::new(move |p| {
+                            let w = start + along * p.x;
+                            [w.x as f32, w.y as f32, p.y as f32]
+                        })
+                    }
+                };
                 let mut seg = |a: DVec2, b: DVec2, c: [f32; 3]| {
-                    overlay.push(line_vertex([a.x as f32, a.y as f32, z], c));
-                    overlay.push(line_vertex([b.x as f32, b.y as f32, z], c));
+                    overlay.push(line_vertex(to_world(a), c));
+                    overlay.push(line_vertex(to_world(b), c));
                 };
                 for it in &plan.items {
                     let c = match it {
@@ -389,13 +450,24 @@ impl CreaBimApp {
     }
 
     fn show_plan(&mut self, ui: &mut egui::Ui, rect: Rect, background: Color32) {
-        let Some(level) = self.level else { return };
+        let Some(view) = self.active_view else { return };
+        let Some(kind) = self.view(view).map(|v| match v.kind {
+            ViewKind::Plan { level, .. } => PaneKind::Plan { level },
+            ViewKind::Section { .. } => PaneKind::Section,
+        }) else {
+            return;
+        };
+        let Some(drawing) = self.drawing(view) else {
+            return;
+        };
         let (before, revision) = (self.selection, self.doc.model().revision());
         if let Some(err) = planview::show(
             ui,
             rect,
             &mut self.doc,
-            level,
+            view,
+            kind,
+            &drawing,
             &mut self.plan,
             &mut self.selection,
             background,
@@ -404,6 +476,10 @@ impl CreaBimApp {
         } else if self.doc.model().revision() != revision {
             if let Some(label) = self.doc.undo_label() {
                 self.status = format!("{label}. Ctrl+Z to undo.");
+                if label.starts_with("Add Section") || label.starts_with("Add Elevation") {
+                    self.status
+                        .push_str(" Open it from the View list or the Views group.");
+                }
             }
         }
         if self.selection != before {
@@ -416,13 +492,14 @@ impl CreaBimApp {
         let name = self
             .doc
             .model()
-            .get(level)
+            .get(view)
             .map(|e| e.name.clone())
             .unwrap_or_default();
+        let scale = self.view(view).map_or(100.0, |v| v.scale);
         ui.painter().text(
             rect.left_top() + Vec2::new(8.0, 8.0),
             egui::Align2::LEFT_TOP,
-            format!("Plan · {name}"),
+            format!("{name}  ·  1:{scale:.0}"),
             egui::FontId::proportional(13.0),
             Color32::from_gray(80),
         );
@@ -478,19 +555,20 @@ impl CreaBimApp {
                     let r = std::fs::write(&out, creabim_ifc::export_ifc4(self.doc.model(), &opts));
                     self.report(r, format!("Exported {out}"));
                 }
-                if ui.button("Export plan as SVG").clicked() {
-                    if let Some(level) = self.level {
+                if ui.button("Export view as SVG").clicked() {
+                    if let Some(view) = self.active_view {
                         let name = self
                             .doc
                             .model()
-                            .get(level)
+                            .get(view)
                             .map(|e| e.name.replace(' ', "-"))
                             .unwrap_or_default();
+                        let scale = self.view(view).map_or(100.0, |v| v.scale);
                         let out = with_extension(&self.path, &format!("{name}.svg"));
-                        let svg =
-                            plan_view(self.doc.model(), level, self.plan.cut_height).to_svg(100.0);
-                        let r = std::fs::write(&out, svg);
-                        self.report(r, format!("Exported {out} at 1:100"));
+                        if let Some(d) = self.drawing(view) {
+                            let r = std::fs::write(&out, d.to_svg(scale));
+                            self.report(r, format!("Exported {out} at 1:{scale:.0}"));
+                        }
                     }
                 }
             });
@@ -531,7 +609,7 @@ impl CreaBimApp {
                 }
             });
             ui.menu_button("View", |ui| {
-                ui.label("Plan view");
+                ui.label("2D view");
                 ui.radio_value(
                     &mut self.placement,
                     PlanPlacement::Docked,
@@ -549,7 +627,7 @@ impl CreaBimApp {
                 );
                 ui.radio_value(&mut self.placement, PlanPlacement::Hidden, "Hidden");
                 ui.separator();
-                ui.checkbox(&mut self.plan_in_3d, "Show plan cut in 3D space");
+                ui.checkbox(&mut self.plan_in_3d, "Show the 2D view in 3D space");
                 if ui.button("Frame all").clicked() {
                     self.frame_all();
                 }
@@ -573,32 +651,44 @@ impl CreaBimApp {
                 }
             }
             ui.separator();
-            ui.label("Level:");
+            ui.label("View:");
             let current = self
-                .level
+                .active_view
                 .and_then(|id| self.doc.model().get(id))
                 .map(|e| e.name.clone())
                 .unwrap_or_default();
-            egui::ComboBox::from_id_salt("level")
+            let views = self.views();
+            egui::ComboBox::from_id_salt("view")
                 .selected_text(current)
+                .width(170.0)
                 .show_ui(ui, |ui| {
-                    let levels: Vec<(ElementId, String)> = self
-                        .doc
-                        .model()
-                        .levels()
-                        .map(|(e, _)| (e.id, e.name.clone()))
-                        .collect();
-                    for (id, name) in levels {
-                        ui.selectable_value(&mut self.level, Some(id), name);
+                    for (id, name, _) in views {
+                        ui.selectable_value(&mut self.active_view, Some(id), name);
                     }
                 });
-            ui.label("Cut height:");
-            ui.add(
-                egui::DragValue::new(&mut self.plan.cut_height)
-                    .speed(0.05)
-                    .range(0.1..=10.0)
-                    .suffix(" m"),
-            );
+            if let Some(id) = self.active_view {
+                if let Some(mut v) = self.view(id).cloned() {
+                    let (text, value) = match &mut v.kind {
+                        ViewKind::Plan { cut_height, .. } => ("Cut height:", cut_height),
+                        ViewKind::Section { depth, .. } => ("Depth:", depth),
+                    };
+                    ui.label(text);
+                    let changed = ui
+                        .add(
+                            egui::DragValue::new(value)
+                                .speed(0.05)
+                                .range(0.1..=200.0)
+                                .suffix(" m"),
+                        )
+                        .changed();
+                    if changed {
+                        let r = self.doc.edit_merged(id, "Change view", |e| {
+                            e.kind = ElementKind::View(v.clone())
+                        });
+                        self.report(r, "View changed.");
+                    }
+                }
+            }
             ui.label("Wall thickness:");
             ui.add(
                 egui::DragValue::new(&mut self.plan.wall_thickness)
@@ -621,8 +711,13 @@ impl CreaBimApp {
                 }
             }
             for (class, items) in groups {
-                egui::CollapsingHeader::new(format!("{class} ({})", items.len()))
-                    .default_open(class == "IfcBuildingStorey")
+                let title = if class == "View" {
+                    format!("Views ({}), click to open", items.len())
+                } else {
+                    format!("{class} ({})", items.len())
+                };
+                egui::CollapsingHeader::new(title)
+                    .default_open(class == "IfcBuildingStorey" || class == "View")
                     .show(ui, |ui| {
                         for (id, name) in items {
                             if ui
@@ -631,6 +726,9 @@ impl CreaBimApp {
                             {
                                 self.selection = Some(id);
                                 self.face = None;
+                                if class == "View" {
+                                    self.active_view = Some(id);
+                                }
                             }
                         }
                     });
@@ -724,6 +822,54 @@ impl CreaBimApp {
                 }
                 if num(ui, "Offset along wall", &mut o.offset, 0.0, 1e4) {
                     label = "Move opening"
+                }
+            }
+            ElementKind::View(v) => {
+                ui.horizontal(|ui| {
+                    ui.label("Scale 1:");
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut v.scale)
+                                .speed(1.0)
+                                .range(1.0..=5000.0),
+                        )
+                        .changed()
+                    {
+                        label = "View scale"
+                    }
+                });
+                match &mut v.kind {
+                    ViewKind::Plan { cut_height, .. } => {
+                        if num(ui, "Cut height", cut_height, 0.1, 50.0) {
+                            label = "View cut height"
+                        }
+                    }
+                    ViewKind::Section {
+                        start,
+                        end,
+                        depth,
+                        cut,
+                    } => {
+                        if ui
+                            .checkbox(cut, "Cut through the model (section)")
+                            .changed()
+                        {
+                            label = "Section or elevation"
+                        }
+                        if num(ui, "Depth", depth, 0.1, 500.0) {
+                            label = "View depth"
+                        }
+                        if num(ui, "Start X", &mut start.x, -1e4, 1e4)
+                            | num(ui, "Start Y", &mut start.y, -1e4, 1e4)
+                            | num(ui, "End X", &mut end.x, -1e4, 1e4)
+                            | num(ui, "End Y", &mut end.y, -1e4, 1e4)
+                        {
+                            label = "Move section line"
+                        }
+                    }
+                }
+                if self.active_view != Some(id) && ui.button("Open this view").clicked() {
+                    self.active_view = Some(id);
                 }
             }
             ElementKind::Grid(g) => {
@@ -949,4 +1095,36 @@ fn with_extension(path: &str, ext: &str) -> String {
     dir.join(format!("{}.{ext}", stem(path)))
         .to_string_lossy()
         .into_owned()
+}
+
+/// Give every level a plan view so older files open with something to show.
+fn with_plan_views(model: Model) -> Model {
+    let planned: Vec<ElementId> = model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::View(View {
+                kind: ViewKind::Plan { level, .. },
+                ..
+            }) => Some(*level),
+            _ => None,
+        })
+        .collect();
+    let mut tx = Transaction::new("Add plan views");
+    let mut any = false;
+    for (e, _) in model.levels() {
+        if !planned.contains(&e.id) {
+            tx = tx.insert(Element::new(
+                format!("{} plan", e.name),
+                ElementKind::View(View::plan(e.id)),
+            ));
+            any = true;
+        }
+    }
+    if !any {
+        return model;
+    }
+    let mut doc = Document::from_model(model);
+    // a failed insert leaves the model as it was, which still opens
+    let _ = doc.commit(tx);
+    doc.model().clone()
 }

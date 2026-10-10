@@ -9,6 +9,7 @@ pub mod mesh;
 pub mod pick;
 pub mod plan;
 pub mod scene;
+pub mod section;
 pub mod triangulate;
 pub mod wall;
 

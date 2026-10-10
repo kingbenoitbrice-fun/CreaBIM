@@ -74,7 +74,11 @@ impl PlanView {
                     *center - DVec2::splat(*radius),
                     *center + DVec2::splat(*radius),
                 ]),
-                PlanItem::Label { at, .. } => pts.push(*at),
+                PlanItem::Label { at, text, .. } => {
+                    // rough text extent at 1:100 (3 mm type)
+                    let half = DVec2::new(text.chars().count() as f64 * 0.09 + 0.2, 0.25);
+                    pts.extend([*at - half, *at + half]);
+                }
             }
         }
         let first = *pts.first()?;
@@ -321,8 +325,64 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                     }
                 }
             }
+            ElementKind::View(v) => {
+                if let creabim_core::ViewKind::Section {
+                    start, end, cut, ..
+                } = &v.kind
+                {
+                    section_marker(&mut items, e.id, &e.name, *start, *end, *cut);
+                }
+            }
             _ => {}
         }
     }
     PlanView { items }
+}
+
+/// Section line with view arrows, or an elevation marker, as drawn in plan.
+fn section_marker(
+    items: &mut Vec<PlanItem>,
+    id: ElementId,
+    name: &str,
+    a: DVec2,
+    b: DVec2,
+    cut: bool,
+) {
+    let along = (b - a).normalize_or_zero();
+    let look = along.perp();
+    let arrow = |at: DVec2| PlanItem::Polygon {
+        id,
+        pen: Pen::Symbol,
+        points: vec![at - along * 0.35, at + along * 0.35, at + look * 0.45],
+    };
+    let tag = name.rsplit(' ').next().unwrap_or(name).to_string();
+    if cut {
+        items.push(PlanItem::Line {
+            id,
+            pen: Pen::Symbol,
+            a,
+            b,
+        });
+        for end in [a, b] {
+            items.push(arrow(end));
+        }
+        items.push(PlanItem::Label {
+            id,
+            at: a - along * 0.7,
+            text: tag.clone(),
+        });
+        items.push(PlanItem::Label {
+            id,
+            at: b + along * 0.7,
+            text: tag,
+        });
+    } else {
+        let mid = (a + b) / 2.0;
+        items.push(arrow(mid));
+        items.push(PlanItem::Label {
+            id,
+            at: mid - look * 0.6,
+            text: tag,
+        });
+    }
 }
