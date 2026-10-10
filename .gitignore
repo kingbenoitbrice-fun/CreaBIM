@@ -1,0 +1,4 @@
+target/
+*.ifc
+!tests/fixtures/*.ifc
+.DS_Store
