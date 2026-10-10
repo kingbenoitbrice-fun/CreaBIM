@@ -14,7 +14,9 @@ pub mod sample;
 
 pub use document::Document;
 pub use editmesh::EditMesh;
-pub use element::{Element, ElementKind, FreeMesh, Grid, Level, Opening, OpeningKind, Slab, Wall};
+pub use element::{
+    Element, ElementKind, FreeMesh, Grid, Level, Opening, OpeningKind, Slab, View, ViewKind, Wall,
+};
 pub use id::ElementId;
 pub use model::Model;
 pub use ops::{Op, Transaction};

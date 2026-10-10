@@ -142,6 +142,60 @@ pub fn sample_house() -> Model {
         }),
     ));
 
+    // Views: a plan per level, two sections and four elevations.
+    tx = tx
+        .insert(Element::new(
+            "Ground Floor plan",
+            ElementKind::View(View::plan(g)),
+        ))
+        .insert(Element::new(
+            "First Floor plan",
+            ElementKind::View(View::plan(f)),
+        ));
+    for (name, a, b, cut) in [
+        (
+            "Section A",
+            DVec2::new(2.1, -3.0),
+            DVec2::new(2.1, 9.0),
+            true,
+        ),
+        (
+            "Section B",
+            DVec2::new(-2.0, 3.0),
+            DVec2::new(12.0, 3.0),
+            true,
+        ),
+        (
+            "South Elevation S",
+            DVec2::new(-2.0, -4.0),
+            DVec2::new(12.0, -4.0),
+            false,
+        ),
+        (
+            "East Elevation E",
+            DVec2::new(14.0, -2.0),
+            DVec2::new(14.0, 8.0),
+            false,
+        ),
+        (
+            "North Elevation N",
+            DVec2::new(12.0, 10.0),
+            DVec2::new(-2.0, 10.0),
+            false,
+        ),
+        (
+            "West Elevation W",
+            DVec2::new(-4.0, 8.0),
+            DVec2::new(-4.0, -2.0),
+            false,
+        ),
+    ] {
+        tx = tx.insert(Element::new(
+            name,
+            ElementKind::View(View::section(a, b, 30.0, cut)),
+        ));
+    }
+
     doc.commit(tx).expect("sample house is valid");
     doc.model().clone()
 }

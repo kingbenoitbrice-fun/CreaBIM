@@ -45,12 +45,16 @@ jobs:
       - run: cargo run -q -p creabim-cli -- ifc house.creabim.json house.ifc
       - run: python tools/validate_ifc.py house.ifc
       - run: cargo run -q -p creabim-cli -- plan house.creabim.json "Ground Floor" ground-floor.svg
+      - run: cargo run -q -p creabim-cli -- view house.creabim.json "Section A" section-a.svg
+      - run: cargo run -q -p creabim-cli -- view house.creabim.json "South Elevation S" south-elevation.svg
       - uses: actions/upload-artifact@v4
         with:
           name: sample-exports
           path: |
             house.ifc
             ground-floor.svg
+            section-a.svg
+            south-elevation.svg
 
   windows-build:
     name: Windows app build

@@ -57,7 +57,7 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                     [0.62, 0.75, 0.90],
                 )
             }
-            ElementKind::Level(_) | ElementKind::Grid(_) => continue,
+            ElementKind::Level(_) | ElementKind::Grid(_) | ElementKind::View(_) => continue,
         };
         out.push(SceneItem {
             id: e.id,

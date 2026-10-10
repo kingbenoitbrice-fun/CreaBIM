@@ -28,6 +28,10 @@ impl Element {
             ElementKind::Slab(s) => vec![s.level],
             ElementKind::Opening(o) => vec![o.host],
             ElementKind::FreeMesh(m) => m.level.into_iter().collect(),
+            ElementKind::View(v) => match &v.kind {
+                ViewKind::Plan { level, .. } => vec![*level],
+                ViewKind::Section { .. } => vec![],
+            },
         }
     }
 
@@ -43,6 +47,8 @@ impl Element {
                 OpeningKind::Window => "IfcWindow",
             },
             ElementKind::FreeMesh(m) => &m.ifc_class,
+            // Views are documentation, not building elements; they are not exported to IFC.
+            ElementKind::View(_) => "View",
         }
     }
 
@@ -84,6 +90,18 @@ impl Element {
                 Ok(())
             }
             ElementKind::FreeMesh(m) => m.mesh.validate(),
+            ElementKind::View(v) => {
+                positive(v.scale, "view scale")?;
+                match &v.kind {
+                    ViewKind::Plan { cut_height, .. } => positive(*cut_height, "cut height"),
+                    ViewKind::Section {
+                        start, end, depth, ..
+                    } => {
+                        positive(*depth, "view depth")?;
+                        positive(start.distance(*end), "section line length")
+                    }
+                }
+            }
         }
     }
 }
@@ -96,6 +114,7 @@ pub enum ElementKind {
     Slab(Slab),
     Opening(Opening),
     FreeMesh(FreeMesh),
+    View(View),
 }
 
 /// A storey. Walls and slabs hang off a level, so moving the level moves them.
@@ -172,6 +191,56 @@ pub struct FreeMesh {
     pub origin: DVec3,
     pub mesh: EditMesh,
     pub ifc_class: String,
+}
+
+/// A drawing of the model. Views live in the model like any element, so they
+/// are saved, undone and (later) placed on sheets. Their drawings are always
+/// generated from the current model, never stored.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct View {
+    pub kind: ViewKind,
+    /// Drawing scale denominator: 100 means 1:100.
+    pub scale: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ViewKind {
+    /// A floor plan of one level, cut horizontally at `cut_height` above it.
+    Plan { level: ElementId, cut_height: f64 },
+    /// A vertical section along the line `start` → `end`, looking to the left
+    /// of that direction (a line drawn west to east looks north) for `depth`
+    /// metres. An elevation is the same view with `cut` off: nothing is cut,
+    /// everything in front of the viewer is drawn in projection.
+    Section {
+        start: DVec2,
+        end: DVec2,
+        depth: f64,
+        cut: bool,
+    },
+}
+
+impl View {
+    pub fn plan(level: ElementId) -> Self {
+        Self {
+            kind: ViewKind::Plan {
+                level,
+                cut_height: 1.2,
+            },
+            scale: 100.0,
+        }
+    }
+
+    pub fn section(start: DVec2, end: DVec2, depth: f64, cut: bool) -> Self {
+        Self {
+            kind: ViewKind::Section {
+                start,
+                end,
+                depth,
+                cut,
+            },
+            scale: 100.0,
+        }
+    }
 }
 
 /// IFC classes a free mesh may be classified as.

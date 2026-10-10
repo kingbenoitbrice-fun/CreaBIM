@@ -10,6 +10,9 @@ usage:
   creabim ifc <model.creabim.json> <out.ifc> export a model to IFC4
   creabim plan <model.creabim.json> <level-name> <out.svg>
                                              draw a level's plan at 1:100
+  creabim view <model.creabim.json> <view-name> <out.svg>
+                                             draw any view (plan, section, elevation)
+  creabim views <model.creabim.json>          list the model's views
   creabim stats <model.creabim.json>         count elements by IFC class";
 
 fn main() -> ExitCode {
@@ -39,6 +42,30 @@ fn main() -> ExitCode {
                 .ok_or_else(|| format!("no level named {level:?}"))?;
             let svg = creabim_geom::plan_view(&m, le.id, 1.2).to_svg(100.0);
             std::fs::write(out, svg).map_err(|e| e.to_string())
+        }),
+        ["view", input, name, out] => load(input).and_then(|m| {
+            let e = m
+                .iter()
+                .find(|e| e.name == *name && matches!(e.kind, creabim_core::ElementKind::View(_)))
+                .ok_or_else(|| format!("no view named {name:?}"))?;
+            let scale = match &e.kind {
+                creabim_core::ElementKind::View(v) => v.scale,
+                _ => 100.0,
+            };
+            let d = creabim_geom::section::view_drawing(&m, e.id).expect("is a view");
+            std::fs::write(out, d.to_svg(scale)).map_err(|e| e.to_string())
+        }),
+        ["views", input] => load(input).map(|m| {
+            for e in m.iter() {
+                if let creabim_core::ElementKind::View(v) = &e.kind {
+                    let kind = match v.kind {
+                        creabim_core::ViewKind::Plan { .. } => "plan",
+                        creabim_core::ViewKind::Section { cut: true, .. } => "section",
+                        creabim_core::ViewKind::Section { cut: false, .. } => "elevation",
+                    };
+                    println!("{kind:10} 1:{:<5} {}", v.scale, e.name);
+                }
+            }
         }),
         ["stats", input] => load(input).map(|m| {
             let mut counts = std::collections::BTreeMap::new();

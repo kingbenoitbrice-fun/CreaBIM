@@ -4,12 +4,14 @@ CreaBIM is an open-source, BIM-native architectural modeler: one model for freef
 
 ![CreaBIM showing the sample house in 3D beside its generated ground-floor plan](docs/screenshot.png)
 
-**Status: Phase 0 prototype.** It proves the core architecture end to end. It is not yet a tool for real projects.
+**Status: Phase 1 in progress (sections and elevations).** It proves the core architecture end to end. It is not yet a tool for real projects.
 
 ## What works today
 
 - **One model, many views.** The 3D view and the plan read the same element store. An edit in either shows up in both at once.
-- **Plan view in three places:** docked beside 3D, in its own window (for a second monitor), or overlaid inside the 3D workspace. *View → Show plan cut in 3D space* draws the plan's cut lines at their real height in 3D.
+- **Views are model elements:** plans, sections and elevations live in the model, so they save, undo and update with it. Pick one from the *View* list or the *Views* group in the model list.
+- **2D view in three places:** docked beside 3D, in its own window (for a second monitor), or overlaid inside the 3D workspace. *View → Show the 2D view in 3D space* draws a plan at its cut height, or a section standing on its section line.
+- **Sections and elevations generated from the model:** cut walls, slabs and openings are drawn heavy; what lies beyond is projected with hidden lines removed. Level datums are labelled. Section and elevation marks appear in plans. Draw new ones with the *Section* and *Elevation* tools. Progress screenshots are in [docs/evolution](docs/evolution).
 - **BIM elements:** levels, grids, walls, slabs, doors and windows. Doors and windows are hosted by walls and cut real openings.
 - **Freeform meshes:** add a mass, click a face in 3D and extrude (E), taper, move or subdivide it (Catmull-Clark). Give any mesh an IFC class such as `IfcRoof` and it exports as that.
 - **Undo and redo** for every edit. Dragging a value in the properties panel undoes as one step.
@@ -33,6 +35,8 @@ On Linux the app also needs a Vulkan or GL driver and `libxkbcommon-x11` at runt
 cargo run -p creabim-cli -- sample house.creabim.json            # write the sample house
 cargo run -p creabim-cli -- ifc house.creabim.json house.ifc     # export IFC4
 cargo run -p creabim-cli -- plan house.creabim.json "Ground Floor" gf.svg
+cargo run -p creabim-cli -- views house.creabim.json             # list plans, sections, elevations
+cargo run -p creabim-cli -- view house.creabim.json "Section A" a.svg
 python3 tools/validate_ifc.py house.ifc                          # needs: pip install ifcopenshell pytest
 ```
 
@@ -45,11 +49,12 @@ python3 tools/validate_ifc.py house.ifc                          # needs: pip in
 | Draw walls | Wall tool, click points; Esc or right-click ends; Shift keeps it orthogonal |
 | Doors, windows | Door or Window tool, click on a wall |
 | Slab | Slab tool, click two corners |
+| Section, elevation | Section or Elevation tool in a plan, click two points; it looks to the left of the direction you draw |
 | Freeform mass | Mass tool, click to place; click a face in 3D, then E to extrude |
 | Undo, redo | Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y |
 | Delete | Delete key (also removes doors and windows hosted on a wall) |
 
-Files: *File → Save/Open* use the path in the toolbar (`.creabim.json`). *Export IFC4* and *Export plan as SVG* write next to it.
+Files: *File → Save/Open* use the path in the toolbar (`.creabim.json`). *Export IFC4* and *Export view as SVG* write next to it.
 
 ## How it is built
 
@@ -61,7 +66,7 @@ Files: *File → Save/Open* use the path in the toolbar (`.creabim.json`). *Expo
 | `creabim-app` | Desktop app: egui UI, wgpu 3D viewport rendered offscreen so any number of live views can exist. |
 | `creabim-cli` | Command-line export tools. |
 
-Next steps follow the roadmap's Phase 0 to Phase 1 plan: a SQLite project file, IFC import, sections and elevations, sheets with live views, dimensions and tags, OpenCascade integration, and a Windows installer.
+Next steps follow the roadmap's Phase 1 plan: sheets with live views and PDF export, dimensions, tags and schedules, a modifier stack and workplane sketches, a SQLite project file with IFC import, and a Windows installer.
 
 ## License
 
