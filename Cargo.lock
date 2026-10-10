@@ -733,6 +733,7 @@ version = "0.1.0"
 dependencies = [
  "creabim-core",
  "glam",
+ "miniz_oxide 0.8.9",
 ]
 
 [[package]]

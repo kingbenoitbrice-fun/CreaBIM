@@ -66,8 +66,13 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             | ElementKind::Grid(_)
             | ElementKind::View(_)
             | ElementKind::Sheet(_)
-            | ElementKind::Viewport(_) => continue,
+            | ElementKind::Viewport(_)
+            | ElementKind::Material(_)
+            | ElementKind::Dimension(_)
+            | ElementKind::Tag(_) => continue,
         };
+        // a material's colour wins over the element type's default
+        let color = creabim_core::material_of(model, e).map_or(color, |(_, m)| m.color);
         out.push(SceneItem {
             id: e.id,
             mesh,

@@ -21,6 +21,7 @@ fn door_splits_wall_into_two_cut_pieces_with_a_swing() {
             thickness: 0.2,
             height: 3.0,
             base_offset: 0.0,
+            material: None,
         }),
     );
     let d = Element::new(

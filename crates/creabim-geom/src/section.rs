@@ -48,18 +48,30 @@ impl SectionFrame {
     }
 }
 
-pub fn section_view(model: &Model, start: DVec2, end: DVec2, depth: f64, cut: bool) -> Drawing {
+/// A section (or, with `cut` off, an elevation). With `shaded`, surfaces
+/// beyond the cut are shaded in their material colours under the linework.
+pub fn section_view(
+    model: &Model,
+    start: DVec2,
+    end: DVec2,
+    depth: f64,
+    cut: bool,
+    shaded: bool,
+) -> Drawing {
     let frame = SectionFrame::new(start, end, depth);
     let scene = build_scene(model);
     let mut items = Vec::new();
 
     let project = |p: DVec3| frame.project(p);
-    items.extend(hidden_lines(
+    let (lines, image) = hidden_lines(
         &scene,
         &project,
         frame.depth,
         Some((0.0, frame.length)),
-    ));
+        shaded,
+    );
+    items.extend(image);
+    items.extend(lines);
 
     // Cut fill, drawn over the projection.
     if cut {
@@ -80,9 +92,14 @@ pub fn section_view(model: &Model, start: DVec2, end: DVec2, depth: f64, cut: bo
 
     crate::plan::clean_up_cuts(model, &mut items);
 
-    // Level datums across the drawing.
+    // Level datums across what the drawing shows, a metre past each side.
+    let span = PlanView {
+        items: items.clone(),
+    }
+    .bounds()
+    .map_or((0.0, frame.length), |(lo, hi)| (lo.x, hi.x));
     for (e, l) in model.levels() {
-        let (x0, x1) = (-1.0, frame.length + 1.0);
+        let (x0, x1) = (span.0 - 1.0, span.1 + 1.0);
         items.push(PlanItem::Line {
             id: e.id,
             pen: Pen::Grid,
@@ -151,36 +168,42 @@ impl AxoFrame {
     }
 }
 
-/// A hidden-line parallel 3D view of the whole model.
-pub fn axonometric_view(model: &Model, azimuth: f64, altitude: f64) -> Drawing {
+/// A parallel 3D view of the whole model, hidden lines removed, optionally shaded.
+pub fn axonometric_view(model: &Model, azimuth: f64, altitude: f64, shaded: bool) -> Drawing {
     let frame = AxoFrame::new(model, azimuth, altitude);
     let scene = build_scene(model);
     let project = |p: DVec3| frame.project(p);
+    let (lines, image) = hidden_lines(&scene, &project, frame.radius * 2.0, None, shaded);
     PlanView {
-        items: hidden_lines(&scene, &project, frame.radius * 2.0, None),
+        items: image.into_iter().chain(lines).collect(),
     }
 }
 
+type Faces = Vec<(ElementId, [f32; 3], Vec<[DVec3; 3]>)>;
+
 /// Feature edges of `scene` seen through `project`, hidden parts removed.
 /// `project` maps world points to (x, y, depth); only `0..=depth` is drawn,
-/// and with `crop`, only `x` within that range.
+/// and with `crop`, only `x` within that range. With `shade`, also returns
+/// an image of the surfaces, lit from the viewer's upper left.
 fn hidden_lines(
     scene: &[SceneItem],
     project: &dyn Fn(DVec3) -> DVec3,
     depth: f64,
     crop: Option<(f64, f64)>,
-) -> Vec<PlanItem> {
-    let mut faces: Vec<(ElementId, Vec<[DVec3; 3]>)> = Vec::new();
+    shade: bool,
+) -> (Vec<PlanItem>, Option<PlanItem>) {
+    let mut faces: Faces = Vec::new();
     for s in scene {
         let mut tris = Vec::new();
         for t in s.mesh.indices.chunks(3) {
             let p = |i: u32| project(Vec3::from(s.mesh.positions[i as usize]).as_dvec3());
             tris.extend(clip_triangle([p(t[0]), p(t[1]), p(t[2])], depth));
         }
-        faces.push((s.id, tris));
+        faces.push((s.id, s.color, tris));
     }
     let (lo, hi) = extents(&faces, crop);
-    let zbuf = DepthBuffer::render(&faces, lo, hi);
+    let zbuf = DepthBuffer::render(&faces, lo, hi, shade);
+    let image = zbuf.image();
     let mut items = Vec::new();
     for s in scene {
         for (a, b) in feature_edges(s) {
@@ -204,33 +227,58 @@ fn hidden_lines(
             }
         }
     }
-    items
+    (items, image)
 }
 
+/// The live drawing of a view element, annotations included.
 pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
-    match &model.get(view)?.kind {
-        ElementKind::View(v) => Some(match &v.kind {
-            creabim_core::ViewKind::Plan { level, cut_height } => {
-                crate::plan_view(model, *level, *cut_height)
+    let e = model.get(view)?;
+    let ElementKind::View(v) = &e.kind else {
+        return None;
+    };
+    let shaded = v.style == creabim_core::ViewStyle::Shaded;
+    let mut d = match &v.kind {
+        creabim_core::ViewKind::Plan { level, cut_height } => {
+            crate::plan_view(model, *level, *cut_height)
+        }
+        creabim_core::ViewKind::Section {
+            start,
+            end,
+            depth,
+            cut,
+        } => section_view(model, *start, *end, *depth, *cut, shaded),
+        creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
+            axonometric_view(model, *azimuth, *altitude, shaded)
+        }
+        creabim_core::ViewKind::Schedule { category } => {
+            let table = crate::schedule::schedule(model, *category);
+            return Some(crate::schedule::schedule_drawing(view, &e.name, &table));
+        }
+    };
+    // tag the image with its view, so viewers can keep one texture per view
+    for it in &mut d.items {
+        if let PlanItem::Image { id, raster, .. } = it {
+            *id = view;
+            if let Some(r) = std::sync::Arc::get_mut(raster) {
+                r.key = view_key(view);
             }
-            creabim_core::ViewKind::Section {
-                start,
-                end,
-                depth,
-                cut,
-            } => section_view(model, *start, *end, *depth, *cut),
-            creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
-                axonometric_view(model, *azimuth, *altitude)
-            }
-        }),
-        _ => None,
+        }
     }
+    d.items.extend(crate::annotate::annotations(model, view, v));
+    Some(d)
 }
 
-fn extents(faces: &[(ElementId, Vec<[DVec3; 3]>)], crop: Option<(f64, f64)>) -> (DVec2, DVec2) {
+fn view_key(view: ElementId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    view.hash(&mut h);
+    h.finish()
+}
+
+fn extents(faces: &Faces, crop: Option<(f64, f64)>) -> (DVec2, DVec2) {
     let mut lo = DVec2::splat(f64::MAX);
     let mut hi = DVec2::splat(f64::MIN);
-    for (_, tris) in faces {
+    for (_, _, tris) in faces {
         for t in tris {
             for p in t {
                 lo = lo.min(p.truncate());
@@ -424,10 +472,15 @@ struct DepthBuffer {
     w: usize,
     h: usize,
     depth: Vec<f32>,
+    /// Shaded colour per cell, rows from the bottom, when shading.
+    rgba: Option<Vec<u8>>,
 }
 
+/// Direction light comes from, in view coordinates (x right, y up, depth away).
+const LIGHT: DVec3 = DVec3::new(-0.45, 0.65, -0.62);
+
 impl DepthBuffer {
-    fn render(faces: &[(ElementId, Vec<[DVec3; 3]>)], lo: DVec2, hi: DVec2) -> Self {
+    fn render(faces: &Faces, lo: DVec2, hi: DVec2, shade: bool) -> Self {
         let size = hi - lo;
         let px = (size.x.max(size.y) / 2048.0).max(0.005);
         let w = (size.x / px).ceil() as usize + 1;
@@ -438,13 +491,40 @@ impl DepthBuffer {
             w,
             h,
             depth: vec![f32::INFINITY; w * h],
+            rgba: shade.then(|| vec![0; w * h * 4]),
         };
-        for (_, tris) in faces {
+        let light = LIGHT.normalize();
+        for (_, color, tris) in faces {
             for t in tris {
-                buf.raster(t);
+                let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+                let lit = 0.55 + 0.45 * n.dot(light).abs();
+                let c = color.map(|c| ((c as f64 * lit).clamp(0.0, 1.0) * 255.0) as u8);
+                buf.raster(t, c);
             }
         }
         buf
+    }
+
+    /// The shaded colours as an image item, if shading.
+    fn image(&self) -> Option<PlanItem> {
+        let src = self.rgba.as_ref()?;
+        // the buffer's rows run from the bottom; images run from the top
+        let mut rgba = Vec::with_capacity(src.len());
+        for row in src.chunks(self.w * 4).rev() {
+            rgba.extend_from_slice(row);
+        }
+        Some(PlanItem::Image {
+            id: ElementId::NIL,
+            raster: std::sync::Arc::new(crate::raster::Raster {
+                width: self.w,
+                height: self.h,
+                rgba,
+                key: 0,
+            }),
+            lo: self.lo,
+            hi: self.lo + DVec2::new(self.w as f64, self.h as f64) * self.px,
+            clip: None,
+        })
     }
 
     fn to_px(&self, p: DVec3) -> DVec3 {
@@ -455,7 +535,7 @@ impl DepthBuffer {
         )
     }
 
-    fn raster(&mut self, t: &[DVec3; 3]) {
+    fn raster(&mut self, t: &[DVec3; 3], color: [u8; 3]) {
         let [a, b, c] = t.map(|p| self.to_px(p));
         let area = (b - a).truncate().perp_dot((c - a).truncate());
         if area.abs() < 1e-12 {
@@ -475,9 +555,13 @@ impl DepthBuffer {
                     continue;
                 }
                 let d = (w0 * a.z + w1 * b.z + w2 * c.z) as f32;
-                let cell = &mut self.depth[y * self.w + x];
-                if d < *cell {
-                    *cell = d;
+                let i = y * self.w + x;
+                if d < self.depth[i] {
+                    self.depth[i] = d;
+                    if let Some(rgba) = &mut self.rgba {
+                        rgba[i * 4..i * 4 + 4]
+                            .copy_from_slice(&[color[0], color[1], color[2], 255]);
+                    }
                 }
             }
         }
@@ -548,7 +632,14 @@ mod tests {
     fn section_through_the_front_door_cuts_walls_and_slabs() {
         let m = sample();
         // line at x = 2.1 running north, looking west
-        let d = section_view(&m, DVec2::new(2.1, -3.0), DVec2::new(2.1, 9.0), 20.0, true);
+        let d = section_view(
+            &m,
+            DVec2::new(2.1, -3.0),
+            DVec2::new(2.1, 9.0),
+            20.0,
+            true,
+            false,
+        );
         let cut_names: std::collections::BTreeSet<String> = d
             .items
             .iter()
@@ -602,6 +693,7 @@ mod tests {
             DVec2::new(12.0, -4.0),
             30.0,
             false,
+            false,
         );
         assert!(!d.items.iter().any(|i| matches!(i, PlanItem::Fill { .. })));
         let names: std::collections::BTreeSet<String> = d
@@ -626,6 +718,64 @@ mod tests {
             !names.contains("GF Partition"),
             "the inner partition is hidden"
         );
+    }
+
+    #[test]
+    fn walls_cut_through_the_slabs_that_sit_in_them() {
+        let m = sample();
+        let d = section_view(
+            &m,
+            DVec2::new(2.1, -3.0),
+            DVec2::new(2.1, 9.0),
+            20.0,
+            true,
+            false,
+        );
+        let fills = |kind: &str| -> Vec<Vec<DVec2>> {
+            d.items
+                .iter()
+                .filter_map(|i| match i {
+                    PlanItem::Fill { id, points, .. }
+                        if m.get(*id).unwrap().name.contains(kind) =>
+                    {
+                        Some(points.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let (walls, slabs) = (fills("Wall"), fills("Slab"));
+        assert!(!walls.is_empty() && !slabs.is_empty());
+        let inside = |p: DVec2, poly: &[DVec2]| {
+            let (lo, hi) = poly
+                .iter()
+                .fold((DVec2::MAX, DVec2::MIN), |(a, b), q| (a.min(*q), b.max(*q)));
+            p.cmpgt(lo + 1e-6).all() && p.cmplt(hi - 1e-6).all()
+        };
+        // no point of a slab's cut lies inside a wall's cut
+        for s in &slabs {
+            let c = s.iter().copied().sum::<DVec2>() / s.len() as f64;
+            for w in &walls {
+                assert!(!inside(c, w), "slab piece centred at {c} overlaps a wall");
+            }
+        }
+    }
+
+    #[test]
+    fn shaded_views_carry_an_image_under_their_lines() {
+        let m = sample();
+        let d = axonometric_view(&m, 35.0, 30.0, true);
+        let Some(PlanItem::Image { raster, .. }) = d.items.first() else {
+            panic!("the image comes first, under the linework");
+        };
+        assert!(raster.width > 100 && raster.height > 100);
+        // some pixels are covered, and the corners are background
+        assert!(raster.rgba.chunks(4).any(|p| p[3] == 255));
+        assert_eq!(raster.rgba[3], 0);
+        assert!(!axonometric_view(&m, 35.0, 30.0, false)
+            .items
+            .iter()
+            .any(|i| matches!(i, PlanItem::Image { .. })));
     }
 
     #[test]

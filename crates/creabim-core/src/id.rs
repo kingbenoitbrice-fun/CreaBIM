@@ -8,6 +8,9 @@ use uuid::Uuid;
 pub struct ElementId(pub Uuid);
 
 impl ElementId {
+    /// The id of no element, for drawing items that belong to none.
+    pub const NIL: ElementId = ElementId(Uuid::nil());
+
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }

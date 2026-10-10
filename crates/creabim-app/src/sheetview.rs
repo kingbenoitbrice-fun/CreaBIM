@@ -19,6 +19,9 @@ pub struct SheetState {
     pub active: Option<ElementId>,
     /// Viewport being moved: its centre and the grab point when the drag began.
     drag: Option<(ElementId, DVec2, DVec2)>,
+    /// Crop edge being dragged: viewport, edge (left, right, bottom, top)
+    /// and the crop when the drag began.
+    crop_drag: Option<(ElementId, usize, [DVec2; 2])>,
 }
 
 /// Sheet millimetres (y up) to screen points.
@@ -86,23 +89,41 @@ impl Canvas for EguiCanvas<'_> {
         self.painter.add(egui::Shape::mesh(mesh));
     }
 
-    fn text(&mut self, at: DVec2, size: f64, text: &str, anchor: Anchor) {
+    fn text_angle(&mut self, at: DVec2, size: f64, text: &str, anchor: Anchor, angle: f64) {
         let px = size as f32 * self.xf.zoom;
         if px < 3.0 {
             return;
         }
-        let align = match anchor {
-            Anchor::Start => egui::Align2::LEFT_CENTER,
-            Anchor::Middle => egui::Align2::CENTER_CENTER,
-            Anchor::End => egui::Align2::RIGHT_CENTER,
-        };
-        self.painter.text(
-            self.xf.to_screen(at),
-            align,
-            text,
+        let galley = self.painter.layout_no_wrap(
+            text.to_string(),
             egui::FontId::proportional(px),
             Color32::BLACK,
         );
+        let w = galley.size().x;
+        // centre of the text, along its baseline direction from the anchor
+        let shift = match anchor {
+            Anchor::Start => w / 2.0,
+            Anchor::Middle => 0.0,
+            Anchor::End => -w / 2.0,
+        };
+        let rot = egui::emath::Rot2::from_angle(-angle as f32);
+        let centre = self.xf.to_screen(at) + rot * Vec2::new(shift, 0.0);
+        let pos = centre - rot * (galley.size() / 2.0);
+        self.painter.add(
+            egui::epaint::TextShape::new(pos, galley, Color32::BLACK).with_angle(-angle as f32),
+        );
+    }
+
+    fn image(
+        &mut self,
+        lo: DVec2,
+        hi: DVec2,
+        clip: Option<(DVec2, DVec2)>,
+        raster: &std::sync::Arc<creabim_geom::raster::Raster>,
+    ) {
+        let rect = self.xf.rect_of(lo, hi);
+        let clip = clip.map(|(a, b)| self.xf.rect_of(a, b));
+        crate::textures::paint(self.painter, rect, clip, raster);
     }
 }
 
@@ -206,8 +227,82 @@ pub fn show(
         }
     }
 
-    // picking, moving and activating viewports
+    // crop handles on the selected viewport: drag an edge to crop the view
+    let mut error = None;
     let pointer = response.interact_pointer_pos().or(response.hover_pos());
+    let selected = views
+        .iter()
+        .find(|v| *selection == Some(v.viewport) && state.active.is_none());
+    if let Some(v) = selected {
+        let crop = match doc.model().get(v.viewport).map(|e| &e.kind) {
+            Some(ElementKind::Viewport(vp)) => vp.crop,
+            _ => None,
+        };
+        let full = crop.or_else(|| v.drawing.bounds().map(|(a, b)| [a, b]));
+        if let Some([lo, hi]) = full {
+            let (plo, phi) = (v.map.to_paper(lo), v.map.to_paper(hi));
+            let r = xf.rect_of(plo, phi);
+            painter.extend(egui::Shape::dashed_line(
+                &[
+                    r.left_top(),
+                    r.right_top(),
+                    r.right_bottom(),
+                    r.left_bottom(),
+                    r.left_top(),
+                ],
+                egui::Stroke::new(1.0, ACCENT),
+                6.0,
+                4.0,
+            ));
+            let handles = [
+                r.left_center(),
+                r.right_center(),
+                r.center_bottom(),
+                r.center_top(),
+            ];
+            for h in handles {
+                painter.rect(
+                    Rect::from_center_size(h, Vec2::splat(8.0)),
+                    0.0,
+                    Color32::WHITE,
+                    egui::Stroke::new(1.5, ACCENT),
+                    egui::StrokeKind::Middle,
+                );
+            }
+            if response.drag_started_by(egui::PointerButton::Primary) {
+                let press = ui.input(|i| i.pointer.press_origin()).or(pointer);
+                if let Some(p) = press {
+                    if let Some(edge) = handles.iter().position(|h| h.distance(p) < 9.0) {
+                        state.crop_drag = Some((v.viewport, edge, [lo, hi]));
+                    }
+                }
+            }
+            if let (Some((id, edge, [lo0, hi0])), Some(p)) = (state.crop_drag, pointer) {
+                if id == v.viewport && response.dragged_by(egui::PointerButton::Primary) {
+                    let m = v.map.to_model(xf.to_paper(p));
+                    let snap = |x: f64| (x / 0.05).round() * 0.05;
+                    let (mut lo, mut hi) = (lo0, hi0);
+                    match edge {
+                        0 => lo.x = snap(m.x).min(hi.x - 0.2),
+                        1 => hi.x = snap(m.x).max(lo.x + 0.2),
+                        2 => lo.y = snap(m.y).min(hi.y - 0.2),
+                        _ => hi.y = snap(m.y).max(lo.y + 0.2),
+                    }
+                    let r = doc.edit_merged(id, "Crop view", |e| {
+                        if let ElementKind::Viewport(vp) = &mut e.kind {
+                            vp.crop = Some([lo, hi]);
+                        }
+                    });
+                    error = r.err().map(|e| e.to_string());
+                }
+            }
+        }
+    }
+    if response.drag_stopped() {
+        state.crop_drag = None;
+    }
+
+    // picking, moving and activating viewports
     let hit = pointer.and_then(|p| {
         let p = xf.to_paper(p);
         views.iter().rev().find(|v| contains(v, p))
@@ -221,11 +316,10 @@ pub fn show(
         *selection = hit.map(|v| v.viewport);
         state.active = None;
     }
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) && plan.pending.is_none() {
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !plan.busy() {
         state.active = None;
     }
-    let mut error = None;
-    if response.drag_started_by(egui::PointerButton::Primary) {
+    if response.drag_started_by(egui::PointerButton::Primary) && state.crop_drag.is_none() {
         let press = ui.input(|i| i.pointer.press_origin()).or(pointer);
         let hit = press.and_then(|p| {
             let p = xf.to_paper(p);
@@ -275,9 +369,18 @@ pub fn show(
                 camera: Some(camera),
                 scale: v.map.scale,
             };
+            // work on the whole view, not just its cropped part
+            let full;
+            let drawing = if matches!(doc.model().get(v.viewport).map(|e| &e.kind), Some(ElementKind::Viewport(vp)) if vp.crop.is_some())
+            {
+                full = creabim_geom::section::view_drawing(doc.model(), v.view).unwrap_or_default();
+                &full
+            } else {
+                &v.drawing
+            };
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area));
             if let Some(e) = planview::show(
-                &mut child, area, doc, v.view, kind, &v.drawing, plan, selection, style,
+                &mut child, area, doc, v.view, kind, drawing, plan, selection, style,
             ) {
                 error = Some(e);
             }
@@ -303,7 +406,7 @@ pub fn show(
         if state.active.is_some() {
             "Edits here change the model: every view, sheet and the 3D update at once."
         } else {
-            "Drag a view to move it. Double-click a view to work on the model through it. Right-drag pans, the wheel zooms."
+            "Drag a view to move it, or its orange handles to crop it. Double-click a view to work on the model through it. Right-drag pans, the wheel zooms."
         },
         egui::FontId::proportional(12.0),
         Color32::from_gray(60),
