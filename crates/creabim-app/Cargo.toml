@@ -1,0 +1,15 @@
+[package]
+name = "creabim-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.95"
+
+[dependencies]
+creabim-core.workspace = true
+creabim-geom.workspace = true
+creabim-ifc.workspace = true
+glam.workspace = true
+eframe = "0.36"
+bytemuck = { version = "1", features = ["derive"] }

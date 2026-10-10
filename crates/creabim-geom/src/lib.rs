@@ -1,0 +1,17 @@
+//! Geometry for CreaBIM: turns model elements into triangle meshes for the
+//! viewport and into 2D linework for plan drawings.
+//!
+//! This crate is the seam where a full B-rep kernel (OpenCascade) plugs in
+//! later. Architectural elements in the prototype are boxes, extrusions and
+//! polygon meshes, which this crate builds exactly.
+
+pub mod mesh;
+pub mod pick;
+pub mod plan;
+pub mod scene;
+pub mod triangulate;
+pub mod wall;
+
+pub use mesh::TriMesh;
+pub use plan::{plan_view, PlanItem, PlanView};
+pub use scene::{build_scene, SceneItem};
