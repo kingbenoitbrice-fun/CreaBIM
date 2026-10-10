@@ -172,6 +172,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
 
     let mut contained: HashMap<Option<ElementId>, Vec<Ref>> = HashMap::new();
     let mut wall_refs: HashMap<ElementId, (Ref, Ref)> = HashMap::new(); // entity, placement
+    let joins = creabim_core::wall_joins(model);
 
     for e in model.iter() {
         match &e.kind {
@@ -185,13 +186,27 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     DVec3::new(wall.start.x, wall.start.y, wall.base_offset),
                     Some(DVec3::new(d.x, d.y, 0.0)),
                 );
+                // footprint in wall-local coordinates, following its joins
+                let ends = joins.get(&e.id).copied().unwrap_or_default();
+                let t = wall.thickness / 2.0;
+                let local = [
+                    DVec2::new(ends.start_u(1.0), t),
+                    DVec2::new(ends.end_u(wall, 1.0), t),
+                    DVec2::new(ends.end_u(wall, -1.0), -t),
+                    DVec2::new(ends.start_u(-1.0), -t),
+                ];
+                let mut pts: Vec<Ref> = local
+                    .iter()
+                    .map(|p| c.w.add("IFCCARTESIANPOINT", point2(p.x, p.y)))
+                    .collect();
+                pts.push(pts[0]);
+                let poly = c.w.add("IFCPOLYLINE", list(&pts));
+                let prof =
+                    c.w.add("IFCARBITRARYCLOSEDPROFILEDEF", format!(".AREA.,$,{poly}"));
                 let pos = c.placement3d(DVec3::ZERO, None, None);
-                let solid = c.rect_extrusion(
-                    DVec2::new(wall.length() / 2.0, 0.0),
-                    wall.length(),
-                    wall.thickness,
-                    pos,
-                    wall.height,
+                let solid = c.w.add(
+                    "IFCEXTRUDEDAREASOLID",
+                    format!("{prof},{pos},{},{}", c.z_axis, real(wall.height)),
                 );
                 let shape = c.shape("SweptSolid", &[solid]);
                 let r = product(&mut c, "IFCWALL", e, pl, shape, ",$,.STANDARD.");

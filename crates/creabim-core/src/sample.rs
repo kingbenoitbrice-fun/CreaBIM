@@ -142,16 +142,28 @@ pub fn sample_house() -> Model {
         }),
     ));
 
-    // Views: a plan per level, two sections and four elevations.
-    tx = tx
-        .insert(Element::new(
-            "Ground Floor plan",
-            ElementKind::View(View::plan(g)),
-        ))
-        .insert(Element::new(
-            "First Floor plan",
-            ElementKind::View(View::plan(f)),
-        ));
+    // Views: a plan per level, two sections, four elevations and a 3D view.
+    let plan_g = Element::new("Ground Floor plan", ElementKind::View(View::plan(g)));
+    let plan_f = Element::new("First Floor plan", ElementKind::View(View::plan(f)));
+    let mut axo = View::axonometric(35.0, 30.0);
+    axo.scale = 50.0;
+    let axo = Element::new("3D View South-East", ElementKind::View(axo));
+    let mut placements = vec![
+        (
+            "A101",
+            plan_g.id,
+            DVec2::new(160.0, 240.0),
+            DVec2::new(5.0, 3.0),
+        ),
+        (
+            "A101",
+            plan_f.id,
+            DVec2::new(400.0, 240.0),
+            DVec2::new(5.0, 3.0),
+        ),
+        ("A001", axo.id, DVec2::new(200.0, 165.0), DVec2::ZERO),
+    ];
+    tx = tx.insert(plan_g).insert(plan_f).insert(axo);
     for (name, a, b, cut) in [
         (
             "Section A",
@@ -190,9 +202,43 @@ pub fn sample_house() -> Model {
             false,
         ),
     ] {
+        let e = Element::new(name, ElementKind::View(View::section(a, b, 30.0, cut)));
+        // where each drawing sits on the sections sheet, and the drawing
+        // point pinned there (along the line, height)
+        let at = match name {
+            "Section A" => Some((DVec2::new(105.0, 215.0), DVec2::new(6.0, 3.0))),
+            "Section B" => Some((DVec2::new(290.0, 215.0), DVec2::new(7.0, 3.0))),
+            "South Elevation S" => Some((DVec2::new(105.0, 110.0), DVec2::new(7.0, 3.0))),
+            "East Elevation E" => Some((DVec2::new(290.0, 110.0), DVec2::new(5.0, 3.0))),
+            _ => None,
+        };
+        if let Some((center, target)) = at {
+            placements.push(("A201", e.id, center, target));
+        }
+        tx = tx.insert(e);
+    }
+
+    // Sheets with the views placed on them.
+    let mut sheets = std::collections::HashMap::new();
+    for (number, title) in [
+        ("A001", "3D View"),
+        ("A101", "Floor Plans"),
+        ("A201", "Sections and Elevations"),
+    ] {
+        let size = if number == "A101" { "A2" } else { "A3" };
+        let sheet = Element::new(title, ElementKind::Sheet(Sheet::a(number, size)));
+        sheets.insert(number, sheet.id);
+        tx = tx.insert(sheet);
+    }
+    for (number, view, center, target) in placements {
         tx = tx.insert(Element::new(
-            name,
-            ElementKind::View(View::section(a, b, 30.0, cut)),
+            "Viewport",
+            ElementKind::Viewport(Viewport {
+                sheet: sheets[number],
+                view,
+                center,
+                target,
+            }),
         ));
     }
 

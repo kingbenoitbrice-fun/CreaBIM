@@ -1,6 +1,7 @@
 //! `creabim` command-line tool: build the sample model and export it.
 
 use creabim_core::{sample::sample_house, Model};
+use creabim_geom::sheet::{sheet_svg, sheets, sheets_pdf, SheetInfo};
 use creabim_ifc::{export_ifc4, ExportOptions};
 use std::process::ExitCode;
 
@@ -12,7 +13,11 @@ usage:
                                              draw a level's plan at 1:100
   creabim view <model.creabim.json> <view-name> <out.svg>
                                              draw any view (plan, section, elevation)
-  creabim views <model.creabim.json>          list the model's views
+  creabim views <model.creabim.json>         list the model's views
+  creabim sheets <model.creabim.json>        list the model's sheets
+  creabim sheet <model.creabim.json> <number> <out.svg>
+                                             draw one sheet
+  creabim pdf <model.creabim.json> <out.pdf> export every sheet to one PDF
   creabim stats <model.creabim.json>         count elements by IFC class";
 
 fn main() -> ExitCode {
@@ -62,10 +67,32 @@ fn main() -> ExitCode {
                         creabim_core::ViewKind::Plan { .. } => "plan",
                         creabim_core::ViewKind::Section { cut: true, .. } => "section",
                         creabim_core::ViewKind::Section { cut: false, .. } => "elevation",
+                        creabim_core::ViewKind::Axonometric { .. } => "3d",
                     };
                     println!("{kind:10} 1:{:<5} {}", v.scale, e.name);
                 }
             }
+        }),
+        ["sheets", input] => load(input).map(|m| {
+            for (id, s) in sheets(&m) {
+                let name = m.get(id).map(|e| e.name.as_str()).unwrap_or("");
+                let size = s.size_name().unwrap_or("custom");
+                println!("{:8} {size:6} {name}", s.number);
+            }
+        }),
+        ["sheet", input, number, out] => load(input).and_then(|m| {
+            let (id, _) = sheets(&m)
+                .into_iter()
+                .find(|(_, s)| s.number == *number)
+                .ok_or_else(|| format!("no sheet numbered {number:?}"))?;
+            let svg = sheet_svg(&m, id, &info(input)).expect("is a sheet");
+            std::fs::write(out, svg).map_err(|e| e.to_string())
+        }),
+        ["pdf", input, out] => load(input).and_then(|m| {
+            if sheets(&m).is_empty() {
+                return Err("the model has no sheets".into());
+            }
+            std::fs::write(out, sheets_pdf(&m, &info(input))).map_err(|e| e.to_string())
         }),
         ["stats", input] => load(input).map(|m| {
             let mut counts = std::collections::BTreeMap::new();
@@ -84,6 +111,21 @@ fn main() -> ExitCode {
             eprintln!("{e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn info(path: &str) -> SheetInfo {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    SheetInfo {
+        project: name
+            .split('.')
+            .next()
+            .unwrap_or("CreaBIM project")
+            .to_string(),
+        date: creabim_geom::sheet::today(),
     }
 }
 

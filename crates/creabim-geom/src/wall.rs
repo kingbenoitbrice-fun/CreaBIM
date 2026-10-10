@@ -1,5 +1,5 @@
 use crate::TriMesh;
-use creabim_core::{Opening, Wall};
+use creabim_core::{Opening, Wall, WallEnds};
 use glam::{DVec2, DVec3};
 
 /// Rectangles in wall-local coordinates: `u` along the wall, `v` up from its base.
@@ -33,7 +33,8 @@ impl Cut {
 /// either solid or void. Solid cells get front and back faces, and every
 /// boundary between a solid cell and void (or the wall's outer edge) gets a
 /// side face, so ends, top, bottom and opening reveals all come out closed.
-pub fn wall_mesh(wall: &Wall, base_z: f64, openings: &[&Opening]) -> TriMesh {
+/// `ends` mitres or trims the two ends where the wall joins its neighbours.
+pub fn wall_mesh(wall: &Wall, base_z: f64, openings: &[&Opening], ends: &WallEnds) -> TriMesh {
     let len = wall.length();
     let h = wall.height;
     let cuts: Vec<Cut> = openings.iter().filter_map(|o| Cut::of(o, wall)).collect();
@@ -66,6 +67,14 @@ pub fn wall_mesh(wall: &Wall, base_z: f64, openings: &[&Opening]) -> TriMesh {
     let t = wall.thickness / 2.0;
     let z0 = base_z + wall.base_offset;
     let p = |u: f64, v: f64, w: f64| -> DVec3 {
+        // the end grid lines follow the joins
+        let u = if u <= 0.0 {
+            ends.start_u(w)
+        } else if u >= len {
+            ends.end_u(wall, w)
+        } else {
+            u
+        };
         let xy = wall.start + d * u + n2 * w;
         DVec3::new(xy.x, xy.y, z0 + v)
     };
@@ -91,13 +100,13 @@ pub fn wall_mesh(wall: &Wall, base_z: f64, openings: &[&Opening]) -> TriMesh {
             if !solid(i - 1, j) {
                 m.add_quad(
                     [p(ua, va, -t), p(ua, va, t), p(ua, vb, t), p(ua, vb, -t)],
-                    -along,
+                    end_normal(p(ua, va, -t), p(ua, va, t), -along),
                 );
             }
             if !solid(i + 1, j) {
                 m.add_quad(
                     [p(ub, va, -t), p(ub, va, t), p(ub, vb, t), p(ub, vb, -t)],
-                    along,
+                    end_normal(p(ub, va, -t), p(ub, va, t), along),
                 );
             }
             if !solid(i, j - 1) {
@@ -115,6 +124,19 @@ pub fn wall_mesh(wall: &Wall, base_z: f64, openings: &[&Opening]) -> TriMesh {
         }
     }
     m
+}
+
+/// Normal of a vertical end face running from `a` to `b` in plan, facing `towards`.
+fn end_normal(a: DVec3, b: DVec3, towards: DVec3) -> DVec3 {
+    let e = b - a;
+    let n = DVec3::new(-e.y, e.x, 0.0).normalize_or_zero();
+    if n == DVec3::ZERO {
+        towards
+    } else if n.dot(towards) < 0.0 {
+        -n
+    } else {
+        n
+    }
 }
 
 #[cfg(test)]
@@ -146,7 +168,7 @@ mod tests {
 
     #[test]
     fn plain_wall_is_a_closed_box() {
-        let m = wall_mesh(&wall(), 0.0, &[]);
+        let m = wall_mesh(&wall(), 0.0, &[], &WallEnds::default());
         assert_eq!(m.triangle_count(), 12);
         assert!((m.volume() - 5.0 * 3.0 * 0.2).abs() < 1e-5);
     }
@@ -155,7 +177,7 @@ mod tests {
     fn openings_remove_their_volume() {
         let win = opening(1.0, 0.9, 1.2, 1.2);
         let door = opening(3.0, 0.0, 0.9, 2.1);
-        let m = wall_mesh(&wall(), 3.0, &[&win, &door]);
+        let m = wall_mesh(&wall(), 3.0, &[&win, &door], &WallEnds::default());
         let expected = (15.0 - 1.44 - 0.9 * 2.1) * 0.2;
         assert!((m.volume() - expected).abs() < 1e-4, "{}", m.volume());
         let (lo, hi) = m.bounds().unwrap();
@@ -165,7 +187,7 @@ mod tests {
     #[test]
     fn opening_past_the_wall_end_is_clipped() {
         let o = opening(4.5, 1.0, 2.0, 1.0);
-        let m = wall_mesh(&wall(), 0.0, &[&o]);
+        let m = wall_mesh(&wall(), 0.0, &[&o], &WallEnds::default());
         assert!((m.volume() - (15.0 - 0.5) * 0.2).abs() < 1e-4);
     }
 }

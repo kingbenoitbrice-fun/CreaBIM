@@ -6,10 +6,12 @@
 //! polygon meshes, which this crate builds exactly.
 
 pub mod mesh;
+pub mod paper;
 pub mod pick;
 pub mod plan;
 pub mod scene;
 pub mod section;
+pub mod sheet;
 pub mod triangulate;
 pub mod wall;
 

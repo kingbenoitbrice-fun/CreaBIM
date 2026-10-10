@@ -6,7 +6,7 @@ use creabim_core::{
     Document, EditMesh, Element, ElementId, ElementKind, FreeMesh, Opening, OpeningKind, Slab,
     Transaction, View, ViewKind, Wall,
 };
-use creabim_geom::{plan::Pen, section::Drawing, PlanItem};
+use creabim_geom::{paper, plan::Pen, section::Drawing, triangulate::triangulate, PlanItem};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use glam::{DVec2, DVec3};
 use std::collections::HashMap;
@@ -67,8 +67,40 @@ impl Tool {
 pub enum PaneKind {
     /// A plan of a level: every drawing tool works here.
     Plan { level: ElementId },
-    /// A section or elevation: select and edit through Properties.
-    Section,
+    /// A section or elevation along `start` → `end`. Walls, doors, windows
+    /// and masses can be drawn here too; drawing x runs along the line and
+    /// y is height.
+    Section { start: DVec2, end: DVec2 },
+    /// A parallel 3D view: drag to orbit, click to select.
+    Axonometric,
+}
+
+impl PaneKind {
+    /// World plan position of a section drawing point on the section plane.
+    fn section_point(start: DVec2, end: DVec2, p: DVec2) -> DVec2 {
+        start + (end - start).normalize_or_zero() * p.x
+    }
+}
+
+/// How a pane is shown: on its own, or inside a viewport on a sheet.
+#[derive(Clone, Copy, Debug)]
+pub struct PaneStyle {
+    /// Background fill; `None` leaves what is behind (the sheet) visible.
+    pub background: Option<Color32>,
+    /// Metric grid and tool hint.
+    pub decorations: bool,
+    /// Fixed pan and zoom (centre, pixels per metre) instead of the view's own.
+    pub camera: Option<(DVec2, f32)>,
+    /// Drawing scale denominator, for hatch spacing.
+    pub scale: f64,
+}
+
+/// Which part of a selected section line is being dragged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Handle {
+    Start,
+    End,
+    Line,
 }
 
 pub struct PlanState {
@@ -78,6 +110,8 @@ pub struct PlanState {
     /// First click of a two-click tool (wall start, slab corner).
     pub pending: Option<DVec2>,
     pub wall_thickness: f64,
+    /// Section line handle being dragged, and the line when the drag began.
+    drag: Option<(Handle, DVec2, DVec2, DVec2)>,
 }
 
 impl Default for PlanState {
@@ -87,23 +121,24 @@ impl Default for PlanState {
             tool: Tool::Select,
             pending: None,
             wall_thickness: 0.2,
+            drag: None,
         }
     }
 }
 
-struct Xf {
-    rect: Rect,
-    center: DVec2,
-    scale: f32,
+pub struct Xf {
+    pub rect: Rect,
+    pub center: DVec2,
+    pub scale: f32,
 }
 
 impl Xf {
-    fn to_screen(&self, p: DVec2) -> Pos2 {
+    pub fn to_screen(&self, p: DVec2) -> Pos2 {
         let d = (p - self.center).as_vec2() * self.scale;
         self.rect.center() + Vec2::new(d.x, -d.y)
     }
 
-    fn to_world(&self, p: Pos2) -> DVec2 {
+    pub fn to_world(&self, p: Pos2) -> DVec2 {
         let d = (p - self.rect.center()) / self.scale;
         self.center + DVec2::new(d.x as f64, -d.y as f64)
     }
@@ -120,21 +155,41 @@ pub fn show(
     plan: &Drawing,
     state: &mut PlanState,
     selection: &mut Option<ElementId>,
-    background: Color32,
+    style: PaneStyle,
 ) -> Option<String> {
     let response = ui.interact(rect, ui.id().with(("view", view)), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, background);
+    if let Some(bg) = style.background {
+        painter.rect_filled(rect, 0.0, bg);
+    }
 
-    let (mut center, mut scale) = *state.cameras.entry(view).or_insert_with(|| fit(plan, rect));
-    let tool = match kind {
-        PaneKind::Plan { .. } => state.tool,
-        PaneKind::Section => Tool::Select,
+    let (mut center, mut scale) = match style.camera {
+        Some(c) => c,
+        None => *state.cameras.entry(view).or_insert_with(|| fit(plan, rect)),
     };
-    let level = match kind {
-        PaneKind::Plan { level } => level,
-        PaneKind::Section => view,
+    let tool = match (kind, state.tool) {
+        (PaneKind::Section { .. }, Tool::Slab | Tool::Section | Tool::Elevation) => Tool::Select,
+        (PaneKind::Axonometric, _) => Tool::Select,
+        (_, t) => t,
     };
+
+    // orbit a 3D view by dragging it
+    if kind == PaneKind::Axonometric && response.dragged_by(egui::PointerButton::Primary) {
+        let d = response.drag_delta();
+        let r = doc.edit_merged(view, "Orbit 3D view", |e| {
+            if let ElementKind::View(View {
+                kind: ViewKind::Axonometric { azimuth, altitude },
+                ..
+            }) = &mut e.kind
+            {
+                *azimuth = (*azimuth - d.x as f64 * 0.4).rem_euclid(360.0);
+                *altitude = (*altitude + d.y as f64 * 0.4).clamp(-89.0, 89.0);
+            }
+        });
+        if let Err(e) = r {
+            return Some(e.to_string());
+        }
+    }
 
     // pan and zoom
     if response.dragged_by(egui::PointerButton::Secondary)
@@ -163,23 +218,47 @@ pub fn show(
             }
         }
     }
-    state.cameras.insert(view, (center, scale));
+    if style.camera.is_none() {
+        state.cameras.insert(view, (center, scale));
+    }
     let xf = Xf {
         rect,
         center,
         scale,
     };
 
-    draw_metric_grid(&painter, &xf);
+    if style.decorations {
+        draw_metric_grid(&painter, &xf);
+    }
+    let hatch = paper::HATCH_SPACING * style.scale / 1000.0;
     for item in &plan.items {
-        draw_item(&painter, &xf, item, *selection == Some(item.id()));
+        draw_item(&painter, &xf, item, *selection == Some(item.id()), hatch);
     }
 
     let shift = ui.input(|i| i.modifiers.shift);
     let hover_world = response.hover_pos().map(|p| match kind {
         PaneKind::Plan { level } => snap(doc, level, &xf, xf.to_world(p), state.pending, shift),
-        PaneKind::Section => xf.to_world(p),
+        PaneKind::Axonometric => xf.to_world(p),
+        PaneKind::Section { .. } => {
+            let mut p = xf.to_world(p);
+            if let (true, Some(a)) = (shift, state.pending) {
+                let d = p - a;
+                p = if d.x.abs() >= d.y.abs() {
+                    DVec2::new(p.x, a.y)
+                } else {
+                    DVec2::new(a.x, p.y)
+                };
+            }
+            (p / 0.05).round() * 0.05
+        }
     });
+
+    // a selected section line in a plan can be dragged by its ends or middle
+    if let (PaneKind::Plan { .. }, Tool::Select) = (kind, tool) {
+        if let Some(r) = drag_section_line(doc, &painter, &xf, &response, state, *selection) {
+            return r;
+        }
+    }
 
     // preview of the tool in progress
     if let (Some(a), Some(b)) = (state.pending, hover_world) {
@@ -224,114 +303,392 @@ pub fn show(
     let mut error = None;
     if response.clicked() {
         let p = hover_world?;
-        let result = match tool {
-            Tool::Select => {
-                *selection = hit_test(&plan.items, p, 6.0 / scale as f64);
+        let raw = xf.to_world(response.interact_pointer_pos().unwrap_or_default());
+        // linework first (edges, symbols); then whatever the view ray hits
+        let picked = || {
+            hit_test(&plan.items, raw, 6.0 / scale as f64)
+                .or_else(|| ray_pick(doc, view, kind, raw))
+        };
+        let result = match (kind, tool) {
+            (_, Tool::Select) => {
+                *selection = picked();
                 Ok(())
             }
-            Tool::Section | Tool::Elevation => match state.pending.take() {
-                None => {
-                    state.pending = Some(p);
-                    Ok(())
-                }
-                Some(a) if a.distance(p) > 0.2 => {
-                    let cut = tool == Tool::Section;
-                    let n = doc
-                        .model()
-                        .iter()
-                        .filter(|e| matches!(&e.kind, ElementKind::View(v) if matches!(v.kind, ViewKind::Section { cut: c, .. } if c == cut)))
-                        .count();
-                    let name = if cut {
-                        format!("Section {}", section_letter(n))
-                    } else {
-                        format!("Elevation {}", n + 1)
-                    };
-                    let e = Element::new(
-                        name.clone(),
-                        ElementKind::View(View::section(a, p, 30.0, cut)),
-                    );
-                    *selection = Some(e.id);
-                    doc.commit(Transaction::new(format!("Add {name}")).insert(e))
-                }
-                Some(_) => Ok(()),
-            },
-            Tool::Wall => match state.pending {
-                None => {
-                    state.pending = Some(p);
-                    Ok(())
-                }
-                Some(a) if a.distance(p) > 0.05 => {
-                    let height = doc.model().level(level).map_or(3.0, |l| l.height);
-                    let e = Element::new(
-                        "Wall",
-                        ElementKind::Wall(Wall {
-                            level,
-                            start: a,
-                            end: p,
-                            thickness: state.wall_thickness,
-                            height,
-                            base_offset: 0.0,
-                        }),
-                    );
-                    *selection = Some(e.id);
-                    state.pending = Some(p);
-                    doc.commit(Transaction::new("Draw wall").insert(e))
-                }
-                Some(_) => Ok(()),
-            },
-            Tool::Door | Tool::Window => place_opening(doc, level, p, tool, selection),
-            Tool::Slab => match state.pending.take() {
-                None => {
-                    state.pending = Some(p);
-                    Ok(())
-                }
-                Some(a) => {
-                    let (lo, hi) = (a.min(p), a.max(p));
-                    let e = Element::new(
-                        "Slab",
-                        ElementKind::Slab(Slab {
-                            level,
-                            boundary: vec![lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)],
-                            thickness: 0.25,
-                        }),
-                    );
-                    *selection = Some(e.id);
-                    doc.commit(Transaction::new("Draw slab").insert(e))
-                }
-            },
-            Tool::Mass => {
-                let e = Element::new(
-                    "Mass",
-                    ElementKind::FreeMesh(FreeMesh {
-                        level: Some(level),
-                        origin: DVec3::new(p.x, p.y, 0.0),
-                        mesh: EditMesh::cuboid(DVec3::new(2.0, 2.0, 3.0)),
-                        ifc_class: "IfcBuildingElementProxy".into(),
-                    }),
-                );
-                *selection = Some(e.id);
-                doc.commit(Transaction::new("Add mass").insert(e))
+            (PaneKind::Section { start, end }, _) => {
+                section_tool(doc, start, end, tool, p, picked(), state, selection)
             }
+            (PaneKind::Plan { level }, tool) => plan_tool(doc, level, tool, p, state, selection),
+            (PaneKind::Axonometric, _) => Ok(()),
         };
         if let Err(e) = result {
             error = Some(e.to_string());
         }
     }
 
-    // scale bar and tool hint
-    painter.text(
-        rect.left_bottom() + Vec2::new(8.0, -8.0),
-        egui::Align2::LEFT_BOTTOM,
-        match kind {
-            PaneKind::Plan { .. } => state.tool.hint(),
-            PaneKind::Section => {
-                "Click to select; edit in Properties. Drawing tools work in plan views."
+    if style.decorations {
+        painter.text(
+            rect.left_bottom() + Vec2::new(8.0, -8.0),
+            egui::Align2::LEFT_BOTTOM,
+            match (kind, tool) {
+                (PaneKind::Plan { .. }, t) => t.hint(),
+                (PaneKind::Section { .. }, Tool::Select) => {
+                    "Click to select. Wall, Door, Window and Mass also work here; Slab and Section tools work in plans."
+                }
+                (PaneKind::Section { .. }, Tool::Wall) => {
+                    "Click two points: the wall runs along the section line, as high as you draw it."
+                }
+                (PaneKind::Section { .. }, t) => t.hint(),
+                (PaneKind::Axonometric, _) => {
+                    "Drag to orbit, click to select. Right-drag pans, the wheel zooms."
+                }
+            },
+            egui::FontId::proportional(12.0),
+            Color32::from_gray(90),
+        );
+    }
+    error
+}
+
+/// A click with a drawing tool in a plan.
+fn plan_tool(
+    doc: &mut Document,
+    level: ElementId,
+    tool: Tool,
+    p: DVec2,
+    state: &mut PlanState,
+    selection: &mut Option<ElementId>,
+) -> Result<(), creabim_core::ModelError> {
+    match tool {
+        Tool::Select => Ok(()),
+        Tool::Section | Tool::Elevation => match state.pending.take() {
+            None => {
+                state.pending = Some(p);
+                Ok(())
+            }
+            Some(a) if a.distance(p) > 0.2 => {
+                let cut = tool == Tool::Section;
+                let n = doc
+                        .model()
+                        .iter()
+                        .filter(|e| matches!(&e.kind, ElementKind::View(v) if matches!(v.kind, ViewKind::Section { cut: c, .. } if c == cut)))
+                        .count();
+                let name = if cut {
+                    format!("Section {}", section_letter(n))
+                } else {
+                    format!("Elevation {}", n + 1)
+                };
+                let e = Element::new(
+                    name.clone(),
+                    ElementKind::View(View::section(a, p, 30.0, cut)),
+                );
+                *selection = Some(e.id);
+                doc.commit(Transaction::new(format!("Add {name}")).insert(e))
+            }
+            Some(_) => Ok(()),
+        },
+        Tool::Wall => match state.pending {
+            None => {
+                state.pending = Some(p);
+                Ok(())
+            }
+            Some(a) if a.distance(p) > 0.05 => {
+                let height = doc.model().level(level).map_or(3.0, |l| l.height);
+                let e = Element::new(
+                    "Wall",
+                    ElementKind::Wall(Wall {
+                        level,
+                        start: a,
+                        end: p,
+                        thickness: state.wall_thickness,
+                        height,
+                        base_offset: 0.0,
+                    }),
+                );
+                *selection = Some(e.id);
+                state.pending = Some(p);
+                doc.commit(Transaction::new("Draw wall").insert(e))
+            }
+            Some(_) => Ok(()),
+        },
+        Tool::Door | Tool::Window => place_opening(doc, level, p, tool, selection),
+        Tool::Slab => match state.pending.take() {
+            None => {
+                state.pending = Some(p);
+                Ok(())
+            }
+            Some(a) => {
+                let (lo, hi) = (a.min(p), a.max(p));
+                let e = Element::new(
+                    "Slab",
+                    ElementKind::Slab(Slab {
+                        level,
+                        boundary: vec![lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)],
+                        thickness: 0.25,
+                    }),
+                );
+                *selection = Some(e.id);
+                doc.commit(Transaction::new("Draw slab").insert(e))
             }
         },
-        egui::FontId::proportional(12.0),
-        Color32::from_gray(90),
-    );
-    error
+        Tool::Mass => {
+            let e = Element::new(
+                "Mass",
+                ElementKind::FreeMesh(FreeMesh {
+                    level: Some(level),
+                    origin: DVec3::new(p.x, p.y, 0.0),
+                    mesh: EditMesh::cuboid(DVec3::new(2.0, 2.0, 3.0)),
+                    ifc_class: "IfcBuildingElementProxy".into(),
+                }),
+            );
+            *selection = Some(e.id);
+            doc.commit(Transaction::new("Add mass").insert(e))
+        }
+    }
+}
+
+/// The element a section or 3D view shows at drawing point `p`, found by
+/// casting the viewing ray through the model.
+fn ray_pick(doc: &Document, view: ElementId, kind: PaneKind, p: DVec2) -> Option<ElementId> {
+    let (o, d) = match kind {
+        PaneKind::Plan { .. } => return None,
+        PaneKind::Section { start, end } => {
+            let look = (end - start).normalize_or_zero().perp();
+            let xy = PaneKind::section_point(start, end, p);
+            (DVec3::new(xy.x, xy.y, p.y), look.extend(0.0))
+        }
+        PaneKind::Axonometric => {
+            let Some(ElementKind::View(View {
+                kind: ViewKind::Axonometric { azimuth, altitude },
+                ..
+            })) = doc.model().get(view).map(|e| &e.kind)
+            else {
+                return None;
+            };
+            creabim_geom::section::AxoFrame::new(doc.model(), *azimuth, *altitude).ray(p)
+        }
+    };
+    let scene = creabim_geom::build_scene(doc.model());
+    creabim_geom::pick::pick(&scene, o.as_vec3(), d.as_vec3()).map(|h| h.id)
+}
+
+/// The level a height belongs to: the highest one at or below it.
+fn level_below(doc: &Document, z: f64) -> Option<(ElementId, f64)> {
+    let levels: Vec<(ElementId, f64)> = doc
+        .model()
+        .levels()
+        .map(|(e, l)| (e.id, l.elevation))
+        .collect();
+    levels
+        .iter()
+        .filter(|(_, el)| *el <= z + 1e-6)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .or_else(|| levels.iter().min_by(|a, b| a.1.total_cmp(&b.1)))
+        .copied()
+}
+
+/// A click with a drawing tool in a section or elevation. `p` is the
+/// drawing point (along the line, height); `picked` is what is under it.
+#[allow(clippy::too_many_arguments)]
+fn section_tool(
+    doc: &mut Document,
+    start: DVec2,
+    end: DVec2,
+    tool: Tool,
+    p: DVec2,
+    picked: Option<ElementId>,
+    state: &mut PlanState,
+    selection: &mut Option<ElementId>,
+) -> Result<(), creabim_core::ModelError> {
+    let at = |p: DVec2| PaneKind::section_point(start, end, p);
+    match tool {
+        Tool::Wall => match state.pending.take() {
+            None => {
+                state.pending = Some(p);
+                Ok(())
+            }
+            Some(a) => {
+                let (x0, x1) = (a.x.min(p.x), a.x.max(p.x));
+                let (z0, z1) = (a.y.min(p.y), a.y.max(p.y));
+                if x1 - x0 < 0.05 {
+                    return Ok(());
+                }
+                let Some((level, elevation)) = level_below(doc, z0) else {
+                    return Ok(());
+                };
+                let height = if z1 - z0 < 0.1 {
+                    doc.model().level(level).map_or(3.0, |l| l.height)
+                } else {
+                    z1 - z0
+                };
+                // set just behind the section plane, so its face is what you drew
+                let behind =
+                    (end - start).normalize_or_zero().perp() * (state.wall_thickness / 2.0 + 0.01);
+                let e = Element::new(
+                    "Wall",
+                    ElementKind::Wall(Wall {
+                        level,
+                        start: at(DVec2::new(x0, 0.0)) + behind,
+                        end: at(DVec2::new(x1, 0.0)) + behind,
+                        thickness: state.wall_thickness,
+                        height,
+                        base_offset: z0 - elevation,
+                    }),
+                );
+                *selection = Some(e.id);
+                doc.commit(Transaction::new("Draw wall in section").insert(e))
+            }
+        },
+        Tool::Door | Tool::Window => {
+            // the wall under the cursor hosts the opening (or the wall of
+            // the door or window under it)
+            let Some(mut host) = picked else {
+                return Ok(());
+            };
+            if let Some(ElementKind::Opening(o)) = doc.model().get(host).map(|e| &e.kind) {
+                host = o.host;
+            }
+            let Some(ElementKind::Wall(w)) = doc.model().get(host).map(|e| e.kind.clone()) else {
+                return Ok(());
+            };
+            let look = (end - start).normalize_or_zero().perp();
+            let d = w.direction();
+            if d.perp_dot(look).abs() < 1e-6 {
+                return Ok(()); // seen edge-on
+            }
+            // where the viewing ray through the click meets the wall's centreline
+            let o = at(p);
+            let t = (w.start - o).perp_dot(d) / look.perp_dot(d);
+            let u = (o + look * t - w.start).dot(d);
+            let base = doc.model().level(w.level).map_or(0.0, |l| l.elevation) + w.base_offset;
+            let (kind, width, height, name) = match tool {
+                Tool::Door => (OpeningKind::Door, 0.9, 2.1, "Door"),
+                _ => (OpeningKind::Window, 1.2, 1.3, "Window"),
+            };
+            if width > w.length() {
+                return Ok(());
+            }
+            let sill = match kind {
+                OpeningKind::Door => 0.0,
+                OpeningKind::Window => {
+                    (p.y - base - height / 2.0).clamp(0.0, (w.height - height).max(0.0))
+                }
+            };
+            let e = Element::new(
+                name,
+                ElementKind::Opening(Opening {
+                    host,
+                    kind,
+                    offset: (u - width / 2.0).clamp(0.0, w.length() - width),
+                    sill,
+                    width,
+                    height,
+                }),
+            );
+            *selection = Some(e.id);
+            doc.commit(
+                Transaction::new(format!("Place {} in section", name.to_lowercase())).insert(e),
+            )
+        }
+        Tool::Mass => {
+            let Some((level, elevation)) = level_below(doc, p.y) else {
+                return Ok(());
+            };
+            let xy = at(p);
+            let e = Element::new(
+                "Mass",
+                ElementKind::FreeMesh(FreeMesh {
+                    level: Some(level),
+                    origin: DVec3::new(xy.x, xy.y, p.y - elevation),
+                    mesh: EditMesh::cuboid(DVec3::new(2.0, 2.0, 3.0)),
+                    ifc_class: "IfcBuildingElementProxy".into(),
+                }),
+            );
+            *selection = Some(e.id);
+            doc.commit(Transaction::new("Add mass").insert(e))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Handles on a selected section or elevation line. Returns `Some` while a
+/// handle is being dragged (the pane skips its other input then).
+fn drag_section_line(
+    doc: &mut Document,
+    painter: &egui::Painter,
+    xf: &Xf,
+    response: &egui::Response,
+    state: &mut PlanState,
+    selection: Option<ElementId>,
+) -> Option<Option<String>> {
+    let id = selection?;
+    let Some(ElementKind::View(View {
+        kind: ViewKind::Section { start, end, .. },
+        ..
+    })) = doc.model().get(id).map(|e| &e.kind)
+    else {
+        state.drag = None;
+        return None;
+    };
+    let (start, end) = (*start, *end);
+    let handles = [
+        (Handle::Start, start),
+        (Handle::End, end),
+        (Handle::Line, (start + end) / 2.0),
+    ];
+    let accent = Color32::from_rgb(230, 120, 30);
+    for (h, p) in handles {
+        let c = xf.to_screen(p);
+        if h == Handle::Line {
+            painter.circle(c, 5.0, Color32::WHITE, Stroke::new(1.5, accent));
+        } else {
+            painter.rect(
+                Rect::from_center_size(c, Vec2::splat(9.0)),
+                0.0,
+                Color32::WHITE,
+                Stroke::new(1.5, accent),
+                egui::StrokeKind::Middle,
+            );
+        }
+    }
+    if response.drag_started_by(egui::PointerButton::Primary) {
+        // where the button went down, not where the drag was recognised
+        let p = painter
+            .ctx()
+            .input(|i| i.pointer.press_origin())
+            .or(response.interact_pointer_pos())?;
+        state.drag = handles
+            .iter()
+            .find(|(_, q)| xf.to_screen(*q).distance(p) < 10.0)
+            .map(|(h, _)| (*h, xf.to_world(p), start, end));
+    }
+    let (h, grab, s0, e0) = state.drag?;
+    if response.drag_stopped() || !response.dragged() {
+        state.drag = None;
+        return Some(None);
+    }
+    let p = xf.to_world(response.interact_pointer_pos()?);
+    let snap = |v: DVec2| (v / 0.05).round() * 0.05;
+    let (s1, e1) = match h {
+        Handle::Start => (snap(p), e0),
+        Handle::End => (s0, snap(p)),
+        Handle::Line => {
+            let d = snap(p - grab);
+            (s0 + d, e0 + d)
+        }
+    };
+    if s1.distance(e1) < 0.2 {
+        return Some(None);
+    }
+    let r = doc.edit_merged(id, "Move section line", |e| {
+        if let ElementKind::View(View {
+            kind: ViewKind::Section { start, end, .. },
+            ..
+        }) = &mut e.kind
+        {
+            (*start, *end) = (s1, e1);
+        }
+    });
+    Some(r.err().map(|e| e.to_string()))
 }
 
 /// Centre and zoom that fit a drawing in the pane.
@@ -394,10 +751,31 @@ fn draw_metric_grid(painter: &egui::Painter, xf: &Xf) {
     }
 }
 
-fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bool) {
+/// Draw one drawing item. `hatch` is the hatch spacing in drawing units.
+pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bool, hatch: f64) {
     let highlight = Color32::from_rgb(230, 120, 30);
     let ink = if selected { highlight } else { Color32::BLACK };
     match item {
+        PlanItem::Fill {
+            points,
+            hatch: pattern,
+            ..
+        } => {
+            let gray = (paper::hatch_fill(*pattern) * 255.0) as u8;
+            let fill = if selected {
+                Color32::from_rgb(250, 205, 160)
+            } else {
+                Color32::from_gray(gray)
+            };
+            fill_polygon(painter, xf, points, fill);
+            // skip hatching once it would be too dense to read
+            if hatch * xf.scale as f64 > 3.0 {
+                let stroke = Stroke::new(0.6, Color32::from_gray(70));
+                for (a, b) in pattern.lines(points, hatch) {
+                    painter.line_segment([xf.to_screen(a), xf.to_screen(b)], stroke);
+                }
+            }
+        }
         PlanItem::Polygon { pen, points, .. } => {
             let pts: Vec<Pos2> = points.iter().map(|p| xf.to_screen(*p)).collect();
             match pen {
@@ -441,6 +819,9 @@ fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bool) 
                         (1.0, Color32::from_gray(120))
                     };
                     painter.line_segment([a, b], Stroke::new(w, c));
+                }
+                Pen::Cut => {
+                    painter.line_segment([a, b], Stroke::new(1.8, ink));
                 }
                 _ => {
                     painter.line_segment([a, b], Stroke::new(1.0, ink));
@@ -520,7 +901,19 @@ fn snap(
         .unwrap_or_else(|| (p / 0.05).round() * 0.05)
 }
 
-fn hit_test(items: &[PlanItem], p: DVec2, tol: f64) -> Option<ElementId> {
+/// Fill a possibly concave polygon.
+fn fill_polygon(painter: &egui::Painter, xf: &Xf, points: &[DVec2], fill: Color32) {
+    let mut mesh = egui::Mesh::default();
+    for p in points {
+        mesh.colored_vertex(xf.to_screen(*p), fill);
+    }
+    for [a, b, c] in triangulate(points) {
+        mesh.add_triangle(a as u32, b as u32, c as u32);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+pub fn hit_test(items: &[PlanItem], p: DVec2, tol: f64) -> Option<ElementId> {
     // symbols (doors, windows) win over the walls they sit in
     let near_line = |a: DVec2, b: DVec2| segment_distance(p, a, b) < tol;
     for it in items.iter().rev() {
@@ -539,11 +932,7 @@ fn hit_test(items: &[PlanItem], p: DVec2, tol: f64) -> Option<ElementId> {
     }
     for it in items.iter().rev() {
         match it {
-            PlanItem::Polygon {
-                id,
-                pen: Pen::Cut,
-                points,
-            } if point_in_polygon(p, points) => return Some(*id),
+            PlanItem::Fill { id, points, .. } if point_in_polygon(p, points) => return Some(*id),
             _ => {}
         }
     }
@@ -624,4 +1013,13 @@ fn place_opening(
     );
     *selection = Some(e.id);
     doc.commit(Transaction::new(format!("Place {}", name.to_lowercase())).insert(e))
+}
+
+/// The pane behaviour for a view.
+pub fn pane_kind(v: &View) -> PaneKind {
+    match v.kind {
+        ViewKind::Plan { level, .. } => PaneKind::Plan { level },
+        ViewKind::Section { start, end, .. } => PaneKind::Section { start, end },
+        ViewKind::Axonometric { .. } => PaneKind::Axonometric,
+    }
 }
