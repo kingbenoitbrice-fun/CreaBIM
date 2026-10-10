@@ -140,9 +140,7 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
             .map_or(0.0, |l| l.elevation)
     };
     let mut rows: Vec<(f64, String, Row)> = Vec::new();
-    let columns;
-    let totals;
-    match category {
+    let (columns, totals) = match category {
         ScheduleCategory::Doors | ScheduleCategory::Windows => {
             let kind = if category == ScheduleCategory::Doors {
                 OpeningKind::Door
@@ -150,7 +148,7 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                 OpeningKind::Window
             };
             let marks = creabim_core::marks(model);
-            columns = vec![
+            let columns = vec![
                 col("Mark", None, 16.0, false),
                 col("Level", None, 28.0, false),
                 col("Wall", None, 26.0, false),
@@ -187,10 +185,10 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
             } else {
                 "windows"
             };
-            totals = vec![format!("{} {what}", rows.len())];
+            (columns, vec![format!("{} {what}", rows.len())])
         }
         ScheduleCategory::Walls => {
-            columns = vec![
+            let columns = vec![
                 col("Name", Some(Field::Name), 30.0, false),
                 col("Level", None, 28.0, false),
                 col("Material", Some(Field::Material), 30.0, false),
@@ -233,18 +231,21 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                     },
                 ));
             }
-            totals = vec![
-                format!("{} walls", rows.len()),
-                String::new(),
-                String::new(),
-                mm(total_length),
-                String::new(),
-                String::new(),
-                area(total_area),
-            ];
+            (
+                columns,
+                vec![
+                    format!("{} walls", rows.len()),
+                    String::new(),
+                    String::new(),
+                    mm(total_length),
+                    String::new(),
+                    String::new(),
+                    area(total_area),
+                ],
+            )
         }
         ScheduleCategory::Slabs => {
-            columns = vec![
+            let columns = vec![
                 col("Name", Some(Field::Name), 30.0, false),
                 col("Level", None, 28.0, false),
                 col("Material", Some(Field::Material), 30.0, false),
@@ -273,15 +274,18 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                     },
                 ));
             }
-            totals = vec![
-                format!("{} slabs", rows.len()),
-                String::new(),
-                String::new(),
-                String::new(),
-                area(total),
-            ];
+            (
+                columns,
+                vec![
+                    format!("{} slabs", rows.len()),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    area(total),
+                ],
+            )
         }
-    }
+    };
     // marks sort as text (D01 < D02); walls and slabs by level, then model order
     rows.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     Schedule {
