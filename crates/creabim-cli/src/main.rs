@@ -18,6 +18,8 @@ usage:
   creabim sheet <model.creabim.json> <number> <out.svg>
                                              draw one sheet
   creabim pdf <model.creabim.json> <out.pdf> export every sheet to one PDF
+  creabim schedule <model.creabim.json> <doors|windows|walls|slabs> [out.csv]
+                                             print or save a schedule as CSV
   creabim stats <model.creabim.json>         count elements by IFC class";
 
 fn main() -> ExitCode {
@@ -54,7 +56,7 @@ fn main() -> ExitCode {
                 .find(|e| e.name == *name && matches!(e.kind, creabim_core::ElementKind::View(_)))
                 .ok_or_else(|| format!("no view named {name:?}"))?;
             let scale = match &e.kind {
-                creabim_core::ElementKind::View(v) => v.scale,
+                creabim_core::ElementKind::View(v) => v.paper_scale(),
                 _ => 100.0,
             };
             let d = creabim_geom::section::view_drawing(&m, e.id).expect("is a view");
@@ -68,6 +70,7 @@ fn main() -> ExitCode {
                         creabim_core::ViewKind::Section { cut: true, .. } => "section",
                         creabim_core::ViewKind::Section { cut: false, .. } => "elevation",
                         creabim_core::ViewKind::Axonometric { .. } => "3d",
+                        creabim_core::ViewKind::Schedule { .. } => "schedule",
                     };
                     println!("{kind:10} 1:{:<5} {}", v.scale, e.name);
                 }
@@ -93,6 +96,22 @@ fn main() -> ExitCode {
                 return Err("the model has no sheets".into());
             }
             std::fs::write(out, sheets_pdf(&m, &info(input))).map_err(|e| e.to_string())
+        }),
+        ["schedule", input, category, rest @ ..] if rest.len() <= 1 => load(input).and_then(|m| {
+            let cat = creabim_core::ScheduleCategory::ALL
+                .into_iter()
+                .find(|c| c.label().eq_ignore_ascii_case(category))
+                .ok_or_else(|| {
+                    format!("no schedule of {category:?}; try doors, windows, walls or slabs")
+                })?;
+            let csv = creabim_geom::schedule::to_csv(&creabim_geom::schedule::schedule(&m, cat));
+            match rest {
+                [out] => std::fs::write(out, csv).map_err(|e| e.to_string()),
+                _ => {
+                    print!("{csv}");
+                    Ok(())
+                }
+            }
         }),
         ["stats", input] => load(input).map(|m| {
             let mut counts = std::collections::BTreeMap::new();

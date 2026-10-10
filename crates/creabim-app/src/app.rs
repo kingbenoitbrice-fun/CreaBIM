@@ -4,7 +4,7 @@ use crate::render3d::{Vertex, Viewport3d};
 use crate::sheetview::{self, SheetState};
 use creabim_core::{
     element::FREE_MESH_CLASSES, sample::sample_house, Document, Element, ElementId, ElementKind,
-    Model, Sheet, Transaction, View, ViewKind,
+    Hatch, Material, Model, ScheduleCategory, Sheet, Transaction, View, ViewKind, ViewStyle,
 };
 use creabim_geom::sheet::{self as sheets, PlacedView, SheetInfo};
 use creabim_geom::{
@@ -264,7 +264,7 @@ impl CreaBimApp {
             .unwrap_or_default();
         let tx = Transaction::new(format!("Delete {name}")).remove_cascade(self.doc.model(), id);
         let r = self.doc.commit(tx);
-        self.report(r, format!("Deleted {name} and anything hosted on it."));
+        self.report(r, format!("Deleted {name} and anything attached to it."));
         self.drop_stale_selection();
     }
 
@@ -386,11 +386,14 @@ impl CreaBimApp {
                             [w.x as f32, w.y as f32, p.y as f32]
                         }))
                     }
-                    // a 3D view has no place of its own in the model
-                    ViewKind::Axonometric { .. } => None,
+                    // 3D views and schedules have no place of their own in the model
+                    ViewKind::Axonometric { .. } | ViewKind::Schedule { .. } => None,
                 };
                 let to_world = to_world.unwrap_or_else(|| Box::new(|_| [0.0; 3]));
-                let plan = if matches!(kind, ViewKind::Axonometric { .. }) {
+                let plan = if matches!(
+                    kind,
+                    ViewKind::Axonometric { .. } | ViewKind::Schedule { .. }
+                ) {
                     Drawing::default()
                 } else {
                     plan
@@ -430,7 +433,15 @@ impl CreaBimApp {
                                 );
                             }
                         }
-                        PlanItem::Label { .. } | PlanItem::Fill { .. } => {}
+                        PlanItem::Dimension { a, b, offset, .. } => {
+                            let n = (*b - *a).normalize_or_zero().perp() * *offset;
+                            seg(*a + n, *b + n, [0.12, 0.24, 0.47]);
+                        }
+                        PlanItem::Label { .. }
+                        | PlanItem::Fill { .. }
+                        | PlanItem::Text { .. }
+                        | PlanItem::Tag { .. }
+                        | PlanItem::Image { .. } => {}
                     }
                 }
             }
@@ -511,7 +522,29 @@ impl CreaBimApp {
     fn show_plan(&mut self, ui: &mut egui::Ui, rect: Rect, background: Color32) {
         let Some(view) = self.active_view else { return };
         let (before, revision) = (self.selection, self.doc.model().revision());
-        let result = if self.is_sheet(view) {
+        let schedule = match self.view(view).map(|v| &v.kind) {
+            Some(ViewKind::Schedule { category }) => Some(*category),
+            _ => None,
+        };
+        let result = if let Some(category) = schedule {
+            let csv = with_extension(
+                &self.path,
+                &format!("{}.csv", category.label().to_lowercase()),
+            );
+            let msg = crate::schedulepane::show(
+                ui,
+                rect,
+                &mut self.doc,
+                view,
+                category,
+                &mut self.selection,
+                &csv,
+            );
+            if let Some(m) = msg {
+                self.status = m;
+            }
+            None
+        } else if self.is_sheet(view) {
             let views = self.placed_views(view);
             let info = self.sheet_info();
             sheetview::show(
@@ -575,6 +608,7 @@ impl CreaBimApp {
             .map(|e| e.name.clone())
             .unwrap_or_default();
         let label = match (self.view(view), sheets::sheet_of(self.doc.model(), view)) {
+            (Some(_), _) if schedule.is_some() => format!("{name}  ·  schedule"),
             (Some(v), _) => format!("{name}  ·  1:{:.0}", v.scale),
             (_, Some(s)) => format!(
                 "Sheet {} {name}  ·  {}",
@@ -618,6 +652,13 @@ impl CreaBimApp {
                 if ui.button("New sheet").clicked() {
                     self.new_sheet();
                 }
+                ui.menu_button("New schedule", |ui| {
+                    for c in ScheduleCategory::ALL {
+                        if ui.button(c.label()).clicked() {
+                            self.new_schedule(c);
+                        }
+                    }
+                });
                 ui.separator();
                 if ui.button("Open").clicked() {
                     let r = std::fs::read_to_string(&self.path)
@@ -759,7 +800,7 @@ impl CreaBimApp {
                     .clicked()
                 {
                     self.plan.tool = t;
-                    self.plan.pending = None;
+                    self.plan.cancel();
                 }
             }
             ui.separator();
@@ -798,10 +839,15 @@ impl CreaBimApp {
             }
             if let Some(id) = self.active_view {
                 if let Some(mut v) = self.view(id).cloned() {
+                    let shadable = matches!(
+                        v.kind,
+                        ViewKind::Section { .. } | ViewKind::Axonometric { .. }
+                    );
                     let (text, value, unit) = match &mut v.kind {
                         ViewKind::Plan { cut_height, .. } => ("Cut height:", cut_height, " m"),
                         ViewKind::Section { depth, .. } => ("Depth:", depth, " m"),
                         ViewKind::Axonometric { altitude, .. } => ("Altitude:", altitude, "°"),
+                        ViewKind::Schedule { .. } => return,
                     };
                     ui.label(text);
                     let changed = ui
@@ -816,11 +862,34 @@ impl CreaBimApp {
                                 .suffix(unit),
                         )
                         .changed();
-                    if changed {
+                    let mut shaded = v.style == ViewStyle::Shaded;
+                    let restyled = shadable && ui.checkbox(&mut shaded, "Shaded").changed();
+                    if restyled {
+                        v.style = if shaded {
+                            ViewStyle::Shaded
+                        } else {
+                            ViewStyle::HiddenLine
+                        };
+                    }
+                    if changed || restyled {
                         let r = self.doc.edit_merged(id, "Change view", |e| {
                             e.kind = ElementKind::View(v.clone())
                         });
                         self.report(r, "View changed.");
+                    }
+                    if ui
+                        .button("Tag doors and windows")
+                        .on_hover_text("Tag every door and window in this view that has no tag yet")
+                        .clicked()
+                    {
+                        let r = planview::tag_openings(&mut self.doc, id);
+                        self.status = match r {
+                            Ok(0) => "Every door and window here is tagged already.".into(),
+                            Ok(n) => {
+                                format!("Tagged {n} doors and windows. Drag a tag to move it.")
+                            }
+                            Err(e) => format!("Couldn't do that: {e}"),
+                        };
                     }
                 }
             }
@@ -894,6 +963,70 @@ impl CreaBimApp {
             r,
             "New A3 sheet. Use Place view… in the toolbar to put views on it.",
         );
+    }
+
+    fn new_schedule(&mut self, category: ScheduleCategory) {
+        let label = category.label();
+        let e = Element::new(
+            format!("{} Schedule", &label[..label.len() - 1]),
+            ElementKind::View(View::schedule(category)),
+        );
+        let id = e.id;
+        let r = self
+            .doc
+            .commit(Transaction::new(format!("New {} schedule", label.to_lowercase())).insert(e));
+        self.active_view = Some(id);
+        self.report(
+            r,
+            "New schedule. Edit cells to change the model, or place it on a sheet with Place view….",
+        );
+    }
+
+    fn materials(&self) -> Vec<(ElementId, String)> {
+        self.doc
+            .model()
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Material(_)))
+            .map(|e| (e.id, e.name.clone()))
+            .collect()
+    }
+
+    /// A material picker; "New material" adds one and picks it.
+    fn material_combo(&mut self, ui: &mut egui::Ui, current: &mut Option<ElementId>) -> bool {
+        let materials = self.materials();
+        let name = current
+            .and_then(|id| materials.iter().find(|m| m.0 == id))
+            .map_or("By type", |m| m.1.as_str())
+            .to_string();
+        let mut changed = false;
+        let mut create = false;
+        egui::ComboBox::from_label("Material")
+            .selected_text(name)
+            .show_ui(ui, |ui| {
+                changed |= ui.selectable_value(current, None, "By type").changed();
+                for (id, n) in &materials {
+                    changed |= ui.selectable_value(current, Some(*id), n).changed();
+                }
+                ui.separator();
+                create = ui.button("New material…").clicked();
+            });
+        if create {
+            let e = Element::new(
+                format!("Material {}", materials.len() + 1),
+                ElementKind::Material(Material {
+                    hatch: Hatch::Diagonal,
+                    color: [0.8, 0.8, 0.8],
+                }),
+            );
+            *current = Some(e.id);
+            let r = self.doc.commit(Transaction::new("New material").insert(e));
+            self.report(
+                r,
+                "New material. Select it in the Model list to set its hatch and colour.",
+            );
+            changed = true;
+        }
+        changed
     }
 
     fn outliner(&mut self, ui: &mut egui::Ui) {
@@ -990,6 +1123,9 @@ impl CreaBimApp {
                 if num(ui, "Base offset", &mut w.base_offset, -10.0, 50.0) {
                     label = "Wall base offset"
                 }
+                if self.material_combo(ui, &mut w.material) {
+                    label = "Wall material"
+                }
                 ui.label(format!("Length {:.2} m", w.length()));
                 if num(ui, "Start X", &mut w.start.x, -1e4, 1e4)
                     | num(ui, "Start Y", &mut w.start.y, -1e4, 1e4)
@@ -1006,6 +1142,9 @@ impl CreaBimApp {
                 if num(ui, "Thickness", &mut s.thickness, 0.02, 3.0) {
                     label = "Slab thickness"
                 }
+                if self.material_combo(ui, &mut s.material) {
+                    label = "Slab material"
+                }
                 ui.label(format!("{} boundary points", s.boundary.len()));
             }
             ElementKind::Opening(o) => {
@@ -1020,6 +1159,22 @@ impl CreaBimApp {
                 }
                 if num(ui, "Offset along wall", &mut o.offset, 0.0, 1e4) {
                     label = "Move opening"
+                }
+            }
+            ElementKind::View(v) if matches!(v.kind, ViewKind::Schedule { .. }) => {
+                if let ViewKind::Schedule { category } = &mut v.kind {
+                    egui::ComboBox::from_label("Lists")
+                        .selected_text(category.label())
+                        .show_ui(ui, |ui| {
+                            for c in ScheduleCategory::ALL {
+                                if ui.selectable_value(category, c, c.label()).changed() {
+                                    label = "Schedule category"
+                                }
+                            }
+                        });
+                }
+                if self.active_view != Some(id) && ui.button("Open this schedule").clicked() {
+                    self.active_view = Some(id);
                 }
             }
             ElementKind::View(v) => {
@@ -1086,6 +1241,21 @@ impl CreaBimApp {
                         }
                         ui.label(egui::RichText::new("Or drag in the view to orbit it.").weak());
                     }
+                    ViewKind::Schedule { .. } => {}
+                }
+                if matches!(
+                    v.kind,
+                    ViewKind::Section { .. } | ViewKind::Axonometric { .. }
+                ) {
+                    let mut shaded = v.style == ViewStyle::Shaded;
+                    if ui.checkbox(&mut shaded, "Shaded surfaces").changed() {
+                        v.style = if shaded {
+                            ViewStyle::Shaded
+                        } else {
+                            ViewStyle::HiddenLine
+                        };
+                        label = "View style"
+                    }
                 }
                 if self.active_view != Some(id) && ui.button("Open this view").clicked() {
                     self.active_view = Some(id);
@@ -1132,6 +1302,27 @@ impl CreaBimApp {
                 if mm(ui, "Centre X", &mut vp.center.x) | mm(ui, "Centre Y", &mut vp.center.y) {
                     label = "Move view on sheet"
                 }
+                let mut cropped = vp.crop.is_some();
+                if ui.checkbox(&mut cropped, "Crop the view").changed() {
+                    vp.crop = if cropped {
+                        let view = vp.view;
+                        self.drawing(view)
+                            .and_then(|d| d.bounds())
+                            .map(|(lo, hi)| [lo, hi])
+                    } else {
+                        None
+                    };
+                    label = "Crop view"
+                }
+                if let Some([lo, hi]) = &mut vp.crop {
+                    if num(ui, "Crop left", &mut lo.x, -1e4, hi.x - 0.1)
+                        | num(ui, "Crop right", &mut hi.x, lo.x + 0.1, 1e4)
+                        | num(ui, "Crop bottom", &mut lo.y, -1e4, hi.y - 0.1)
+                        | num(ui, "Crop top", &mut hi.y, lo.y + 0.1, 1e4)
+                    {
+                        label = "Crop view"
+                    }
+                }
                 ui.label(
                     egui::RichText::new(
                         "Drag the view on the sheet to move it; double-click it to edit the model through it.",
@@ -1140,6 +1331,73 @@ impl CreaBimApp {
                 );
                 if ui.button("Open the view itself").clicked() {
                     self.active_view = Some(vp.view);
+                }
+            }
+            ElementKind::Material(m) => {
+                egui::ComboBox::from_label("Cut hatch")
+                    .selected_text(m.hatch.label())
+                    .show_ui(ui, |ui| {
+                        for h in Hatch::ALL {
+                            if ui.selectable_value(&mut m.hatch, h, h.label()).changed() {
+                                label = "Material hatch"
+                            }
+                        }
+                    });
+                ui.horizontal(|ui| {
+                    ui.label("Colour");
+                    if ui.color_edit_button_rgb(&mut m.color).changed() {
+                        label = "Material colour"
+                    }
+                });
+                let users = self
+                    .doc
+                    .model()
+                    .iter()
+                    .filter(|u| {
+                        creabim_core::material_of(self.doc.model(), u)
+                            .is_some_and(|(x, _)| x.id == id)
+                    })
+                    .count();
+                ui.label(egui::RichText::new(format!("Used by {users} elements.")).weak());
+            }
+            ElementKind::Dimension(d) => {
+                let measured = self
+                    .drawing(d.view)
+                    .and_then(|dr| {
+                        dr.items.into_iter().find_map(|i| match i {
+                            PlanItem::Dimension { id: i, text, .. } if i == id => Some(text),
+                            _ => None,
+                        })
+                    })
+                    .unwrap_or_else(|| "-".into());
+                ui.label(format!("Measures {measured} mm"));
+                let attached = [d.a.host, d.b.host].iter().flatten().count();
+                ui.label(
+                    egui::RichText::new(match attached {
+                        0 => "Not attached: it stays where it was drawn.".to_string(),
+                        n => format!("Attached at {n} end(s): it follows what it measures."),
+                    })
+                    .weak(),
+                );
+                if num(ui, "Line offset", &mut d.offset, -100.0, 100.0) {
+                    label = "Move dimension line"
+                }
+            }
+            ElementKind::Tag(t) => {
+                let host = self
+                    .doc
+                    .model()
+                    .get(t.host)
+                    .map(|e| e.name.clone())
+                    .unwrap_or_default();
+                ui.label(format!("Tags {host}"));
+                if num(ui, "Offset X", &mut t.offset.x, -100.0, 100.0)
+                    | num(ui, "Offset Y", &mut t.offset.y, -100.0, 100.0)
+                {
+                    label = "Move tag"
+                }
+                if ui.button("Select the tagged element").clicked() {
+                    self.selection = Some(t.host);
                 }
             }
             ElementKind::Grid(g) => {
@@ -1163,6 +1421,9 @@ impl CreaBimApp {
                             }
                         }
                     });
+                if self.material_combo(ui, &mut m.material) {
+                    label = "Mesh material"
+                }
                 if num(ui, "X", &mut m.origin.x, -1e4, 1e4)
                     | num(ui, "Y", &mut m.origin.y, -1e4, 1e4)
                     | num(ui, "Z", &mut m.origin.z, -1e3, 1e3)
@@ -1236,7 +1497,7 @@ impl CreaBimApp {
         ui.add_space(10.0);
         let deps = self.doc.model().dependents(id).len();
         let text = if deps > 0 {
-            format!("Delete (and {deps} hosted)")
+            format!("Delete (and {deps} attached)")
         } else {
             "Delete".into()
         };

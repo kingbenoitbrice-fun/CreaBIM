@@ -17,44 +17,105 @@ pub enum Pen {
     Grid,
 }
 
-/// Pattern drawn inside a cut fill.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Hatch {
-    /// Plain grey fill.
-    Solid,
-    /// 45° lines, used for walls.
-    Diagonal,
-    /// Crossed 45° lines, used for slabs.
-    Cross,
-}
+pub use creabim_core::Hatch;
 
-impl Hatch {
-    /// The hatch used for an element's cut faces.
-    pub fn of(kind: &ElementKind) -> Hatch {
-        match kind {
-            ElementKind::Wall(_) => Hatch::Diagonal,
-            ElementKind::Slab(_) => Hatch::Cross,
-            _ => Hatch::Solid,
-        }
+/// The hatch for an element's cut faces: its material's, or its type's default.
+pub fn hatch_of(model: &Model, id: ElementId) -> Hatch {
+    let Some(e) = model.get(id) else {
+        return Hatch::Solid;
+    };
+    if let Some((_, m)) = creabim_core::material_of(model, e) {
+        return m.hatch;
     }
-
-    /// Hatch line segments clipped to `polygon`, `spacing` apart in drawing units.
-    pub fn lines(self, polygon: &[DVec2], spacing: f64) -> Vec<(DVec2, DVec2)> {
-        let angles: &[f64] = match self {
-            Hatch::Solid => &[],
-            Hatch::Diagonal => &[45.0],
-            Hatch::Cross => &[45.0, -45.0],
-        };
-        let mut out = Vec::new();
-        for &deg in angles {
-            out.extend(scan_lines(polygon, deg.to_radians(), spacing));
-        }
-        out
+    match &e.kind {
+        ElementKind::Wall(_) => Hatch::Diagonal,
+        ElementKind::Slab(_) => Hatch::Cross,
+        _ => Hatch::Solid,
     }
 }
 
-/// Parallel lines at `angle`, `spacing` apart, clipped to a polygon (even-odd).
-fn scan_lines(polygon: &[DVec2], angle: f64, spacing: f64) -> Vec<(DVec2, DVec2)> {
+/// Hatch line segments clipped to `polygon`, with a base spacing of
+/// `spacing` drawing units. Stipple dots come back as very short segments.
+pub fn hatch_lines(hatch: Hatch, polygon: &[DVec2], spacing: f64) -> Vec<(DVec2, DVec2)> {
+    let s = spacing;
+    let deg = |d: f64| d.to_radians();
+    match hatch {
+        Hatch::Empty | Hatch::Solid => vec![],
+        Hatch::Diagonal => scan_lines(polygon, deg(45.0), s, 0.0),
+        Hatch::Cross => {
+            let mut v = scan_lines(polygon, deg(45.0), s * 1.4, 0.0);
+            v.extend(scan_lines(polygon, deg(-45.0), s * 1.4, 0.0));
+            v
+        }
+        Hatch::Brick => {
+            let mut v = scan_lines(polygon, deg(45.0), s * 2.0, 0.0);
+            v.extend(scan_lines(polygon, deg(45.0), s * 2.0, s * 0.5));
+            v
+        }
+        Hatch::Concrete => {
+            let mut v = scan_lines(polygon, deg(45.0), s * 4.0, 0.0);
+            v.extend(stipple(polygon, s * 1.3));
+            v
+        }
+        Hatch::Timber => {
+            // grain runs along the polygon's longest side
+            let n = polygon.len();
+            let angle = (0..n)
+                .map(|i| polygon[(i + 1) % n] - polygon[i])
+                .max_by(|a, b| a.length().total_cmp(&b.length()))
+                .map_or(0.0, |d| d.to_angle());
+            scan_lines(polygon, angle, s * 1.2, s * 0.3)
+        }
+    }
+}
+
+/// A staggered grid of dots inside a polygon.
+fn stipple(polygon: &[DVec2], spacing: f64) -> Vec<(DVec2, DVec2)> {
+    if polygon.len() < 3 || spacing <= 0.0 {
+        return vec![];
+    }
+    let (lo, hi) = polygon
+        .iter()
+        .fold((DVec2::MAX, DVec2::MIN), |(a, b), p| (a.min(*p), b.max(*p)));
+    let dot = DVec2::new(spacing * 0.12, 0.0);
+    let mut out = Vec::new();
+    let mut j = (lo.y / spacing).floor() as i64;
+    while (j as f64) * spacing <= hi.y {
+        let y = j as f64 * spacing;
+        // offset alternate rows, and jitter a little so it reads as stipple
+        let shift = if j % 2 == 0 { 0.0 } else { 0.5 };
+        let mut i = (lo.x / spacing).floor() as i64 - 1;
+        while (i as f64) * spacing <= hi.x {
+            let h = ((i * 73 + j * 151).rem_euclid(97)) as f64 / 97.0 - 0.5;
+            let p = DVec2::new(
+                (i as f64 + shift + h * 0.4) * spacing,
+                y + h * 0.3 * spacing,
+            );
+            if point_in(p, polygon) {
+                out.push((p, p + dot));
+            }
+            i += 1;
+        }
+        j += 1;
+    }
+    out
+}
+
+fn point_in(p: DVec2, poly: &[DVec2]) -> bool {
+    let mut inside = false;
+    let n = poly.len();
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+/// Parallel lines at `angle`, `spacing` apart and shifted by `phase`,
+/// clipped to a polygon (even-odd).
+fn scan_lines(polygon: &[DVec2], angle: f64, spacing: f64, phase: f64) -> Vec<(DVec2, DVec2)> {
     if polygon.len() < 3 || spacing <= 0.0 {
         return vec![];
     }
@@ -63,7 +124,7 @@ fn scan_lines(polygon: &[DVec2], angle: f64, spacing: f64) -> Vec<(DVec2, DVec2)
     let (dir, nrm) = (DVec2::from_angle(angle), DVec2::from_angle(angle).perp());
     let local: Vec<DVec2> = polygon
         .iter()
-        .map(|p| DVec2::new(p.dot(dir), p.dot(nrm)))
+        .map(|p| DVec2::new(p.dot(dir), p.dot(nrm) - phase))
         .collect();
     let (y0, y1) = local
         .iter()
@@ -82,6 +143,7 @@ fn scan_lines(polygon: &[DVec2], angle: f64, spacing: f64) -> Vec<(DVec2, DVec2)
         xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         for pair in xs.chunks(2) {
             if let [xa, xb] = pair {
+                let y = y + phase;
                 out.push((dir * *xa + nrm * y, dir * *xb + nrm * y));
             }
         }
@@ -90,25 +152,159 @@ fn scan_lines(polygon: &[DVec2], angle: f64, spacing: f64) -> Vec<(DVec2, DVec2)
     out
 }
 
+/// Which cut wins where two overlap: higher numbers cut through lower ones.
+fn cut_priority(model: &Model, id: ElementId) -> u8 {
+    match model.get(id).map(|e| &e.kind) {
+        Some(ElementKind::Wall(_)) => 2,
+        Some(ElementKind::Slab(_)) => 1,
+        _ => 0,
+    }
+}
+
+/// Elements of the same material (or, without materials, the same type)
+/// merge into one mass where they touch; different ones keep a line between.
+fn material_key(model: &Model, id: ElementId) -> (Option<ElementId>, u8) {
+    match model.get(id) {
+        Some(e) => match creabim_core::material_of(model, e) {
+            Some((m, _)) => (Some(m.id), 0),
+            None => (None, 1 + cut_priority(model, id)),
+        },
+        None => (None, 0),
+    }
+}
+
+fn is_convex(poly: &[DVec2]) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    let mut sign = 0.0;
+    for i in 0..n {
+        let (a, b, c) = (poly[i], poly[(i + 1) % n], poly[(i + 2) % n]);
+        let z = (b - a).perp_dot(c - b);
+        if z.abs() < 1e-12 {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = z.signum();
+        } else if z.signum() != sign {
+            return false;
+        }
+    }
+    sign != 0.0
+}
+
+fn signed_area(poly: &[DVec2]) -> f64 {
+    let n = poly.len();
+    (0..n)
+        .map(|i| poly[i].perp_dot(poly[(i + 1) % n]))
+        .sum::<f64>()
+        / 2.0
+}
+
+/// Keep the part of `poly` on the side of a → b where `keep(side)` holds,
+/// side being the signed distance (left positive).
+fn clip_half(poly: &[DVec2], a: DVec2, b: DVec2, left: bool) -> Vec<DVec2> {
+    let d = (b - a).normalize_or_zero();
+    let side = |p: DVec2| {
+        let s = d.perp_dot(p - a);
+        if left {
+            s
+        } else {
+            -s
+        }
+    };
+    let mut out = Vec::new();
+    for i in 0..poly.len() {
+        let (p, q) = (poly[i], poly[(i + 1) % poly.len()]);
+        let (sp, sq) = (side(p), side(q));
+        if sp >= 0.0 {
+            out.push(p);
+        }
+        if (sp >= 0.0) != (sq >= 0.0) {
+            out.push(p + (q - p) * (sp / (sp - sq)));
+        }
+    }
+    out
+}
+
+/// `subject` minus the convex polygon `hole`, as convex-ish pieces.
+pub fn subtract_convex(subject: &[DVec2], hole: &[DVec2]) -> Vec<Vec<DVec2>> {
+    let ccw = signed_area(hole) > 0.0;
+    let n = hole.len();
+    let mut rest = subject.to_vec();
+    let mut pieces = Vec::new();
+    for i in 0..n {
+        let (a, b) = (hole[i], hole[(i + 1) % n]);
+        // outside this edge of the hole is kept; inside goes on to the next edge
+        let outside = clip_half(&rest, a, b, !ccw);
+        if outside.len() >= 3 && signed_area(&outside).abs() > 1e-9 {
+            pieces.push(outside);
+        }
+        rest = clip_half(&rest, a, b, ccw);
+        if rest.len() < 3 {
+            break;
+        }
+    }
+    pieces
+}
+
+/// Do two polygons' bounding boxes overlap by more than a sliver?
+fn boxes_overlap(a: &[DVec2], b: &[DVec2]) -> bool {
+    let bb = |p: &[DVec2]| {
+        p.iter().fold((DVec2::MAX, DVec2::MIN), |(lo, hi), q| {
+            (lo.min(*q), hi.max(*q))
+        })
+    };
+    let ((alo, ahi), (blo, bhi)) = (bb(a), bb(b));
+    let eps = 1e-6;
+    alo.x < bhi.x - eps && blo.x < ahi.x - eps && alo.y < bhi.y - eps && blo.y < ahi.y - eps
+}
+
 /// Turn cut polygons into fills plus outlines, leaving out outline segments
 /// shared with a neighbouring cut so joined elements read as one mass.
 pub fn clean_up_cuts(model: &Model, items: &mut Vec<PlanItem>) {
-    let mut polys: Vec<(ElementId, Vec<DVec2>)> = Vec::new();
-    for it in items.iter_mut() {
-        if let PlanItem::Polygon {
+    let mut cuts: Vec<(ElementId, Vec<DVec2>)> = Vec::new();
+    items.retain(|it| match it {
+        PlanItem::Polygon {
             id,
             pen: Pen::Cut,
             points,
-        } = it
-        {
-            let hatch = model.get(*id).map_or(Hatch::Solid, |e| Hatch::of(&e.kind));
-            polys.push((*id, points.clone()));
-            *it = PlanItem::Fill {
-                id: *id,
-                points: std::mem::take(points),
-                hatch,
-            };
+        } => {
+            cuts.push((*id, points.clone()));
+            false
         }
+        _ => true,
+    });
+    // where cuts overlap, the higher-priority element cuts through the
+    // other: a wall runs through the end of the slab that sits in it
+    let mut polys: Vec<(ElementId, Vec<DVec2>)> = Vec::new();
+    for (id, pts) in &cuts {
+        let mut pieces = vec![pts.clone()];
+        let mine = cut_priority(model, *id);
+        for (other, hole) in &cuts {
+            if cut_priority(model, *other) <= mine || !is_convex(hole) {
+                continue;
+            }
+            pieces = pieces
+                .into_iter()
+                .flat_map(|p| {
+                    if boxes_overlap(&p, hole) {
+                        subtract_convex(&p, hole)
+                    } else {
+                        vec![p]
+                    }
+                })
+                .collect();
+        }
+        polys.extend(pieces.into_iter().map(|p| (*id, p)));
+    }
+    for (id, pts) in &polys {
+        items.push(PlanItem::Fill {
+            id: *id,
+            points: pts.clone(),
+            hatch: hatch_of(model, *id),
+        });
     }
     let edges = |pts: &Vec<DVec2>| -> Vec<(DVec2, DVec2)> {
         (0..pts.len())
@@ -126,8 +322,8 @@ pub fn clean_up_cuts(model: &Model, items: &mut Vec<PlanItem>) {
             let on_line = |p: DVec2| (p - a).perp_dot(d).abs() < eps;
             // parts of this edge covered by another cut's edge
             let mut covered: Vec<(f64, f64)> = Vec::new();
-            for (j, (_, other)) in polys.iter().enumerate() {
-                if i == j {
+            for (j, (other_id, other)) in polys.iter().enumerate() {
+                if i == j || material_key(model, *id) != material_key(model, *other_id) {
                     continue;
                 }
                 for (p, q) in edges(other) {
@@ -190,6 +386,38 @@ pub enum PlanItem {
         at: DVec2,
         text: String,
     },
+    /// Text at a fixed paper size, `size` mm tall.
+    Text {
+        id: ElementId,
+        at: DVec2,
+        text: String,
+        size: f64,
+        align: crate::paper::Anchor,
+    },
+    /// An aligned dimension from `a` to `b`, its line `offset` to the left.
+    Dimension {
+        id: ElementId,
+        a: DVec2,
+        b: DVec2,
+        offset: f64,
+        text: String,
+    },
+    /// A tag: `text` in a bubble at `at`, with a leader back to `anchor`.
+    Tag {
+        id: ElementId,
+        anchor: DVec2,
+        at: DVec2,
+        text: String,
+        round: bool,
+    },
+    /// Shaded surfaces as an image spanning `lo`..`hi`, drawn only inside `clip`.
+    Image {
+        id: ElementId,
+        raster: std::sync::Arc<crate::raster::Raster>,
+        lo: DVec2,
+        hi: DVec2,
+        clip: Option<(DVec2, DVec2)>,
+    },
 }
 
 impl PlanItem {
@@ -199,7 +427,11 @@ impl PlanItem {
             | PlanItem::Fill { id, .. }
             | PlanItem::Line { id, .. }
             | PlanItem::Arc { id, .. }
-            | PlanItem::Label { id, .. } => *id,
+            | PlanItem::Label { id, .. }
+            | PlanItem::Text { id, .. }
+            | PlanItem::Dimension { id, .. }
+            | PlanItem::Tag { id, .. }
+            | PlanItem::Image { id, .. } => *id,
         }
     }
 }
@@ -227,6 +459,36 @@ impl PlanView {
                     let half = DVec2::new(text.chars().count() as f64 * 0.09 + 0.2, 0.25);
                     pts.extend([*at - half, *at + half]);
                 }
+                PlanItem::Text {
+                    at,
+                    text,
+                    size,
+                    align,
+                    ..
+                } => {
+                    // text items are in paper units already (schedules)
+                    let w = crate::paper::text_width(text, *size);
+                    let x0 = match align {
+                        crate::paper::Anchor::Start => at.x,
+                        crate::paper::Anchor::Middle => at.x - w / 2.0,
+                        crate::paper::Anchor::End => at.x - w,
+                    };
+                    pts.extend([
+                        DVec2::new(x0, at.y - size / 2.0),
+                        DVec2::new(x0 + w, at.y + size / 2.0),
+                    ]);
+                }
+                PlanItem::Dimension { a, b, offset, .. } => {
+                    let n = (*b - *a).normalize_or_zero().perp() * *offset;
+                    pts.extend([*a, *b, *a + n, *b + n]);
+                }
+                PlanItem::Tag { anchor, at, .. } => {
+                    pts.extend([*anchor, *at - DVec2::splat(0.3), *at + DVec2::splat(0.3)])
+                }
+                PlanItem::Image { lo, hi, clip, .. } => match clip {
+                    Some((clo, chi)) => pts.extend([lo.max(*clo), hi.min(*chi)]),
+                    None => pts.extend([*lo, *hi]),
+                },
             }
         }
         let first = *pts.first()?;

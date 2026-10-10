@@ -173,6 +173,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
     let mut contained: HashMap<Option<ElementId>, Vec<Ref>> = HashMap::new();
     let mut wall_refs: HashMap<ElementId, (Ref, Ref)> = HashMap::new(); // entity, placement
     let joins = creabim_core::wall_joins(model);
+    let mut by_material: HashMap<ElementId, Vec<Ref>> = HashMap::new();
 
     for e in model.iter() {
         match &e.kind {
@@ -212,6 +213,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let r = product(&mut c, "IFCWALL", e, pl, shape, ",$,.STANDARD.");
                 wall_refs.insert(e.id, (r, pl));
                 contained.entry(Some(wall.level)).or_default().push(r);
+                if let Some((m, _)) = creabim_core::material_of(model, e) {
+                    by_material.entry(m.id).or_default().push(r);
+                }
             }
             ElementKind::Slab(slab) => {
                 let Some(&(_, spl)) = storeys.get(&slab.level) else {
@@ -235,6 +239,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let shape = c.shape("SweptSolid", &[solid]);
                 let r = product(&mut c, "IFCSLAB", e, pl, shape, ",$,.FLOOR.");
                 contained.entry(Some(slab.level)).or_default().push(r);
+                if let Some((m, _)) = creabim_core::material_of(model, e) {
+                    by_material.entry(m.id).or_default().push(r);
+                }
             }
             ElementKind::FreeMesh(f) => {
                 let spl = f
@@ -271,6 +278,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let tail = ",$,.NOTDEFINED.";
                 let r = product(&mut c, class, e, pl, shape, tail);
                 contained.entry(f.level).or_default().push(r);
+                if let Some((m, _)) = creabim_core::material_of(model, e) {
+                    by_material.entry(m.id).or_default().push(r);
+                }
             }
             _ => {}
         }
@@ -350,6 +360,19 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             _ => continue,
         };
         contained.entry(Some(level)).or_default().push(fill);
+    }
+
+    // Materials, each associated with the elements made of it.
+    for e in model.iter() {
+        let Some(users) = by_material.get(&e.id) else {
+            continue;
+        };
+        let m = c.w.add("IFCMATERIAL", format!("{},$,$", string(&e.name)));
+        let g = c.guid();
+        c.w.add(
+            "IFCRELASSOCIATESMATERIAL",
+            format!("{g},$,$,$,{},{m}", list(users)),
+        );
     }
 
     // Spatial structure.

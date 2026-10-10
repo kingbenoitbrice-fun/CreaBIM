@@ -48,8 +48,9 @@ jobs:
       - run: cargo run -q -p creabim-cli -- view house.creabim.json "Section A" section-a.svg
       - run: cargo run -q -p creabim-cli -- view house.creabim.json "South Elevation S" south-elevation.svg
       - run: cargo run -q -p creabim-cli -- pdf house.creabim.json house.pdf
+      - run: cargo run -q -p creabim-cli -- schedule house.creabim.json windows windows.csv
       - name: PDF opens with a page per sheet
-        run: python -c "import pypdf; r = pypdf.PdfReader('house.pdf', strict=True); n = len(r.pages); print(n, 'pages'); assert n == 3; assert 'Floor Plans' in r.pages[1].extract_text()"
+        run: python -c "import pypdf; r = pypdf.PdfReader('house.pdf', strict=True); n = len(r.pages); print(n, 'pages'); assert n == 4; assert 'Floor Plans' in r.pages[1].extract_text(); assert 'DOOR SCHEDULE' in r.pages[3].extract_text()"
       - uses: actions/upload-artifact@v4
         with:
           name: sample-exports
@@ -59,6 +60,7 @@ jobs:
             section-a.svg
             south-elevation.svg
             house.pdf
+            windows.csv
 
   windows-build:
     name: Windows app build

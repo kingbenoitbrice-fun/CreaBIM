@@ -99,13 +99,16 @@ pub fn placed_views(
         if vp.sheet != sheet {
             continue;
         }
-        let (Some(view), Some(d)) = (view_of(model, vp.view), drawing(vp.view)) else {
+        let (Some(view), Some(mut d)) = (view_of(model, vp.view), drawing(vp.view)) else {
             continue;
         };
+        if let Some([lo, hi]) = vp.crop {
+            d = crate::crop::crop(&d, lo, hi);
+        }
         let map = PaperMap {
             model: vp.target,
             paper: vp.center,
-            scale: view.scale,
+            scale: view.paper_scale(),
         };
         let bounds = d
             .bounds()
@@ -138,6 +141,7 @@ pub fn new_viewport(model: &Model, sheet: ElementId, view: ElementId, at: DVec2)
         view,
         center: at,
         target,
+        crop: None,
     }
 }
 
@@ -154,7 +158,7 @@ pub fn free_spot(model: &Model, sheet: ElementId, view: ElementId) -> DVec2 {
     ) else {
         return middle;
     };
-    let k = 1000.0 / v.scale;
+    let k = 1000.0 / v.paper_scale();
     // half size on paper, with room for the title below
     let half = (hi - lo) * k / 2.0 + DVec2::new(4.0, 6.0);
     let mut taken: Vec<(DVec2, DVec2)> =
@@ -247,6 +251,7 @@ pub fn scale_text(model: &Model, views: &[PlacedView]) -> String {
     let mut scales: Vec<i64> = views
         .iter()
         .filter_map(|v| view_of(model, v.view))
+        .filter(|v| !matches!(v.kind, creabim_core::ViewKind::Schedule { .. }))
         .map(|v| v.scale.round() as i64)
         .collect();
     scales.sort();
@@ -260,6 +265,10 @@ pub fn scale_text(model: &Model, views: &[PlacedView]) -> String {
 
 /// A view's number bubble, title and scale under its drawing.
 pub fn draw_view_title(c: &mut dyn Canvas, v: &PlacedView) {
+    // a schedule carries its own title
+    if v.map.scale == 1000.0 {
+        return;
+    }
     let at = v.title_at();
     let thin = Stroke::solid(0.18, 0.0);
     c.circle(at + DVec2::new(3.5, 0.0), 3.5, thin);
@@ -334,7 +343,7 @@ mod tests {
         let m = sample_house();
         let all = sheets(&m);
         let numbers: Vec<&str> = all.iter().map(|(_, s)| s.number.as_str()).collect();
-        assert_eq!(numbers, ["A001", "A101", "A201"]);
+        assert_eq!(numbers, ["A001", "A101", "A201", "A601"]);
         for (id, s) in all {
             let views = placed_views(&m, id, &mut |v| view_drawing(&m, v));
             assert!(!views.is_empty());
@@ -391,10 +400,32 @@ mod tests {
                 date: "2026-10-10".into(),
             },
         );
-        let s = String::from_utf8(pdf).unwrap();
-        assert!(s.contains("/Count 3"));
+        let s = String::from_utf8_lossy(&pdf);
+        assert!(s.contains("/Count 4"));
+        assert!(
+            s.contains("/Subtype /Image"),
+            "shaded views are embedded as images"
+        );
         assert!(s.contains("(Floor Plans) Tj"));
         assert!(s.contains("(Ground Floor plan) Tj"));
+    }
+
+    #[test]
+    fn cropped_viewports_show_only_their_crop() {
+        let m = sample_house();
+        let (sheet, _) = sheets(&m)
+            .into_iter()
+            .find(|(_, s)| s.number == "A601")
+            .unwrap();
+        let views = placed_views(&m, sheet, &mut |v| view_drawing(&m, v));
+        let entrance = views.iter().find(|v| v.title == "Entrance plan").unwrap();
+        let (lo, hi) = entrance.drawing.bounds().unwrap();
+        assert!(
+            lo.x >= -0.8 - 1e-9 && hi.x <= 5.0 + 1e-9 && lo.y >= -2.8 - 1e-9 && hi.y <= 2.0 + 1e-9
+        );
+        // the uncropped plan is much bigger
+        let full = view_drawing(&m, entrance.view).unwrap().bounds().unwrap();
+        assert!(full.1.x > 9.0);
     }
 
     #[test]

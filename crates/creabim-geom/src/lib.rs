@@ -5,11 +5,15 @@
 //! later. Architectural elements in the prototype are boxes, extrusions and
 //! polygon meshes, which this crate builds exactly.
 
+pub mod annotate;
+pub mod crop;
 pub mod mesh;
 pub mod paper;
 pub mod pick;
 pub mod plan;
+pub mod raster;
 pub mod scene;
+pub mod schedule;
 pub mod section;
 pub mod sheet;
 pub mod triangulate;

@@ -26,14 +26,24 @@ impl Element {
             ElementKind::Level(_) | ElementKind::Grid(_) => vec![],
             ElementKind::Wall(w) => vec![w.level],
             ElementKind::Slab(s) => vec![s.level],
+            // a missing material falls back to the element type's default,
+            // so materials are not hard references
+            ElementKind::Material(_) => vec![],
             ElementKind::Opening(o) => vec![o.host],
             ElementKind::FreeMesh(m) => m.level.into_iter().collect(),
             ElementKind::View(v) => match &v.kind {
                 ViewKind::Plan { level, .. } => vec![*level],
-                ViewKind::Section { .. } | ViewKind::Axonometric { .. } => vec![],
+                ViewKind::Section { .. }
+                | ViewKind::Axonometric { .. }
+                | ViewKind::Schedule { .. } => vec![],
             },
             ElementKind::Sheet(_) => vec![],
             ElementKind::Viewport(v) => vec![v.sheet, v.view],
+            ElementKind::Dimension(d) => std::iter::once(d.view)
+                .chain(d.a.host)
+                .chain(d.b.host)
+                .collect(),
+            ElementKind::Tag(t) => vec![t.view, t.host],
         }
     }
 
@@ -53,6 +63,9 @@ impl Element {
             ElementKind::View(_) => "View",
             ElementKind::Sheet(_) => "Sheet",
             ElementKind::Viewport(_) => "Viewport",
+            ElementKind::Material(_) => "IfcMaterial",
+            ElementKind::Dimension(_) => "Dimension",
+            ElementKind::Tag(_) => "Tag",
         }
     }
 
@@ -111,6 +124,7 @@ impl Element {
                             Err(format!("view altitude must be within ±90°, got {altitude}"))
                         }
                     }
+                    ViewKind::Schedule { .. } => Ok(()),
                 }
             }
             ElementKind::Sheet(sh) => {
@@ -118,10 +132,35 @@ impl Element {
                 positive(sh.height, "sheet height")
             }
             ElementKind::Viewport(v) => {
-                if v.center.is_finite() && v.target.is_finite() {
+                if !v.center.is_finite() || !v.target.is_finite() {
+                    return Err("viewport position must be finite".into());
+                }
+                match v.crop {
+                    Some([lo, hi]) if !(lo.is_finite() && hi.is_finite() && lo.cmplt(hi).all()) => {
+                        Err("viewport crop must have a positive size".into())
+                    }
+                    _ => Ok(()),
+                }
+            }
+            ElementKind::Material(m) => {
+                if m.color.iter().all(|c| (0.0..=1.0).contains(c)) {
                     Ok(())
                 } else {
-                    Err("viewport position must be finite".into())
+                    Err("material colour components must be within 0..1".into())
+                }
+            }
+            ElementKind::Dimension(d) => {
+                if d.offset.is_finite() && d.a.local.is_finite() && d.b.local.is_finite() {
+                    Ok(())
+                } else {
+                    Err("dimension points must be finite".into())
+                }
+            }
+            ElementKind::Tag(t) => {
+                if t.offset.is_finite() {
+                    Ok(())
+                } else {
+                    Err("tag position must be finite".into())
                 }
             }
         }
@@ -139,6 +178,106 @@ pub enum ElementKind {
     View(View),
     Sheet(Sheet),
     Viewport(Viewport),
+    Material(Material),
+    Dimension(Dimension),
+    Tag(Tag),
+}
+
+/// Pattern drawn on cut faces.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Hatch {
+    /// Outline only.
+    Empty,
+    /// Plain grey fill (poché).
+    #[default]
+    Solid,
+    /// 45° lines.
+    Diagonal,
+    /// Crossed 45° lines.
+    Cross,
+    /// Pairs of 45° lines, the usual masonry hatch.
+    Brick,
+    /// Stipple with sparse 45° lines.
+    Concrete,
+    /// Lines along the cut, like grain.
+    Timber,
+}
+
+impl Hatch {
+    pub const ALL: [Hatch; 7] = [
+        Hatch::Empty,
+        Hatch::Solid,
+        Hatch::Diagonal,
+        Hatch::Cross,
+        Hatch::Brick,
+        Hatch::Concrete,
+        Hatch::Timber,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Hatch::Empty => "Empty",
+            Hatch::Solid => "Solid",
+            Hatch::Diagonal => "Diagonal",
+            Hatch::Cross => "Cross",
+            Hatch::Brick => "Brick",
+            Hatch::Concrete => "Concrete",
+            Hatch::Timber => "Timber",
+        }
+    }
+}
+
+/// What an element is made of: how it looks in 3D and how its cut faces are hatched.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Material {
+    pub hatch: Hatch,
+    /// sRGB colour, 0..1, as picked in a colour chooser.
+    pub color: [f32; 3],
+}
+
+/// One end of a dimension. With a host, `local` is in the host's own
+/// frame, so the dimension follows the host when it moves:
+/// - wall: (distance along the wall, offset across it), measured from the
+///   wall's end instead of its start when `from_end` is set;
+/// - door or window: (distance from its left edge, offset across the wall);
+/// - level: (drawing x, height above the level).
+///
+/// Without a host, `local` is a point in the view's drawing.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HostPoint {
+    pub host: Option<ElementId>,
+    pub local: DVec2,
+    #[serde(default)]
+    pub from_end: bool,
+}
+
+impl HostPoint {
+    pub fn free(p: DVec2) -> Self {
+        Self {
+            host: None,
+            local: p,
+            from_end: false,
+        }
+    }
+}
+
+/// An aligned dimension in one view, measuring from `a` to `b`. Its line
+/// sits `offset` drawing units to the left of a → b.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Dimension {
+    pub view: ElementId,
+    pub a: HostPoint,
+    pub b: HostPoint,
+    pub offset: f64,
+}
+
+/// A label in one view showing a property of `host`, such as a door's mark.
+/// It sits at `offset` from the host's centre, so it moves with the host.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Tag {
+    pub view: ElementId,
+    pub host: ElementId,
+    pub offset: DVec2,
 }
 
 /// A storey. Walls and slabs hang off a level, so moving the level moves them.
@@ -166,6 +305,8 @@ pub struct Wall {
     pub height: f64,
     /// Offset of the wall base above its level.
     pub base_offset: f64,
+    #[serde(default)]
+    pub material: Option<ElementId>,
 }
 
 impl Wall {
@@ -186,6 +327,8 @@ pub struct Slab {
     /// Outline in plan, counter-clockwise.
     pub boundary: Vec<DVec2>,
     pub thickness: f64,
+    #[serde(default)]
+    pub material: Option<ElementId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,6 +358,8 @@ pub struct FreeMesh {
     pub origin: DVec3,
     pub mesh: EditMesh,
     pub ifc_class: String,
+    #[serde(default)]
+    pub material: Option<ElementId>,
 }
 
 /// A drawing of the model. Views live in the model like any element, so they
@@ -225,6 +370,45 @@ pub struct View {
     pub kind: ViewKind,
     /// Drawing scale denominator: 100 means 1:100.
     pub scale: f64,
+    #[serde(default)]
+    pub style: ViewStyle,
+}
+
+/// How a section, elevation or 3D view draws what is beyond the cut.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ViewStyle {
+    /// Visible edges only.
+    #[default]
+    HiddenLine,
+    /// Visible edges over surfaces shaded in their material colours.
+    Shaded,
+}
+
+/// What a schedule lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScheduleCategory {
+    Doors,
+    Windows,
+    Walls,
+    Slabs,
+}
+
+impl ScheduleCategory {
+    pub const ALL: [ScheduleCategory; 4] = [
+        ScheduleCategory::Doors,
+        ScheduleCategory::Windows,
+        ScheduleCategory::Walls,
+        ScheduleCategory::Slabs,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ScheduleCategory::Doors => "Doors",
+            ScheduleCategory::Windows => "Windows",
+            ScheduleCategory::Walls => "Walls",
+            ScheduleCategory::Slabs => "Slabs",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -245,6 +429,9 @@ pub enum ViewKind {
     /// bearing `azimuth` (degrees, 0 = from the south, counter-clockwise)
     /// and `altitude` degrees above the horizon.
     Axonometric { azimuth: f64, altitude: f64 },
+    /// A table of every element in a category, read live from the model.
+    /// It is drawn at paper size, whatever the scale.
+    Schedule { category: ScheduleCategory },
 }
 
 impl View {
@@ -255,6 +442,7 @@ impl View {
                 cut_height: 1.2,
             },
             scale: 100.0,
+            style: ViewStyle::HiddenLine,
         }
     }
 
@@ -267,6 +455,7 @@ impl View {
                 cut,
             },
             scale: 100.0,
+            style: ViewStyle::HiddenLine,
         }
     }
 }
@@ -276,6 +465,24 @@ impl View {
         Self {
             kind: ViewKind::Axonometric { azimuth, altitude },
             scale: 100.0,
+            style: ViewStyle::Shaded,
+        }
+    }
+
+    pub fn schedule(category: ScheduleCategory) -> Self {
+        Self {
+            kind: ViewKind::Schedule { category },
+            scale: 1000.0,
+            style: ViewStyle::HiddenLine,
+        }
+    }
+
+    /// The scale its drawing is placed on paper at. Schedules are drawn in
+    /// paper millimetres, so they are placed 1:1000 (a drawing metre is a millimetre).
+    pub fn paper_scale(&self) -> f64 {
+        match self.kind {
+            ViewKind::Schedule { .. } => 1000.0,
+            _ => self.scale,
         }
     }
 }
@@ -332,6 +539,10 @@ pub struct Viewport {
     /// The drawing point (model metres) pinned to `center`, so the drawing
     /// stays put on the sheet as the model changes.
     pub target: DVec2,
+    /// Only the part of the drawing inside this rectangle (drawing
+    /// coordinates, lower-left and upper-right) is shown.
+    #[serde(default)]
+    pub crop: Option<[DVec2; 2]>,
 }
 
 /// IFC classes a free mesh may be classified as.
