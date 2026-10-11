@@ -1,0 +1,18 @@
+[package]
+name = "creabim-exchange"
+description = "Linking CreaBIM to other tools' files: Blender (and later FreeCAD and IFC) objects mirrored as elements, reloaded in place, turned into walls, slabs, doors and windows; glTF export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# creabim-blend needs 1.87.
+rust-version = "1.87"
+
+[dependencies]
+creabim-core.workspace = true
+creabim-geom.workspace = true
+creabim-blend.workspace = true
+glam.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+thiserror.workspace = true

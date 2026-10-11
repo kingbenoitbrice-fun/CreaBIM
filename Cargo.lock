@@ -699,8 +699,10 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "creabim-core",
+ "creabim-exchange",
  "creabim-geom",
  "creabim-ifc",
+ "creabim-store",
  "eframe",
  "glam",
 ]
@@ -732,6 +734,19 @@ dependencies = [
  "glam",
  "indexmap",
  "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
+name = "creabim-exchange"
+version = "0.1.0"
+dependencies = [
+ "creabim-blend",
+ "creabim-core",
+ "creabim-geom",
+ "glam",
  "serde_json",
  "thiserror 2.0.21",
  "uuid",

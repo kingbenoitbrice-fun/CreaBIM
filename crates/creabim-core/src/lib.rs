@@ -23,8 +23,8 @@ pub use document::{Document, Step, StepId};
 pub use editmesh::EditMesh;
 pub use element::{
     Cut, Dimension, Element, ElementKind, FreeMesh, Grid, Guide, Hatch, HostPoint, Level, Material,
-    Opening, OpeningKind, ScheduleCategory, Sheet, Sketch, Slab, Tag, View, ViewKind, ViewStyle,
-    Viewport, Wall, Workplane,
+    Opening, OpeningKind, ScheduleCategory, Sheet, Sketch, Slab, Source, Tag, View, ViewKind,
+    ViewStyle, Viewport, Wall, Workplane,
 };
 pub use id::ElementId;
 pub use joins::{wall_joins, WallEnds};

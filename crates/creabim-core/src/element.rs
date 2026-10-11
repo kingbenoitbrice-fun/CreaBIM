@@ -12,6 +12,24 @@ pub struct Element {
     pub id: ElementId,
     pub name: String,
     pub kind: ElementKind,
+    /// Where the element came from, for elements read from another file
+    /// (a Blender object, a FreeCAD object, an IFC entity). Reloading that
+    /// file updates the element in place instead of adding a copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
+}
+
+/// An object in another file that an element mirrors.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Source {
+    /// The file's path, as it was opened.
+    pub file: String,
+    /// The object's identity in that file: its name, or its GlobalId.
+    pub object: String,
+    /// A fingerprint of the object as last read, so a reload can tell
+    /// whether it changed there (and leave edits made here alone if not).
+    #[serde(default)]
+    pub stamp: u64,
 }
 
 impl Element {
@@ -20,7 +38,18 @@ impl Element {
             id: ElementId::new(),
             name: name.into(),
             kind,
+            source: None,
         }
+    }
+
+    /// The same element, marked as mirroring `object` in `file`.
+    pub fn from_source(mut self, file: impl Into<String>, object: impl Into<String>) -> Self {
+        self.source = Some(Source {
+            file: file.into(),
+            object: object.into(),
+            stamp: 0,
+        });
+        self
     }
 
     /// Elements this element depends on. The model refuses edits that would

@@ -95,6 +95,10 @@ pub struct CreaBimApp {
     extrude_distance: f64,
     path: String,
     status: String,
+    /// Linked files (Blender...) and when they were last read.
+    watch: crate::files::Watch,
+    /// Reload linked files as soon as they are saved.
+    live_reload: bool,
 }
 
 impl CreaBimApp {
@@ -124,7 +128,9 @@ impl CreaBimApp {
             snaps_3d: None,
             pending_3d: None,
             extrude_distance: 1.0,
-            path: "project.creabim.json".into(),
+            path: "project.creabim".into(),
+            watch: Default::default(),
+            live_reload: true,
             status: "Loaded the sample house. Orbit with left drag, pan with right drag, zoom with the wheel.".into(),
         };
         app.load_model(sample_house());
@@ -141,6 +147,148 @@ impl CreaBimApp {
         self.geometry_key = None;
         self.drop_stale_selection();
         self.frame_all();
+    }
+
+    /// Open a project file, or import and link any other file.
+    fn open_path(&mut self, path: &str) {
+        if !crate::files::is_project(path) {
+            self.link_file(path);
+            return;
+        }
+        match creabim_store::load(path) {
+            Ok(doc) => {
+                let model = doc.model().clone();
+                self.load_model(model.clone());
+                // keep the saved undo history when no views had to be added
+                if self.doc.model() == &model {
+                    self.doc = doc;
+                }
+                self.watch = Default::default();
+                self.status = format!("Opened {path}");
+            }
+            Err(e) => self.status = format!("Couldn't open {path}: {e}"),
+        }
+    }
+
+    fn save(&mut self) {
+        if self.path.to_ascii_lowercase().ends_with(".json") {
+            let r = std::fs::write(&self.path, self.doc.model().to_json());
+            self.report(r, format!("Saved {}", self.path));
+            return;
+        }
+        if !self.path.to_ascii_lowercase().ends_with(".creabim") {
+            self.path = with_extension(&self.path, "creabim");
+        }
+        let r = creabim_store::save(&self.path, &self.doc);
+        self.report(r, format!("Saved {}", self.path));
+    }
+
+    /// Bring a file's objects in as linked elements.
+    fn link_file(&mut self, path: &str) {
+        let full = std::fs::canonicalize(path)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| path.to_string());
+        if crate::files::linked_files(self.doc.model()).contains(&full) {
+            self.reload(&full);
+            return;
+        }
+        match crate::files::read_incoming(&full) {
+            Ok(incoming) => {
+                let (tx, report) = creabim_exchange::sync(self.doc.model(), &full, &incoming);
+                let r = self.doc.commit(tx);
+                self.watch.mark(&full);
+                self.drawings.clear();
+                self.frame_all();
+                self.report(
+                    r,
+                    format!(
+                        "Linked {}: {}. Pick an object and use Assign as to make it a wall, slab, door or window.",
+                        file_label(&full),
+                        report.summary()
+                    ),
+                );
+            }
+            Err(e) => self.status = format!("Couldn't read {path}: {e}"),
+        }
+    }
+
+    /// Read a linked file again and update the elements it made.
+    fn reload(&mut self, file: &str) {
+        match crate::files::read_incoming(file) {
+            Ok(incoming) => {
+                let (tx, report) = creabim_exchange::sync(self.doc.model(), file, &incoming);
+                self.watch.mark(file);
+                if tx.ops.is_empty() {
+                    self.status = format!("{} is up to date.", file_label(file));
+                    return;
+                }
+                let r = self.doc.commit(tx);
+                self.drop_stale_selection();
+                self.report(
+                    r,
+                    format!("Reloaded {}: {}.", file_label(file), report.summary()),
+                );
+            }
+            Err(e) => self.status = format!("Couldn't reload {file}: {e}"),
+        }
+    }
+
+    /// "Assign as": give a mesh a building meaning, or change its class.
+    fn assign_panel(&mut self, ui: &mut egui::Ui, id: ElementId) {
+        let Some(e) = self.doc.model().get(id) else {
+            return;
+        };
+        if !matches!(
+            e.kind,
+            ElementKind::FreeMesh(_)
+                | ElementKind::Wall(_)
+                | ElementKind::Slab(_)
+                | ElementKind::Opening(_)
+        ) {
+            return;
+        }
+        if let Some(s) = &e.source {
+            ui.label(
+                egui::RichText::new(format!("From {}: {}", file_label(&s.file), s.object)).weak(),
+            );
+        }
+        let is_mesh = matches!(e.kind, ElementKind::FreeMesh(_));
+        let mut pick = None;
+        egui::ComboBox::from_id_salt("assign_as")
+            .selected_text("Assign as…")
+            .show_ui(ui, |ui| {
+                for a in creabim_exchange::Assign::menu() {
+                    if matches!(a, creabim_exchange::Assign::Class(_)) && !is_mesh {
+                        continue;
+                    }
+                    if ui.selectable_label(false, a.label()).clicked() {
+                        pick = Some(a);
+                    }
+                }
+            });
+        if is_mesh {
+            ui.label(
+                egui::RichText::new(
+                    "Make this shape a wall, slab, door or window sized to fit it, or give it a class.",
+                )
+                .weak(),
+            );
+        }
+        if let Some(a) = pick {
+            let before = e.clone();
+            match creabim_exchange::assign(self.doc.model(), id, &a) {
+                Ok(after) => {
+                    let r = self.doc.commit(
+                        Transaction::new(format!("Assign as {}", a.label())).replace(before, after),
+                    );
+                    self.report(
+                        r,
+                        format!("Now a {}. Its handles resize it.", a.label().to_lowercase()),
+                    );
+                }
+                Err(why) => self.status = why,
+            }
+        }
     }
 
     /// Sheets in number order, as (id, "A101 Floor Plans").
@@ -1444,23 +1592,51 @@ impl CreaBimApp {
                     }
                 });
                 ui.separator();
-                if ui.button("Open").clicked() {
-                    let r = std::fs::read_to_string(&self.path)
-                        .map_err(|e| e.to_string())
-                        .and_then(|s| Model::from_json(&s));
-                    match r {
-                        Ok(m) => {
-                            self.load_model(m);
-                            self.status = format!("Opened {}", self.path);
-                        }
-                        Err(e) => self.status = format!("Couldn't open {}: {e}", self.path),
-                    }
+                if ui
+                    .button("Open")
+                    .on_hover_text("Open the .creabim project named in the File box. Other files (.blend) are imported into this project.")
+                    .clicked()
+                {
+                    let path = self.path.clone();
+                    self.open_path(&path);
                 }
-                if ui.button("Save").clicked() {
-                    let r = std::fs::write(&self.path, self.doc.model().to_json());
-                    self.report(r, format!("Saved {}", self.path));
+                if ui
+                    .button("Save")
+                    .on_hover_text("Save as a .creabim project file, with its undo history.")
+                    .clicked()
+                {
+                    self.save();
                 }
                 ui.separator();
+                if ui
+                    .button("Import and link…")
+                    .on_hover_text("Bring in the objects of the .blend file named in the File box. Saving it in Blender updates them here.")
+                    .clicked()
+                {
+                    let path = self.path.clone();
+                    self.link_file(&path);
+                }
+                ui.checkbox(&mut self.live_reload, "Reload linked files when saved");
+                let linked = crate::files::linked_files(self.doc.model());
+                if !linked.is_empty() {
+                    ui.menu_button("Linked files", |ui| {
+                        for f in &linked {
+                            if ui.button(format!("Reload {}", file_label(f))).clicked() {
+                                self.reload(f);
+                            }
+                        }
+                    });
+                }
+                ui.separator();
+                if ui
+                    .button("Export glTF (.glb) for Blender")
+                    .on_hover_text("Every element as a mesh with its CreaBIM id, so edits saved in Blender come back to the same elements.")
+                    .clicked()
+                {
+                    let out = with_extension(&self.path, "glb");
+                    let r = std::fs::write(&out, creabim_exchange::gltf::export_glb(self.doc.model()));
+                    self.report(r, format!("Exported {out}. In Blender: File > Import > glTF, or use the CreaBIM add-on."));
+                }
                 if ui.button("Export IFC4").clicked() {
                     let out = with_extension(&self.path, "ifc");
                     let opts = creabim_ifc::ExportOptions {
@@ -2653,6 +2829,7 @@ impl CreaBimApp {
             }
         }
 
+        self.assign_panel(ui, id);
         self.cuts_panel(ui, id);
 
         ui.add_space(10.0);
@@ -2672,6 +2849,26 @@ impl eframe::App for CreaBimApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.shortcuts(&ctx);
+        let dropped: Vec<String> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().display().to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
+        });
+        for path in dropped {
+            self.path = path.clone();
+            self.open_path(&path);
+        }
+        if self.live_reload {
+            for f in self.watch.changed(self.doc.model()) {
+                self.reload(&f);
+            }
+            if !crate::files::linked_files(self.doc.model()).is_empty() {
+                ctx.request_repaint_after(std::time::Duration::from_secs(1));
+            }
+        }
 
         egui::Panel::top("menu").show(ui, |ui| {
             self.menu(ui);
@@ -2901,6 +3098,13 @@ fn with_plan_views(model: Model) -> Model {
     // a failed insert leaves the model as it was, which still opens
     let _ = doc.commit(tx);
     doc.model().clone()
+}
+
+/// A file's name without its folders.
+fn file_label(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map_or(path.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
 /// How far guides reach each way in the 3D view.

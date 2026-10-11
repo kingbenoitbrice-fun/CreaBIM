@@ -2,6 +2,7 @@
 
 mod app;
 mod camera;
+mod files;
 mod handles;
 mod icons;
 mod modal;
