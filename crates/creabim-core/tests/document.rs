@@ -168,3 +168,99 @@ fn merged_edits_undo_in_one_step() {
     doc.redo();
     assert_eq!(thickness(&doc), 0.25);
 }
+
+fn set_thickness(t: f64) -> impl FnOnce(&mut Element) {
+    move |e| {
+        if let ElementKind::Wall(w) = &mut e.kind {
+            w.thickness = t;
+        }
+    }
+}
+
+#[test]
+fn from_parts_restores_history_and_into_parts_takes_it_apart() {
+    let mut doc = Document::new();
+    let l = level();
+    let w = wall(l.id);
+    let wid = w.id;
+    doc.commit(Transaction::new("Build").insert(l).insert(w))
+        .unwrap();
+    doc.edit(wid, "Thicken", set_thickness(0.3)).unwrap();
+    doc.edit(wid, "Thicken more", set_thickness(0.4)).unwrap();
+    doc.undo();
+
+    let (model, undo, redo) = doc.into_parts();
+    assert_eq!((undo.len(), redo.len()), (2, 1));
+    let mut back = Document::from_parts(model.clone(), undo, redo).unwrap();
+    assert_eq!(back.model(), &model);
+    assert_eq!(back.undo_label(), Some("Thicken"));
+    assert_eq!(back.redo_label(), Some("Thicken more"));
+    assert!(back.redo());
+    assert!(back.undo() && back.undo() && back.undo());
+    assert!(back.model().is_empty());
+}
+
+#[test]
+fn from_parts_rejects_a_history_that_does_not_fit_the_model() {
+    let l = level();
+    // the model lacks the level the undo step claims to have inserted
+    let undo = vec![Transaction::new("Add level").insert(l)];
+    assert!(Document::from_parts(Model::new(), undo, vec![]).is_err());
+}
+
+#[test]
+fn step_ids_change_on_commit_and_amend_but_not_on_undo() {
+    let mut doc = Document::new();
+    let l = level();
+    let w = wall(l.id);
+    let wid = w.id;
+    doc.commit(Transaction::new("Build").insert(l).insert(w))
+        .unwrap();
+    doc.edit_merged(wid, "Drag", set_thickness(0.21)).unwrap();
+    let first = doc.undo_steps().last().unwrap().id;
+    doc.edit_merged(wid, "Drag", set_thickness(0.22)).unwrap();
+    let amended = doc.undo_steps().last().unwrap().id;
+    assert_ne!(first, amended, "amending must issue a new id");
+    assert_eq!(doc.undo_steps().len(), 2);
+    doc.undo();
+    assert_eq!(doc.redo_steps().last().unwrap().id, amended);
+}
+
+#[test]
+fn from_elements_keeps_order_and_checks_references() {
+    let l = level();
+    let w = wall(l.id);
+    // a wall listed before its level is fine: references are checked at the end
+    let m = Model::from_elements([w.clone(), l.clone()]).unwrap();
+    let ids: Vec<_> = m.iter().map(|e| e.id).collect();
+    assert_eq!(ids, vec![w.id, l.id]);
+    assert!(matches!(
+        Model::from_elements([w.clone()]),
+        Err(ModelError::DanglingReference { .. })
+    ));
+    assert!(matches!(
+        Model::from_elements([l.clone(), l]),
+        Err(ModelError::Duplicate(_))
+    ));
+}
+
+#[test]
+fn model_equality_is_ordered_and_ignores_revision() {
+    let (a, b) = (level(), level());
+    let m1 = Model::from_elements([a.clone(), b.clone()]).unwrap();
+    let mut doc = Document::new();
+    doc.commit(Transaction::new("x").insert(a.clone()).insert(b.clone()))
+        .unwrap();
+    assert_ne!(m1.revision(), doc.model().revision());
+    assert_eq!(&m1, doc.model());
+    assert_ne!(m1, Model::from_elements([b, a]).unwrap());
+}
+
+#[test]
+fn kind_name_matches_the_serde_tag() {
+    for e in sample::sample_house().iter() {
+        let v = serde_json::to_value(&e.kind).unwrap();
+        let tag = v.as_object().unwrap().keys().next().unwrap().clone();
+        assert_eq!(e.kind.name(), tag);
+    }
+}

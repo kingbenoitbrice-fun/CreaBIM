@@ -10,6 +10,7 @@ rust-version.workspace = true
 creabim-core.workspace = true
 creabim-geom.workspace = true
 creabim-ifc.workspace = true
+creabim-store.workspace = true
 glam.workspace = true
 
 [[bin]]

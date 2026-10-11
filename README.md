@@ -38,6 +38,8 @@ On Linux the app also needs a Vulkan or GL driver and `libxkbcommon-x11` at runt
 
 ```sh
 cargo run -p creabim-cli -- sample house.creabim.json            # write the sample house
+cargo run -p creabim-cli -- save-db house.creabim.json house.creabim  # convert to a SQLite project file
+# every command that reads a model accepts a .creabim or a .creabim.json file
 cargo run -p creabim-cli -- ifc house.creabim.json house.ifc     # export IFC4
 cargo run -p creabim-cli -- plan house.creabim.json "Ground Floor" gf.svg
 cargo run -p creabim-cli -- views house.creabim.json             # list plans, sections, elevations
@@ -80,6 +82,7 @@ Files: *File → Save/Open* use the path in the toolbar (`.creabim.json`). *Expo
 | `creabim-core` | Element store, edit transactions, undo history, Blender-style edit mesh. Every edit is a reversible op, which later also powers version history and live collaboration. |
 | `creabim-geom` | Element geometry (walls with openings, slabs, meshes), plan drawing generation, picking. This is where OpenCascade plugs in for NURBS and B-rep work. |
 | `creabim-ifc` | IFC4 STEP writer. Element ids are IFC GlobalIds, so re-exports keep identity. |
+| `creabim-store` | The `.creabim` project file: a SQLite database of the current elements plus the journal of every edit, so undo history survives closing the app. Records each edit incrementally (WAL) for cheap, crash-safe autosave. |
 | `creabim-app` | Desktop app: egui UI, wgpu 3D viewport rendered offscreen so any number of live views can exist. |
 | `creabim-cli` | Command-line export tools. |
 

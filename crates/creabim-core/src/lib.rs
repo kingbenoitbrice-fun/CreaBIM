@@ -14,7 +14,7 @@ pub mod model;
 pub mod ops;
 pub mod sample;
 
-pub use document::Document;
+pub use document::{Document, Step, StepId};
 pub use editmesh::EditMesh;
 pub use element::{
     Dimension, Element, ElementKind, FreeMesh, Grid, Hatch, HostPoint, Level, Material, Opening,

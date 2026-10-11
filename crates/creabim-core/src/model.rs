@@ -11,6 +11,14 @@ pub struct Model {
     revision: u64,
 }
 
+/// Two models are equal when they hold the same elements in the same order;
+/// the revision counter is bookkeeping, not content.
+impl PartialEq for Model {
+    fn eq(&self, other: &Self) -> bool {
+        self.elements.len() == other.elements.len() && self.iter().eq(other.iter())
+    }
+}
+
 impl Model {
     pub fn new() -> Self {
         Self::default()
@@ -115,6 +123,25 @@ impl Model {
         let old = self.elements.insert(e.id, e).expect("checked above");
         self.revision += 1;
         Ok(old)
+    }
+
+    /// Build a model from elements in the given order, checking references
+    /// once all are present. Unlike [`Model::from_json`] this keeps the order
+    /// exactly, which matters because an element may legitimately reference
+    /// one inserted after it (a wall moved to a newer level).
+    pub fn from_elements(elements: impl IntoIterator<Item = Element>) -> Result<Self, ModelError> {
+        let mut m = Model::new();
+        for e in elements {
+            if m.elements.contains_key(&e.id) {
+                return Err(ModelError::Duplicate(e.id));
+            }
+            m.elements.insert(e.id, e);
+        }
+        for e in m.elements.values() {
+            m.check_refs(e)?;
+        }
+        m.revision = 1;
+        Ok(m)
     }
 
     pub fn to_json(&self) -> String {
