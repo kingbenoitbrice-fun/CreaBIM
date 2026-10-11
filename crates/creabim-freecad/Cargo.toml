@@ -1,0 +1,16 @@
+[package]
+name = "creabim-freecad"
+description = "Read and write FreeCAD .FCStd documents (Part shapes, meshes, Arch/BIM objects)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# zip 9 needs 1.88; the rest of the crate is fine with the workspace MSRV.
+rust-version = "1.88"
+
+[dependencies]
+thiserror.workspace = true
+roxmltree = "0.21"
+# Deflate only (pure Rust miniz_oxide backend): no C toolchain, easy on Windows CI.
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
