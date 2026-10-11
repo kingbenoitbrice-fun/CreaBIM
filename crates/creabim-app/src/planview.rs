@@ -2,9 +2,11 @@
 //! drawing tools. Edits made here are ordinary model edits, so the 3D view
 //! and any other open view update at once.
 
-use crate::modal::{self, LiveEdit, Modal, Mode, Outcome, PaneMap, Space};
+use crate::handles::{self, PaneInput};
+use crate::modal::{self, Modal, Mode, Outcome, PaneMap, Space};
 use crate::sketch::{level_below, Click, SketchDraft};
-use creabim_core::{transform, Workplane, Xform};
+use crate::snaps::{self, Snapper};
+use creabim_core::Workplane;
 use creabim_core::{
     Dimension, Document, EditMesh, Element, ElementId, ElementKind, FreeMesh, HostPoint, Opening,
     OpeningKind, Slab, Tag, Transaction, View, ViewKind, Wall,
@@ -161,8 +163,11 @@ pub struct PlanState {
     pub modal: Option<Modal>,
     /// A sketch being drawn, in whichever pane started it.
     pub sketch: Option<SketchDraft>,
-    /// A grip or selected element being dragged in a plan or section.
-    grip: Option<GripDrag>,
+    /// A handle or selected element being dragged in a plan or section.
+    grip: Option<handles::Drag>,
+    /// Snaps for each 2D view: built from its drawing without the listed
+    /// elements, at a model revision.
+    snaps: HashMap<ElementId, (u64, Vec<ElementId>, Snapper)>,
     /// A message for the status bar, taken by the app each frame.
     pub status: Option<String>,
 }
@@ -181,6 +186,7 @@ impl Default for PlanState {
             modal: None,
             sketch: None,
             grip: None,
+            snaps: HashMap::new(),
             status: None,
         }
     }
@@ -315,7 +321,24 @@ pub fn show(
     }
 
     let shift = ui.input(|i| i.modifiers.shift);
+    // snaps: the selection and what joins it are left out while selecting,
+    // since dragging them must not snap to themselves
+    let exclude = match tool {
+        Tool::Select => selection.map(|id| joined_with(doc, id)).unwrap_or_default(),
+        _ => vec![],
+    };
+    if matches!(kind, PaneKind::Plan { .. } | PaneKind::Section { .. }) {
+        refresh_snaps(state, view, doc.model().revision(), plan, &exclude);
+    }
+    let pane_project = |p: DVec3| Some(xf.to_screen(p.truncate()));
+    let tool_snap = response.hover_pos().and_then(|p| {
+        let snapper = &state.snaps.get(&view)?.2;
+        let from = state.pending.map(|a| a.extend(0.0));
+        let s = snapper.snap(p, &pane_project, from, Some(xf.to_world(p).extend(0.0)))?;
+        Some(s)
+    });
     let hover_world = response.hover_pos().map(|p| match kind {
+        PaneKind::Plan { .. } if !shift => tool_snap.map_or(xf.to_world(p), |s| s.p.truncate()),
         PaneKind::Plan { level } => {
             snap(doc, level, &xf, xf.to_world(p), state.pending, shift, &[])
         }
@@ -367,10 +390,66 @@ pub fn show(
             }
         }
         if tool == Tool::Select {
-            if let Some(r) = drag_grips(
-                doc, kind, space, plan, &xf, &painter, &response, state, *selection, mm, shift,
-            ) {
-                return r;
+            let level_z = match kind {
+                PaneKind::Plan { level } => doc.model().level(level).map_or(0.0, |l| l.elevation),
+                _ => 0.0,
+            };
+            let look = match space {
+                Space::Section { start, end } => {
+                    (end - start).normalize_or_zero().perp().extend(0.0)
+                }
+                _ => -DVec3::Z,
+            };
+            let snapper = &state.snaps[&view].2;
+            let ray = |pos: Pos2| {
+                let p = pane_to_model(space, xf.to_world(pos), level_z);
+                Some(handles::Ray {
+                    o: p - look * 1000.0,
+                    d: look,
+                })
+            };
+            let snap = |pos: Pos2, from: Option<DVec3>| {
+                let to_pane = |p: DVec3| model_to_pane(space, p).extend(0.0);
+                let pane_project = |p: DVec3| Some(xf.to_screen(p.truncate()));
+                let free = Some(xf.to_world(pos).extend(0.0));
+                let s = snapper.snap(pos, &pane_project, from.map(to_pane), free)?;
+                let z = from.map_or(level_z, |f| f.z);
+                let p = pane_to_model(space, s.p.truncate(), z);
+                Some((p, snaps::Snap { p, kind: s.kind }))
+            };
+            let grab_body = |pos: Pos2, id: ElementId| {
+                let w = xf.to_world(pos);
+                (hit_test(&plan.items, w, 6.0 / xf.scale as f64, mm) == Some(id))
+                    .then(|| pane_to_model(space, w, level_z))
+            };
+            let input = PaneInput {
+                ray: &ray,
+                project: &project,
+                look,
+                snap: &snap,
+                grab_body: &grab_body,
+                body_normal: if matches!(space, Space::Section { .. }) {
+                    look
+                } else {
+                    DVec3::Z
+                },
+            };
+            let mut status = None;
+            let busy = handles::interact(
+                doc,
+                &painter,
+                &response,
+                *selection,
+                None,
+                &mut state.grip,
+                &input,
+                &mut status,
+            );
+            if status.is_some() {
+                state.status = status;
+            }
+            if busy {
+                return None;
             }
         }
     }
@@ -457,6 +536,15 @@ pub fn show(
             _ => {}
         }
     }
+    if let (Some(s), PaneKind::Plan { .. }, false) = (tool_snap, kind, shift) {
+        if !matches!(
+            tool,
+            Tool::Select | Tool::Dimension | Tool::Tag | Tool::Sketch
+        ) {
+            let from = state.pending.map(|a| xf.to_screen(a));
+            snaps::draw(&painter, s, xf.to_screen(s.p.truncate()), from);
+        }
+    }
     if let Some(p) = hover_world {
         if !matches!(tool, Tool::Select | Tool::Dimension | Tool::Tag) {
             painter.circle_stroke(
@@ -531,8 +619,8 @@ pub fn show(
     error
 }
 
-/// A click with a drawing tool in a plan.
-fn plan_tool(
+/// A click with a drawing tool in a plan (or on a level in the 3D view).
+pub fn plan_tool(
     doc: &mut Document,
     level: ElementId,
     tool: Tool,
@@ -1144,236 +1232,49 @@ fn sketch_tool(
     }
 }
 
-/// What part of a selected element a drag holds.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Grip {
-    WallEnd {
-        end: bool,
-    },
-    SlabCorner(usize),
-    SlabEdge(usize),
-    GridEnd {
-        end: bool,
-    },
-    /// The whole element, moved.
-    Body,
-}
-
-#[derive(Debug)]
-struct GripDrag {
-    grip: Grip,
-    edit: LiveEdit,
-    /// Where the drag began, in drawing coordinates.
-    grab: DVec2,
-    /// Other walls whose end sat on the dragged wall end: (original, which end).
-    joined: Vec<(usize, bool)>,
-}
-
-/// The grips of a selected element in a plan, in plan coordinates.
-fn grips(doc: &Document, id: ElementId) -> Vec<(Grip, DVec2)> {
-    match doc.model().get(id).map(|e| &e.kind) {
-        Some(ElementKind::Wall(w)) => vec![
-            (Grip::WallEnd { end: false }, w.start),
-            (Grip::WallEnd { end: true }, w.end),
-        ],
-        Some(ElementKind::Slab(s)) => {
-            let n = s.boundary.len();
-            let mut g: Vec<_> = (0..n)
-                .map(|i| (Grip::SlabCorner(i), s.boundary[i]))
-                .collect();
-            g.extend((0..n).map(|i| {
-                let mid = (s.boundary[i] + s.boundary[(i + 1) % n]) / 2.0;
-                (Grip::SlabEdge(i), mid)
-            }));
-            g
+/// The element and the walls whose ends meet it: what a drag on it may
+/// change, so it must not snap to itself.
+pub fn joined_with(doc: &Document, id: ElementId) -> Vec<ElementId> {
+    let mut out = vec![id];
+    if let Some(ElementKind::Wall(w)) = doc.model().get(id).map(|e| &e.kind) {
+        for e in doc.model().iter() {
+            if let ElementKind::Wall(o) = &e.kind {
+                let touch = [o.start, o.end]
+                    .iter()
+                    .any(|p| p.distance(w.start) < 1e-3 || p.distance(w.end) < 1e-3);
+                if touch && e.id != id {
+                    out.push(e.id);
+                }
+            }
         }
-        Some(ElementKind::Grid(g)) => vec![
-            (Grip::GridEnd { end: false }, g.start),
-            (Grip::GridEnd { end: true }, g.end),
-        ],
-        _ => vec![],
     }
+    out
 }
 
-/// Stretch a selected wall, slab or grid by its grips (plans), or drag a
-/// selected element to move it (plans and sections). Returns `Some` while
-/// a drag runs.
-#[allow(clippy::too_many_arguments)]
-fn drag_grips(
-    doc: &mut Document,
-    kind: PaneKind,
-    space: Space,
-    plan: &Drawing,
-    xf: &Xf,
-    painter: &egui::Painter,
-    response: &egui::Response,
+/// Rebuild a view's snaps when the model changed, but not during a drag,
+/// which changes the model every frame.
+fn refresh_snaps(
     state: &mut PlanState,
-    selection: Option<ElementId>,
-    mm: f64,
-    shift: bool,
-) -> Option<Option<String>> {
-    let Some(id) = selection else {
-        state.grip = None;
-        return None;
-    };
-    let accent = Color32::from_rgb(230, 120, 30);
-    let level = match kind {
-        PaneKind::Plan { level } => Some(level),
-        _ => None,
-    };
-    let handles = if level.is_some() {
-        grips(doc, id)
-    } else {
-        vec![]
-    };
-    for (g, p) in &handles {
-        let c = xf.to_screen(*p);
-        match g {
-            Grip::SlabEdge(_) => {
-                painter.circle(c, 4.0, Color32::WHITE, Stroke::new(1.5, accent));
-            }
-            _ => {
-                painter.rect(
-                    Rect::from_center_size(c, Vec2::splat(9.0)),
-                    0.0,
-                    Color32::WHITE,
-                    Stroke::new(1.5, accent),
-                    egui::StrokeKind::Middle,
-                );
-            }
-        }
+    view: ElementId,
+    revision: u64,
+    plan: &Drawing,
+    exclude: &[ElementId],
+) {
+    let dragging = state.grip.is_some();
+    let fresh = state
+        .snaps
+        .get(&view)
+        .is_some_and(|(r, ex, _)| ex == exclude && (*r == revision || dragging));
+    if !fresh {
+        state.snaps.insert(
+            view,
+            (
+                revision,
+                exclude.to_vec(),
+                Snapper::from_drawing(&plan.items, exclude),
+            ),
+        );
     }
-    if response.drag_started_by(egui::PointerButton::Primary) {
-        let press = painter
-            .ctx()
-            .input(|i| i.pointer.press_origin())
-            .or(response.interact_pointer_pos())?;
-        let at = xf.to_world(press);
-        let grip = handles
-            .iter()
-            .find(|(_, q)| xf.to_screen(*q).distance(press) < 10.0)
-            .map(|(g, _)| *g)
-            .or_else(|| {
-                let movable = !matches!(
-                    doc.model().get(id).map(|e| &e.kind),
-                    Some(ElementKind::View(_) | ElementKind::Dimension(_) | ElementKind::Tag(_))
-                );
-                (movable && hit_test(&plan.items, at, 6.0 / xf.scale as f64, mm) == Some(id))
-                    .then_some(Grip::Body)
-            });
-        if let Some(grip) = grip {
-            let e = doc.model().get(id)?.clone();
-            let mut originals = vec![e.clone()];
-            let mut joined = vec![];
-            if let (Grip::WallEnd { end }, ElementKind::Wall(w)) = (grip, &e.kind) {
-                // walls meeting this end stretch with it, so corners stay closed
-                let p = if end { w.end } else { w.start };
-                for other in doc.model().iter() {
-                    if let ElementKind::Wall(o) = &other.kind {
-                        if other.id == id || o.level != w.level {
-                            continue;
-                        }
-                        for (oe, q) in [(false, o.start), (true, o.end)] {
-                            if q.distance(p) < 1e-3 {
-                                originals.push(other.clone());
-                                joined.push((originals.len() - 1, oe));
-                            }
-                        }
-                    }
-                }
-            }
-            let label = match grip {
-                Grip::Body => format!("Move {}", e.name),
-                _ => format!("Stretch {}", e.name),
-            };
-            state.grip = Some(GripDrag {
-                grip,
-                edit: LiveEdit::new(label, originals),
-                grab: at,
-                joined,
-            });
-        }
-    }
-    let drag = state.grip.as_mut()?;
-    if painter.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
-        drag.edit.cancel(doc);
-        state.grip = None;
-        state.status = Some("Drag cancelled.".into());
-        return Some(None);
-    }
-    if response.drag_stopped() || !response.dragged() {
-        let applied = drag.edit.applied();
-        state.grip = None;
-        if applied {
-            state.status = doc.undo_label().map(|l| format!("{l}. Ctrl+Z to undo."));
-        }
-        return Some(None);
-    }
-    let w = xf.to_world(response.interact_pointer_pos()?);
-    let exclude: Vec<ElementId> = drag.edit.originals().iter().map(|e| e.id).collect();
-    let snapped = match level {
-        Some(l) => snap(doc, l, xf, w, None, false, &exclude),
-        None => (w / 0.05).round() * 0.05,
-    };
-    let mut changed: Vec<Element> = drag.edit.originals().to_vec();
-    let set_end = |e: &mut Element, end: bool, p: DVec2| match &mut e.kind {
-        ElementKind::Wall(w) if end => w.end = p,
-        ElementKind::Wall(w) => w.start = p,
-        ElementKind::Grid(g) if end => g.end = p,
-        ElementKind::Grid(g) => g.start = p,
-        _ => {}
-    };
-    match drag.grip {
-        Grip::WallEnd { end } | Grip::GridEnd { end } => {
-            // Shift keeps the wall square
-            let fixed = match &changed[0].kind {
-                ElementKind::Wall(w) => Some(if end { w.start } else { w.end }),
-                ElementKind::Grid(g) => Some(if end { g.start } else { g.end }),
-                _ => None,
-            };
-            let p = match (shift, fixed) {
-                (true, Some(a)) => {
-                    let d = snapped - a;
-                    if d.x.abs() >= d.y.abs() {
-                        DVec2::new(snapped.x, a.y)
-                    } else {
-                        DVec2::new(a.x, snapped.y)
-                    }
-                }
-                _ => snapped,
-            };
-            set_end(&mut changed[0], end, p);
-            for &(i, oe) in &drag.joined {
-                set_end(&mut changed[i], oe, p);
-            }
-        }
-        Grip::SlabCorner(i) => {
-            if let ElementKind::Slab(s) = &mut changed[0].kind {
-                s.boundary[i] = snapped;
-            }
-        }
-        Grip::SlabEdge(i) => {
-            let d = ((w - drag.grab) / 0.05).round() * 0.05;
-            if let ElementKind::Slab(s) = &mut changed[0].kind {
-                let n = s.boundary.len();
-                s.boundary[i] += d;
-                s.boundary[(i + 1) % n] += d;
-            }
-        }
-        Grip::Body => {
-            let d = ((w - drag.grab) / 0.05).round() * 0.05;
-            let delta = pane_to_model(space, d, 0.0) - pane_to_model(space, DVec2::ZERO, 0.0);
-            let moved = transform::transformed(doc.model(), &changed[0], &Xform::Move(delta));
-            match moved {
-                Some(m) => changed[0] = m,
-                None => return Some(None),
-            }
-        }
-    }
-    if let Err(e) = drag.edit.update(doc, changed) {
-        state.status = Some(format!("Can't go there: {e}"));
-    }
-    Some(None)
 }
 
 /// Handles on a selected section or elevation line. Returns `Some` while a

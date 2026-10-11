@@ -1,9 +1,12 @@
 use crate::camera::OrbitCamera;
+use crate::handles::{self, PaneInput, Ray};
+use crate::icons::{self, Icon};
 use crate::modal::{Outcome, PaneMap, Space};
 use crate::planview::{self, PaneStyle, PlanState, Tool};
 use crate::render3d::{Vertex, Viewport3d};
 use crate::sheetview::{self, SheetState};
 use crate::sketch::{Click, SketchDraft};
+use crate::snaps::{self, SnapKind, Snapper};
 use creabim_core::{
     element::FREE_MESH_CLASSES, sample::sample_house, Axis, Document, Element, ElementId,
     ElementKind, Hatch, Material, Model, Modifier, ModifierKind, ScheduleCategory, Sheet,
@@ -40,6 +43,28 @@ enum PlanPlacement {
     Hidden,
 }
 
+/// How the 3D view and the 2D pane share the window when docked. The
+/// divider between them drags like Blender's area borders.
+#[derive(Clone, Copy)]
+struct PaneLayout {
+    /// Share of the width (or height, when stacked) given to the first pane.
+    split: f32,
+    /// One above the other instead of side by side.
+    stacked: bool,
+    /// The 2D pane first (left or top) instead of the 3D view.
+    swapped: bool,
+}
+
+impl Default for PaneLayout {
+    fn default() -> Self {
+        Self {
+            split: 0.5,
+            stacked: false,
+            swapped: false,
+        }
+    }
+}
+
 pub struct CreaBimApp {
     doc: Document,
     selection: Option<ElementId>,
@@ -59,6 +84,14 @@ pub struct CreaBimApp {
     plan: PlanState,
     placement: PlanPlacement,
     plan_in_3d: bool,
+    layout: PaneLayout,
+    /// A handle or element being dragged in the 3D view.
+    handle_drag: Option<handles::Drag>,
+    /// Snaps for the 3D view: built from the scene without the listed
+    /// elements, at a model revision.
+    snaps_3d: Option<(u64, Vec<ElementId>, Snapper)>,
+    /// First click of a two-click tool in the 3D view, on a level.
+    pending_3d: Option<(DVec2, ElementId)>,
     extrude_distance: f64,
     path: String,
     status: String,
@@ -86,6 +119,10 @@ impl CreaBimApp {
             plan: PlanState::default(),
             placement: PlanPlacement::Docked,
             plan_in_3d: false,
+            layout: PaneLayout::default(),
+            handle_drag: None,
+            snaps_3d: None,
+            pending_3d: None,
             extrude_distance: 1.0,
             path: "project.creabim.json".into(),
             status: "Loaded the sample house. Orbit with left drag, pan with right drag, zoom with the wheel.".into(),
@@ -504,10 +541,6 @@ impl CreaBimApp {
             return;
         };
         let modal_here = self.plan.modal.as_ref().is_some_and(|m| m.pane.is_none());
-        if response.dragged_by(egui::PointerButton::Primary) && !modal_here {
-            let d = response.drag_delta();
-            self.camera.orbit(GVec2::new(d.x, d.y));
-        }
         if response.dragged_by(egui::PointerButton::Secondary)
             || response.dragged_by(egui::PointerButton::Middle)
         {
@@ -633,7 +666,74 @@ impl CreaBimApp {
         }
 
         if self.plan.tool == Tool::Sketch {
+            if response.dragged_by(egui::PointerButton::Primary) {
+                let d = response.drag_delta();
+                self.camera.orbit(GVec2::new(d.x, d.y));
+            }
             self.sketch_3d(ui, &response, &painter, &project, &ray, &cam);
+            return;
+        }
+
+        // handles on the selection, and dragging the selection itself
+        let exclude = self
+            .selection
+            .map(|id| planview::joined_with(&self.doc, id))
+            .unwrap_or_default();
+        self.refresh_snaps_3d(&exclude);
+        let dragging = {
+            let snapper = &self.snaps_3d.as_ref().expect("just built").2;
+            let scene = &self.scene;
+            let ray_fn = |p: egui::Pos2| {
+                let (o, d) = ray(p);
+                Some(Ray { o, d })
+            };
+            let snap = |p: egui::Pos2, from: Option<DVec3>| {
+                let (o, d) = ray(p);
+                let free = Workplane::ground(from.map_or(0.0, |f| f.z)).intersect(o, d);
+                let s = snapper.snap(p, &project, from, free)?;
+                Some((s.p, s))
+            };
+            let grab_body = |p: egui::Pos2, id: ElementId| {
+                let (o, d) = ray(p);
+                let h = pick::pick(scene, o.as_vec3(), d.as_vec3())?;
+                (h.id == id).then(|| o + d * h.t as f64)
+            };
+            let (_, look) = ray(rect.center());
+            let input = PaneInput {
+                ray: &ray_fn,
+                project: &project,
+                look,
+                snap: &snap,
+                grab_body: &grab_body,
+                body_normal: DVec3::Z,
+            };
+            let mut status = None;
+            let busy = self.plan.tool == Tool::Select
+                && handles::interact(
+                    &mut self.doc,
+                    &painter,
+                    &response,
+                    self.selection,
+                    self.face,
+                    &mut self.handle_drag,
+                    &input,
+                    &mut status,
+                );
+            if let Some(s) = status {
+                self.status = s;
+            }
+            busy
+        };
+        if dragging {
+            return;
+        }
+        if response.dragged_by(egui::PointerButton::Primary) {
+            let d = response.drag_delta();
+            self.camera.orbit(GVec2::new(d.x, d.y));
+        }
+
+        if self.plan.tool != Tool::Select {
+            self.tools_3d(ui, &response, &painter, &project, &ray);
             return;
         }
 
@@ -673,6 +773,215 @@ impl CreaBimApp {
                     _ => None,
                 });
             }
+        }
+    }
+
+    /// Rebuild the 3D snaps when the model changed, but not during a drag,
+    /// which changes the model every frame.
+    fn refresh_snaps_3d(&mut self, exclude: &[ElementId]) {
+        let rev = self.doc.model().revision();
+        let fresh = self
+            .snaps_3d
+            .as_ref()
+            .is_some_and(|(r, ex, _)| ex == exclude && (*r == rev || self.handle_drag.is_some()));
+        if !fresh {
+            self.snaps_3d = Some((
+                rev,
+                exclude.to_vec(),
+                Snapper::from_scene(&self.scene, exclude),
+            ));
+        }
+    }
+
+    /// The level the 3D drawing tools draw on: the active plan's, else the
+    /// selected element's, else the lowest.
+    fn work_level(&self) -> Option<(ElementId, f64)> {
+        let m = self.doc.model();
+        let plan = self
+            .active_view
+            .and_then(|v| match self.view(v).map(|v| &v.kind) {
+                Some(ViewKind::Plan { level, .. }) => Some(*level),
+                _ => None,
+            });
+        let of_selection = self
+            .selection
+            .and_then(|id| match m.get(id).map(|e| &e.kind) {
+                Some(ElementKind::Wall(w)) => Some(w.level),
+                Some(ElementKind::Slab(s)) => Some(s.level),
+                Some(ElementKind::FreeMesh(f)) => f.level,
+                Some(ElementKind::Level(_)) => Some(id),
+                _ => None,
+            });
+        let lowest = m
+            .levels()
+            .min_by(|a, b| a.1.elevation.total_cmp(&b.1.elevation))
+            .map(|(e, _)| e.id);
+        let id = plan.or(of_selection).or(lowest)?;
+        Some((id, m.level(id).map_or(0.0, |l| l.elevation)))
+    }
+
+    /// Walls, slabs, doors, windows, masses and section lines drawn right in
+    /// the 3D view, on the working level, with the same snaps as dragging.
+    fn tools_3d(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        painter: &egui::Painter,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        ray: &dyn Fn(egui::Pos2) -> (DVec3, DVec3),
+    ) {
+        let tool = self.plan.tool;
+        if matches!(tool, Tool::Dimension | Tool::Tag) {
+            if response.clicked() {
+                self.status = format!(
+                    "The {} tool works in plans and sections for now.",
+                    tool.label()
+                );
+            }
+            return;
+        }
+        let Some((level, z)) = self.work_level() else {
+            return;
+        };
+        let accent = Color32::from_rgb(230, 120, 30);
+        let stroke = egui::Stroke::new(2.0, accent);
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) || response.secondary_clicked() {
+            self.pending_3d = None;
+        }
+        let Some(hover) = response.hover_pos() else {
+            return;
+        };
+        let (o, d) = ray(hover);
+        let hit = pick::pick(&self.scene, o.as_vec3(), d.as_vec3());
+        let level_name = self
+            .doc
+            .model()
+            .get(level)
+            .map_or(String::new(), |e| e.name.clone());
+
+        // doors and windows go into the wall under the pointer
+        if matches!(tool, Tool::Door | Tool::Window) {
+            let wall = hit.and_then(|h| match self.doc.model().get(h.id).map(|e| &e.kind) {
+                Some(ElementKind::Wall(w)) => Some((h, w.level)),
+                Some(ElementKind::Opening(op)) => {
+                    match self.doc.model().get(op.host).map(|e| &e.kind) {
+                        Some(ElementKind::Wall(w)) => Some((h, w.level)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            });
+            if let Some((h, wl)) = wall {
+                let at = o + d * h.t as f64;
+                if let Some(c) = project(at) {
+                    painter.circle_stroke(c, 6.0, stroke);
+                }
+                if response.clicked() {
+                    let mut sel = self.selection;
+                    let mut state = std::mem::take(&mut self.plan);
+                    let r = planview::plan_tool(
+                        &mut self.doc,
+                        wl,
+                        tool,
+                        at.truncate(),
+                        &mut state,
+                        &mut sel,
+                    );
+                    self.plan = state;
+                    self.selection = sel;
+                    self.report(
+                        r,
+                        format!(
+                            "{} placed. Drag its round handles to resize it.",
+                            tool.label()
+                        ),
+                    );
+                }
+            } else if response.clicked() {
+                self.status = format!(
+                    "Click a wall to put the {} in it.",
+                    tool.label().to_lowercase()
+                );
+            }
+            return;
+        }
+
+        // everything else is drawn on the working level
+        let from = self
+            .pending_3d
+            .filter(|(_, l)| *l == level)
+            .map(|(p, _)| p.extend(z));
+        let free = Workplane::ground(z).intersect(o, d);
+        let exclude: Vec<ElementId> = vec![];
+        self.refresh_snaps_3d(&exclude);
+        let snapper = &self.snaps_3d.as_ref().expect("just built").2;
+        let Some(snap) = snapper.snap(hover, project, from, free) else {
+            return;
+        };
+        let p = snap.p.truncate();
+        let at = p.extend(z);
+        if let Some(c) = project(at) {
+            if snap.kind == SnapKind::Grid {
+                painter.circle_stroke(c, 4.0, egui::Stroke::new(1.0, accent));
+            } else {
+                snaps::draw(painter, snap, c, from.and_then(project));
+            }
+        }
+        if let Some(a) = from {
+            match tool {
+                Tool::Slab => {
+                    let (lo, hi) = (a.truncate().min(p), a.truncate().max(p));
+                    let pts = [lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y), lo];
+                    let scr: Vec<egui::Pos2> =
+                        pts.iter().filter_map(|q| project(q.extend(z))).collect();
+                    painter.add(egui::Shape::line(scr, stroke));
+                }
+                _ => {
+                    if let (Some(sa), Some(sb)) = (project(a), project(at)) {
+                        painter.line_segment([sa, sb], stroke);
+                        painter.text(
+                            sb + Vec2::new(10.0, -12.0),
+                            egui::Align2::LEFT_BOTTOM,
+                            format!("{:.2} m", a.truncate().distance(p)),
+                            egui::FontId::proportional(13.0),
+                            accent,
+                        );
+                    }
+                    if tool == Tool::Wall {
+                        // the wall's height, so it reads as a wall
+                        let h = self.doc.model().level(level).map_or(3.0, |l| l.height);
+                        let up = DVec3::Z * h;
+                        let quad = [a, at, at + up, a + up, a];
+                        let scr: Vec<egui::Pos2> =
+                            quad.iter().filter_map(|q| project(*q)).collect();
+                        painter.add(egui::Shape::line(scr, egui::Stroke::new(1.0, accent)));
+                    }
+                }
+            }
+        }
+        if response.clicked() {
+            let mut sel = self.selection;
+            let mut state = std::mem::take(&mut self.plan);
+            state.pending = self.pending_3d.filter(|(_, l)| *l == level).map(|(p, _)| p);
+            let r = planview::plan_tool(&mut self.doc, level, tool, p, &mut state, &mut sel);
+            self.pending_3d = state.pending.take().map(|p| (p, level));
+            self.plan = state;
+            self.selection = sel;
+            if let Err(e) = r {
+                self.status = format!("Couldn't do that: {e}");
+            } else {
+                self.status = match (tool, self.pending_3d) {
+                    (Tool::Wall, Some(_)) => format!("Drawing walls on {level_name}. Click the next corner; Esc or right-click ends."),
+                    (Tool::Slab | Tool::Section | Tool::Elevation, Some(_)) => "Click the second corner.".into(),
+                    _ => format!("Added on {level_name}."),
+                };
+            }
+        } else if from.is_none() && response.hovered() {
+            self.status = format!(
+                "{} on {level_name} (the open plan's level). {}",
+                tool.label(),
+                tool.hint()
+            );
         }
     }
 
@@ -1075,6 +1384,11 @@ impl CreaBimApp {
                 );
                 ui.radio_value(&mut self.placement, PlanPlacement::Hidden, "Hidden");
                 ui.separator();
+                ui.label("Docked layout (drag the divider to resize)");
+                ui.radio_value(&mut self.layout.stacked, false, "Side by side");
+                ui.radio_value(&mut self.layout.stacked, true, "One above the other");
+                ui.checkbox(&mut self.layout.swapped, "2D view first");
+                ui.separator();
                 ui.checkbox(&mut self.plan_in_3d, "Show the 2D view in 3D space");
                 if ui.button("Frame all").clicked() {
                     self.frame_all();
@@ -1342,22 +1656,29 @@ impl CreaBimApp {
                     "Sheet" => format!("Sheets ({}), click to open", items.len()),
                     _ => format!("{class} ({})", items.len()),
                 };
-                egui::CollapsingHeader::new(title)
-                    .default_open(class == "IfcBuildingStorey" || opens)
-                    .show(ui, |ui| {
-                        for (id, name) in items {
-                            if ui
-                                .selectable_label(self.selection == Some(id), name)
-                                .clicked()
-                            {
-                                self.selection = Some(id);
-                                self.face = None;
-                                if opens {
-                                    self.active_view = Some(id);
-                                }
+                let id = ui.make_persistent_id(("group", &class));
+                egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    id,
+                    class == "IfcBuildingStorey" || opens,
+                )
+                .show_header(ui, |ui| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                    Icon::of_class(&class).paint(ui.painter(), r);
+                    ui.label(title);
+                })
+                .body(|ui| {
+                    for (id, name) in items {
+                        let icon = self.doc.model().get(id).map_or(Icon::Mass, Icon::of);
+                        if icons::row(ui, icon, self.selection == Some(id), &name).clicked() {
+                            self.selection = Some(id);
+                            self.face = None;
+                            if opens {
+                                self.active_view = Some(id);
                             }
                         }
-                    });
+                    }
+                });
             }
         });
     }
@@ -2043,11 +2364,14 @@ impl eframe::App for CreaBimApp {
             let plan_bg = Color32::from_rgb(252, 252, 250);
             match self.placement {
                 PlanPlacement::Docked => {
-                    let mid = full.center().x;
-                    let left = Rect::from_min_max(full.min, egui::pos2(mid - 2.0, full.max.y));
-                    let right = Rect::from_min_max(egui::pos2(mid + 2.0, full.min.y), full.max);
-                    self.show_3d(ui, left, frame);
-                    self.show_plan(ui, right, plan_bg);
+                    let (first, second) = split_panes(&mut self.layout, ui, full);
+                    let (a, b) = if self.layout.swapped {
+                        (second, first)
+                    } else {
+                        (first, second)
+                    };
+                    self.show_3d(ui, a, frame);
+                    self.show_plan(ui, b, plan_bg);
                 }
                 PlanPlacement::Overlay => {
                     self.show_3d(ui, full, frame);
@@ -2099,6 +2423,81 @@ impl eframe::App for CreaBimApp {
             }
         }
     }
+}
+
+/// Split `full` in two at the divider and let the divider be dragged.
+/// Double-clicking it evens the two halves out again.
+fn split_panes(l: &mut PaneLayout, ui: &mut egui::Ui, full: Rect) -> (Rect, Rect) {
+    let gap = 3.0;
+    let along = |r: Rect| if l.stacked { r.height() } else { r.width() };
+    let size = along(full);
+    let at = |f: f32| {
+        if l.stacked {
+            full.min.y + f * size
+        } else {
+            full.min.x + f * size
+        }
+    };
+    let cut = at(l.split);
+    let handle = if l.stacked {
+        Rect::from_min_max(
+            egui::pos2(full.min.x, cut - gap),
+            egui::pos2(full.max.x, cut + gap),
+        )
+    } else {
+        Rect::from_min_max(
+            egui::pos2(cut - gap, full.min.y),
+            egui::pos2(cut + gap, full.max.y),
+        )
+    };
+    let r = ui.interact(
+        handle,
+        ui.id().with("pane_divider"),
+        Sense::click_and_drag(),
+    );
+    if r.hovered() || r.dragged() {
+        ui.ctx().set_cursor_icon(if l.stacked {
+            egui::CursorIcon::ResizeVertical
+        } else {
+            egui::CursorIcon::ResizeHorizontal
+        });
+    }
+    if r.dragged() {
+        let d = if l.stacked {
+            r.drag_delta().y
+        } else {
+            r.drag_delta().x
+        };
+        l.split = (l.split + d / size).clamp(0.15, 0.85);
+    }
+    if r.double_clicked() {
+        l.split = 0.5;
+    }
+    let cut = at(l.split);
+    let color = if r.hovered() || r.dragged() {
+        Color32::from_rgb(90, 140, 220)
+    } else {
+        Color32::from_gray(200)
+    };
+    let (a, b) = if l.stacked {
+        (
+            Rect::from_min_max(full.min, egui::pos2(full.max.x, cut - gap)),
+            Rect::from_min_max(egui::pos2(full.min.x, cut + gap), full.max),
+        )
+    } else {
+        (
+            Rect::from_min_max(full.min, egui::pos2(cut - gap, full.max.y)),
+            Rect::from_min_max(egui::pos2(cut + gap, full.min.y), full.max),
+        )
+    };
+    let line = if l.stacked {
+        [egui::pos2(full.min.x, cut), egui::pos2(full.max.x, cut)]
+    } else {
+        [egui::pos2(cut, full.min.y), egui::pos2(cut, full.max.y)]
+    };
+    ui.painter()
+        .line_segment(line, egui::Stroke::new(2.0, color));
+    (a, b)
 }
 
 fn plan_bg_color() -> Color32 {
