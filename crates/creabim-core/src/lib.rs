@@ -17,7 +17,7 @@ pub mod polygon;
 pub mod sample;
 pub mod transform;
 
-pub use document::Document;
+pub use document::{Document, Step, StepId};
 pub use editmesh::EditMesh;
 pub use element::{
     Dimension, Element, ElementKind, FreeMesh, Grid, Hatch, HostPoint, Level, Material, Opening,

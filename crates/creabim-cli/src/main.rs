@@ -1,26 +1,32 @@
 //! `creabim` command-line tool: build the sample model and export it.
+//!
+//! Every command that reads a project takes either a `.creabim` database or
+//! a legacy `.creabim.json` file, chosen by extension.
 
-use creabim_core::{sample::sample_house, Model};
+use creabim_core::{sample::sample_house, Document, Model};
 use creabim_geom::sheet::{sheet_svg, sheets, sheets_pdf, SheetInfo};
 use creabim_ifc::{export_ifc4, ExportOptions};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-usage:
-  creabim sample <out.creabim.json>          write the sample house model
-  creabim ifc <model.creabim.json> <out.ifc> export a model to IFC4
-  creabim plan <model.creabim.json> <level-name> <out.svg>
-                                             draw a level's plan at 1:100
-  creabim view <model.creabim.json> <view-name> <out.svg>
-                                             draw any view (plan, section, elevation)
-  creabim views <model.creabim.json>         list the model's views
-  creabim sheets <model.creabim.json>        list the model's sheets
-  creabim sheet <model.creabim.json> <number> <out.svg>
-                                             draw one sheet
-  creabim pdf <model.creabim.json> <out.pdf> export every sheet to one PDF
-  creabim schedule <model.creabim.json> <doors|windows|walls|slabs> [out.csv]
-                                             print or save a schedule as CSV
-  creabim stats <model.creabim.json>         count elements by IFC class";
+usage: (<model> is a .creabim project or a legacy .creabim.json file)
+  creabim sample <out.creabim|out.creabim.json>
+                                       write the sample house model
+  creabim save-db <in.creabim.json> <out.creabim>
+                                       convert a JSON model to a project file
+  creabim ifc <model> <out.ifc>        export a model to IFC4
+  creabim plan <model> <level-name> <out.svg>
+                                       draw a level's plan at 1:100
+  creabim view <model> <view-name> <out.svg>
+                                       draw any view (plan, section, elevation)
+  creabim views <model>                list the model's views
+  creabim sheets <model>               list the model's sheets
+  creabim sheet <model> <number> <out.svg>
+                                       draw one sheet
+  creabim pdf <model> <out.pdf>        export every sheet to one PDF
+  creabim schedule <model> <doors|windows|walls|slabs> [out.csv]
+                                       print or save a schedule as CSV
+  creabim stats <model>                count elements by IFC class";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -30,7 +36,14 @@ fn main() -> ExitCode {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        ["sample", out] => std::fs::write(out, sample_house().to_json()).map_err(|e| e.to_string()),
+        ["sample", out] if is_json(out) => {
+            std::fs::write(out, sample_house().to_json()).map_err(|e| e.to_string())
+        }
+        ["sample", out] => creabim_store::save(out, &Document::from_model(sample_house()))
+            .map_err(|e| format!("{out}: {e}")),
+        ["save-db", input, out] => creabim_store::import_json(input)
+            .map_err(|e| format!("{input}: {e}"))
+            .and_then(|doc| creabim_store::save(out, &doc).map_err(|e| format!("{out}: {e}"))),
         ["ifc", input, out] => load(input).and_then(|m| {
             let name = std::path::Path::new(out)
                 .file_stem()
@@ -148,7 +161,13 @@ fn info(path: &str) -> SheetInfo {
     }
 }
 
+fn is_json(path: &str) -> bool {
+    path.to_ascii_lowercase().ends_with(".json")
+}
+
+/// Read a project in either format; the history is not needed here.
 fn load(path: &str) -> Result<Model, String> {
-    let s = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-    Model::from_json(&s).map_err(|e| format!("{path}: {e}"))
+    creabim_store::load(path)
+        .map(|doc| doc.into_parts().0)
+        .map_err(|e| format!("{path}: {e}"))
 }

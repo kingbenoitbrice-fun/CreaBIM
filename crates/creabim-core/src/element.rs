@@ -216,6 +216,26 @@ pub enum ElementKind {
     Sketch(Sketch),
 }
 
+impl ElementKind {
+    /// The variant name, as it appears in saved files (`"Wall"`, `"Level"`...).
+    pub fn name(&self) -> &'static str {
+        match self {
+            ElementKind::Level(_) => "Level",
+            ElementKind::Grid(_) => "Grid",
+            ElementKind::Wall(_) => "Wall",
+            ElementKind::Slab(_) => "Slab",
+            ElementKind::Opening(_) => "Opening",
+            ElementKind::FreeMesh(_) => "FreeMesh",
+            ElementKind::View(_) => "View",
+            ElementKind::Sheet(_) => "Sheet",
+            ElementKind::Viewport(_) => "Viewport",
+            ElementKind::Material(_) => "Material",
+            ElementKind::Dimension(_) => "Dimension",
+            ElementKind::Tag(_) => "Tag",
+        }
+    }
+}
+
 /// Pattern drawn on cut faces.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Hatch {
