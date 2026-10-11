@@ -232,6 +232,7 @@ impl ElementKind {
             ElementKind::Material(_) => "Material",
             ElementKind::Dimension(_) => "Dimension",
             ElementKind::Tag(_) => "Tag",
+            ElementKind::Sketch(_) => "Sketch",
         }
     }
 }
