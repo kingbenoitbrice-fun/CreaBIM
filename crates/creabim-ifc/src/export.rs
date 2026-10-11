@@ -22,9 +22,14 @@ impl Default for ExportOptions {
     }
 }
 
+/// Marks the hatch in an exported material's description, so CreaBIM
+/// gets it back on import.
+pub(crate) const HATCH_PREFIX: &str = "CreaBIM hatch: ";
+
 struct Ctx {
     w: StepWriter,
     body: Ref,
+    axis: Ref,
     z_axis: Ref,
     x_axis: Ref,
 }
@@ -64,12 +69,16 @@ impl Ctx {
     }
 
     fn shape(&mut self, kind: &str, items: &[Ref]) -> Ref {
-        let rep = self.w.add(
-            "IFCSHAPEREPRESENTATION",
-            format!("{},'Body',{},{}", self.body, string(kind), list(items)),
-        );
+        let rep = self.body_rep(kind, items);
         self.w
             .add("IFCPRODUCTDEFINITIONSHAPE", format!("$,$,({rep})"))
+    }
+
+    fn body_rep(&mut self, kind: &str, items: &[Ref]) -> Ref {
+        self.w.add(
+            "IFCSHAPEREPRESENTATION",
+            format!("{},'Body',{},{}", self.body, string(kind), list(items)),
+        )
     }
 
     /// A rectangle `xdim` × `ydim` centred at `center` (profile plane),
@@ -110,9 +119,14 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         "IFCGEOMETRICREPRESENTATIONSUBCONTEXT",
         format!("'Body','Model',*,*,*,*,{model_ctx},$,.MODEL_VIEW.,$"),
     );
+    let axis = w.add(
+        "IFCGEOMETRICREPRESENTATIONSUBCONTEXT",
+        format!("'Axis','Model',*,*,*,*,{model_ctx},$,.GRAPH_VIEW.,$"),
+    );
     let mut c = Ctx {
         w,
         body,
+        axis,
         z_axis,
         x_axis,
     };
@@ -174,8 +188,28 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
     let mut wall_refs: HashMap<ElementId, (Ref, Ref)> = HashMap::new(); // entity, placement
     let joins = creabim_core::wall_joins(model);
     let mut by_material: HashMap<ElementId, Vec<Ref>> = HashMap::new();
+    // boolean cuts: cutters are construction aids and stay out; what they
+    // cut is written as its final shape, tessellated
+    let cuts = creabim_geom::scene::cuts(model);
+    let cutters: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.1).collect();
+    let cut_meshes: HashMap<ElementId, creabim_geom::mesh::TriMesh> = if cuts.is_empty() {
+        HashMap::new()
+    } else {
+        let targets: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.0).collect();
+        creabim_geom::scene::build_scene(model)
+            .into_iter()
+            .filter(|i| targets.contains(&i.id))
+            .map(|i| (i.id, i.mesh))
+            .collect()
+    };
+    let elevation =
+        |l: Option<ElementId>| l.and_then(|l| model.level(l)).map_or(0.0, |l| l.elevation);
 
     for e in model.iter() {
+        if cutters.contains(&e.id) {
+            continue;
+        }
+        let cut = cut_meshes.get(&e.id);
         match &e.kind {
             ElementKind::Wall(wall) => {
                 let Some(&(_, spl)) = storeys.get(&wall.level) else {
@@ -209,7 +243,31 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     "IFCEXTRUDEDAREASOLID",
                     format!("{prof},{pos},{},{}", c.z_axis, real(wall.height)),
                 );
-                let shape = c.shape("SweptSolid", &[solid]);
+                // the axis lets other tools (and our importer) recover the
+                // centreline whatever the joins did to the ends
+                let a0 = c.w.add("IFCCARTESIANPOINT", point2(0.0, 0.0));
+                let a1 = c.w.add("IFCCARTESIANPOINT", point2(wall.length(), 0.0));
+                let axis_line = c.w.add("IFCPOLYLINE", format!("({a0},{a1})"));
+                let axis_rep = c.w.add(
+                    "IFCSHAPEREPRESENTATION",
+                    format!("{},'Axis','Curve2D',({axis_line})", c.axis),
+                );
+                let body_rep = match cut {
+                    Some(m) => {
+                        let z0 = elevation(Some(wall.level)) + wall.base_offset;
+                        let n = DVec2::new(-d.y, d.x);
+                        let fs = tessellate(&mut c, m, |p| {
+                            let q = p.truncate() - wall.start;
+                            DVec3::new(q.dot(d), q.dot(n), p.z - z0)
+                        });
+                        c.body_rep("Tessellation", &[fs])
+                    }
+                    None => c.body_rep("SweptSolid", &[solid]),
+                };
+                let shape = c.w.add(
+                    "IFCPRODUCTDEFINITIONSHAPE",
+                    format!("$,$,({body_rep},{axis_rep})"),
+                );
                 let r = product(&mut c, "IFCWALL", e, pl, shape, ",$,.STANDARD.");
                 wall_refs.insert(e.id, (r, pl));
                 contained.entry(Some(wall.level)).or_default().push(r);
@@ -236,7 +294,14 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     "IFCEXTRUDEDAREASOLID",
                     format!("{prof},{pos},{},{}", c.z_axis, real(slab.thickness)),
                 );
-                let shape = c.shape("SweptSolid", &[solid]);
+                let shape = match cut {
+                    Some(m) => {
+                        let z0 = elevation(Some(slab.level));
+                        let fs = tessellate(&mut c, m, |p| p - DVec3::Z * z0);
+                        c.shape("Tessellation", &[fs])
+                    }
+                    None => c.shape("SweptSolid", &[solid]),
+                };
                 let r = product(&mut c, "IFCSLAB", e, pl, shape, ",$,.FLOOR.");
                 contained.entry(Some(slab.level)).or_default().push(r);
                 if let Some((m, _)) = creabim_core::material_of(model, e) {
@@ -265,14 +330,19 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                         tris.push(format!("({},{},{})", a + 1, b + 1, d + 1));
                     }
                 }
-                let fs = c.w.add(
-                    "IFCTRIANGULATEDFACESET",
-                    format!("{pts},$,.T.,({}),$", tris.join(",")),
-                );
+                let fs = match cut {
+                    Some(m) => {
+                        let at = f.origin + DVec3::Z * elevation(f.level);
+                        tessellate(&mut c, m, |p| p - at)
+                    }
+                    None => c.w.add(
+                        "IFCTRIANGULATEDFACESET",
+                        format!("{pts},$,.T.,({}),$", tris.join(",")),
+                    ),
+                };
                 let shape = c.shape("Tessellation", &[fs]);
-                let class = free_mesh_entity(&f.ifc_class);
-                let tail = ",$,.NOTDEFINED.";
-                let r = product(&mut c, class, e, pl, shape, tail);
+                let (class, tail) = free_mesh_entity(&f.ifc_class);
+                let r = product(&mut c, &class, e, pl, shape, &tail);
                 contained.entry(f.level).or_default().push(r);
                 if let Some((m, _)) = creabim_core::material_of(model, e) {
                     by_material.entry(m.id).or_default().push(r);
@@ -363,7 +433,31 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         let Some(users) = by_material.get(&e.id) else {
             continue;
         };
-        let m = c.w.add("IFCMATERIAL", format!("{},$,$", string(&e.name)));
+        let ElementKind::Material(mat) = &e.kind else {
+            continue;
+        };
+        let description = string(&format!("{HATCH_PREFIX}{}", mat.hatch.label()));
+        let m = c.w.add(
+            "IFCMATERIAL",
+            format!("{},{description},$", string(&e.name)),
+        );
+        // the colour, as a surface style on the material
+        let [r, g, b] = mat.color.map(|v| real(v as f64));
+        let rgb = c.w.add("IFCCOLOURRGB", format!("$,{r},{g},{b}"));
+        let shading = c.w.add("IFCSURFACESTYLESHADING", format!("{rgb},$"));
+        let style = c.w.add(
+            "IFCSURFACESTYLE",
+            format!("{},.BOTH.,({shading})", string(&e.name)),
+        );
+        let styled = c.w.add("IFCSTYLEDITEM", format!("$,({style}),$"));
+        let styled_rep = c.w.add(
+            "IFCSTYLEDREPRESENTATION",
+            format!("{},'Style','Material',({styled})", c.body),
+        );
+        c.w.add(
+            "IFCMATERIALDEFINITIONREPRESENTATION",
+            format!("$,$,({styled_rep}),{m}"),
+        );
         let g = c.guid();
         c.w.add(
             "IFCRELASSOCIATESMATERIAL",
@@ -413,6 +507,34 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
     c.w.finish(&header)
 }
 
+/// A triangle mesh as an `IfcTriangulatedFaceSet`, its corners taken into
+/// the product's own coordinates by `to_local`.
+fn tessellate(
+    c: &mut Ctx,
+    m: &creabim_geom::mesh::TriMesh,
+    to_local: impl Fn(DVec3) -> DVec3,
+) -> Ref {
+    let coords: Vec<String> = m
+        .positions
+        .iter()
+        .map(|p| {
+            let q = to_local(glam::Vec3::from(*p).as_dvec3());
+            point3(q.x, q.y, q.z)
+        })
+        .collect();
+    let pts =
+        c.w.add("IFCCARTESIANPOINTLIST3D", format!("({})", coords.join(",")));
+    let tris: Vec<String> = m
+        .indices
+        .chunks(3)
+        .map(|t| format!("({},{},{})", t[0] + 1, t[1] + 1, t[2] + 1))
+        .collect();
+    c.w.add(
+        "IFCTRIANGULATEDFACESET",
+        format!("{pts},$,.T.,({}),$", tris.join(",")),
+    )
+}
+
 fn product(c: &mut Ctx, class: &str, e: &Element, pl: Ref, shape: Ref, tail: &str) -> Ref {
     c.w.add(
         class,
@@ -424,15 +546,11 @@ fn product(c: &mut Ctx, class: &str, e: &Element, pl: Ref, shape: Ref, tail: &st
     )
 }
 
-fn free_mesh_entity(class: &str) -> &'static str {
-    match class {
-        "IfcWall" => "IFCWALL",
-        "IfcSlab" => "IFCSLAB",
-        "IfcRoof" => "IFCROOF",
-        "IfcColumn" => "IFCCOLUMN",
-        "IfcBeam" => "IFCBEAM",
-        "IfcCovering" => "IFCCOVERING",
-        "IfcFurniture" => "IFCFURNITURE",
-        _ => "IFCBUILDINGELEMENTPROXY",
+/// The STEP entity and record tail for a free mesh's IFC class; classes the
+/// exporter cannot write become proxies.
+fn free_mesh_entity(class: &str) -> (String, String) {
+    match crate::classes::ifc4_element_tail(class) {
+        Some(tail) => (class.to_ascii_uppercase(), format!(",${tail}")),
+        None => ("IFCBUILDINGELEMENTPROXY".into(), ",$,.NOTDEFINED.".into()),
     }
 }

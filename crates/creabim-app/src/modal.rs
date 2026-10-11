@@ -28,6 +28,10 @@ impl LiveEdit {
         }
     }
 
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
     pub fn originals(&self) -> &[Element] {
         &self.originals
     }

@@ -10,6 +10,8 @@ rust-version = "1.95"
 creabim-core.workspace = true
 creabim-geom.workspace = true
 creabim-ifc.workspace = true
+creabim-store.workspace = true
+creabim-exchange.workspace = true
 glam.workspace = true
 eframe = "0.36"
 bytemuck = { version = "1", features = ["derive"] }

@@ -1,26 +1,39 @@
 //! `creabim` command-line tool: build the sample model and export it.
+//!
+//! Every command that reads a project takes either a `.creabim` database or
+//! a legacy `.creabim.json` file, chosen by extension.
 
-use creabim_core::{sample::sample_house, Model};
+use creabim_core::{sample::sample_house, Document, Model};
 use creabim_geom::sheet::{sheet_svg, sheets, sheets_pdf, SheetInfo};
-use creabim_ifc::{export_ifc4, ExportOptions};
+use creabim_ifc::{export_ifc4, export_ifcx, import_ifc, import_ifcx, ExportOptions, ImportResult};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-usage:
-  creabim sample <out.creabim.json>          write the sample house model
-  creabim ifc <model.creabim.json> <out.ifc> export a model to IFC4
-  creabim plan <model.creabim.json> <level-name> <out.svg>
-                                             draw a level's plan at 1:100
-  creabim view <model.creabim.json> <view-name> <out.svg>
-                                             draw any view (plan, section, elevation)
-  creabim views <model.creabim.json>         list the model's views
-  creabim sheets <model.creabim.json>        list the model's sheets
-  creabim sheet <model.creabim.json> <number> <out.svg>
-                                             draw one sheet
-  creabim pdf <model.creabim.json> <out.pdf> export every sheet to one PDF
-  creabim schedule <model.creabim.json> <doors|windows|walls|slabs> [out.csv]
-                                             print or save a schedule as CSV
-  creabim stats <model.creabim.json>         count elements by IFC class";
+usage: (<model> is a .creabim project or a legacy .creabim.json file)
+  creabim sample <out.creabim|out.creabim.json>
+                                       write the sample house model
+  creabim save-db <in.creabim.json> <out.creabim>
+                                       convert a JSON model to a project file
+  creabim ifc <model> <out.ifc>        export a model to IFC4
+  creabim import-ifc <in.ifc> <out>    import an IFC2X3, IFC4 or IFC4X3 file
+  creabim ifcx <model> <out.ifcx>      export to IFC5 IFCX JSON (experimental)
+  creabim import-ifcx <in.ifcx> <out>  import an IFC5 IFCX file (experimental)
+  creabim plan <model> <level-name> <out.svg>
+                                       draw a level's plan at 1:100
+  creabim view <model> <view-name> <out.svg>
+                                       draw any view (plan, section, elevation)
+  creabim views <model>                list the model's views
+  creabim sheets <model>               list the model's sheets
+  creabim sheet <model> <number> <out.svg>
+                                       draw one sheet
+  creabim pdf <model> <out.pdf>        export every sheet to one PDF
+  creabim schedule <model> <doors|windows|walls|slabs> [out.csv]
+                                       print or save a schedule as CSV
+  creabim stats <model>                count elements by IFC class
+  creabim glb <model> <out.glb>        export glTF for Blender, with element ids
+  creabim fcstd <model> <out.FCStd>    export a FreeCAD document
+  creabim link <model> <file.blend|file.FCStd> <out-model>
+                                       bring in (or reload) a linked file's objects";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -30,7 +43,52 @@ fn main() -> ExitCode {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        ["sample", out] => std::fs::write(out, sample_house().to_json()).map_err(|e| e.to_string()),
+        ["sample", out] if is_json(out) => {
+            std::fs::write(out, sample_house().to_json()).map_err(|e| e.to_string())
+        }
+        ["sample", out] => creabim_store::save(out, &Document::from_model(sample_house()))
+            .map_err(|e| format!("{out}: {e}")),
+        ["save-db", input, out] => creabim_store::import_json(input)
+            .map_err(|e| format!("{input}: {e}"))
+            .and_then(|doc| creabim_store::save(out, &doc).map_err(|e| format!("{out}: {e}"))),
+        ["glb", input, out] => load(input).and_then(|m| {
+            std::fs::write(out, creabim_exchange::gltf::export_glb(&m)).map_err(|e| e.to_string())
+        }),
+        ["fcstd", input, out] => load(input).and_then(|m| {
+            let label = std::path::Path::new(out)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            creabim_exchange::freecad::export_fcstd(&m, &label)
+                .map_err(|e| e.to_string())
+                .and_then(|b| std::fs::write(out, b).map_err(|e| e.to_string()))
+        }),
+        ["link", input, linked, out] => load(input).and_then(|m| {
+            let file = std::fs::canonicalize(linked)
+                .map_err(|e| format!("{linked}: {e}"))?
+                .display()
+                .to_string();
+            let path = std::path::Path::new(&file);
+            let lower = file.to_ascii_lowercase();
+            let incoming = if lower.ends_with(".fcstd") {
+                creabim_exchange::freecad::read_file(path)
+            } else {
+                creabim_exchange::blend::read_file(path)
+            }
+            .map_err(|e| e.to_string())?;
+            let (tx, report) = creabim_exchange::sync(&m, &file, &incoming);
+            let mut doc = Document::from_model(m);
+            doc.commit(tx).map_err(|e| e.to_string())?;
+            println!("{}", report.summary());
+            for n in &report.notes {
+                println!("  {n}");
+            }
+            if is_json(out) {
+                std::fs::write(out, doc.model().to_json()).map_err(|e| e.to_string())
+            } else {
+                creabim_store::save(out, &doc).map_err(|e| format!("{out}: {e}"))
+            }
+        }),
         ["ifc", input, out] => load(input).and_then(|m| {
             let name = std::path::Path::new(out)
                 .file_stem()
@@ -113,6 +171,14 @@ fn main() -> ExitCode {
                 }
             }
         }),
+        ["import-ifc", input, out] => read_text(input)
+            .and_then(|text| import_ifc(&text).map_err(|e| format!("{input}: {e}")))
+            .and_then(|r| save_import(r, out)),
+        ["ifcx", input, out] => load(input)
+            .and_then(|m| std::fs::write(out, export_ifcx(&m)).map_err(|e| e.to_string())),
+        ["import-ifcx", input, out] => read_text(input)
+            .and_then(|text| import_ifcx(&text).map_err(|e| format!("{input}: {e}")))
+            .and_then(|r| save_import(r, out)),
         ["stats", input] => load(input).map(|m| {
             let mut counts = std::collections::BTreeMap::new();
             for e in m.iter() {
@@ -148,7 +214,38 @@ fn info(path: &str) -> SheetInfo {
     }
 }
 
+/// Read a text file; IFC files are ASCII by the standard, but some tools
+/// write Latin-1 or UTF-8 into strings, so invalid bytes are replaced, not fatal.
+fn read_text(path: &str) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Save an imported model in the format `out` names, reporting what was skipped.
+fn save_import(r: ImportResult, out: &str) -> Result<(), String> {
+    for w in &r.warnings {
+        eprintln!("warning: {w}");
+    }
+    let mut counts = std::collections::BTreeMap::new();
+    for e in r.model.iter() {
+        *counts.entry(e.ifc_class().to_string()).or_insert(0) += 1;
+    }
+    let summary: Vec<String> = counts.iter().map(|(c, n)| format!("{n} {c}")).collect();
+    eprintln!("imported {} ({})", r.schema, summary.join(", "));
+    if is_json(out) {
+        std::fs::write(out, r.model.to_json()).map_err(|e| e.to_string())
+    } else {
+        creabim_store::save(out, &Document::from_model(r.model)).map_err(|e| format!("{out}: {e}"))
+    }
+}
+
+fn is_json(path: &str) -> bool {
+    path.to_ascii_lowercase().ends_with(".json")
+}
+
+/// Read a project in either format; the history is not needed here.
 fn load(path: &str) -> Result<Model, String> {
-    let s = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-    Model::from_json(&s).map_err(|e| format!("{path}: {e}"))
+    creabim_store::load(path)
+        .map(|doc| doc.into_parts().0)
+        .map_err(|e| format!("{path}: {e}"))
 }

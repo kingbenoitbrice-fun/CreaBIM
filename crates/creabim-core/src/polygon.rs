@@ -32,9 +32,15 @@ pub fn triangulate(poly: &[DVec2]) -> Vec<[usize; 3]> {
             if (pb - pa).perp_dot(pc - pb) <= 1e-12 {
                 continue; // reflex or degenerate corner
             }
-            let inside = idx
-                .iter()
-                .any(|&j| j != a && j != b && j != c && point_in_triangle(poly[j], pa, pb, pc));
+            // corners repeated by a hole's bridge sit on the ear, not in it
+            let same = |q: DVec2| q == pa || q == pb || q == pc;
+            let inside = idx.iter().any(|&j| {
+                j != a
+                    && j != b
+                    && j != c
+                    && !same(poly[j])
+                    && point_in_triangle(poly[j], pa, pb, pc)
+            });
             if !inside {
                 out.push([a, b, c]);
                 idx.remove(i);

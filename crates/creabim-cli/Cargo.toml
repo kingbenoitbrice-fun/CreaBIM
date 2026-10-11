@@ -4,12 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version.workspace = true
+rust-version = "1.88"
 
 [dependencies]
 creabim-core.workspace = true
 creabim-geom.workspace = true
 creabim-ifc.workspace = true
+creabim-store.workspace = true
+creabim-exchange.workspace = true
 glam.workspace = true
 
 [[bin]]

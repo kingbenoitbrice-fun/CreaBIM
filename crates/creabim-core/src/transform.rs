@@ -136,11 +136,16 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
             }
             _ => return None,
         },
+        ElementKind::Guide(g) => {
+            g.a = origin(g.a, g.level);
+            g.b = origin(g.b, g.level);
+        }
         ElementKind::Sheet(_)
         | ElementKind::Viewport(_)
         | ElementKind::Material(_)
         | ElementKind::Dimension(_)
-        | ElementKind::Tag(_) => return None,
+        | ElementKind::Tag(_)
+        | ElementKind::Cut(_) => return None,
     }
     Some(out)
 }
@@ -178,6 +183,7 @@ pub fn pivot(model: &Model, id: ElementId) -> Option<DVec3> {
             ViewKind::Section { start, end, .. } => ((*start + *end) / 2.0).extend(0.0),
             _ => return None,
         },
+        ElementKind::Guide(g) => (g.a + g.b) / 2.0 + DVec3::Z * elevation(g.level),
         _ => return None,
     })
 }
@@ -196,6 +202,7 @@ pub fn duplicate(model: &Model, id: ElementId) -> Vec<Element> {
             | ElementKind::FreeMesh(_)
             | ElementKind::Sketch(_)
             | ElementKind::Grid(_)
+            | ElementKind::Guide(_)
     ) {
         return vec![];
     }

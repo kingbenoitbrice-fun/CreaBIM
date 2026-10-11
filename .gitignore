@@ -2,3 +2,5 @@ target/
 *.ifc
 !tests/fixtures/*.ifc
 .DS_Store
+!crates/*/fixtures/*.ifc
+!crates/*/fixtures/thirdparty/*.ifc

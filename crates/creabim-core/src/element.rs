@@ -12,6 +12,24 @@ pub struct Element {
     pub id: ElementId,
     pub name: String,
     pub kind: ElementKind,
+    /// Where the element came from, for elements read from another file
+    /// (a Blender object, a FreeCAD object, an IFC entity). Reloading that
+    /// file updates the element in place instead of adding a copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
+}
+
+/// An object in another file that an element mirrors.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Source {
+    /// The file's path, as it was opened.
+    pub file: String,
+    /// The object's identity in that file: its name, or its GlobalId.
+    pub object: String,
+    /// A fingerprint of the object as last read, so a reload can tell
+    /// whether it changed there (and leave edits made here alone if not).
+    #[serde(default)]
+    pub stamp: u64,
 }
 
 impl Element {
@@ -20,7 +38,18 @@ impl Element {
             id: ElementId::new(),
             name: name.into(),
             kind,
+            source: None,
         }
+    }
+
+    /// The same element, marked as mirroring `object` in `file`.
+    pub fn from_source(mut self, file: impl Into<String>, object: impl Into<String>) -> Self {
+        self.source = Some(Source {
+            file: file.into(),
+            object: object.into(),
+            stamp: 0,
+        });
+        self
     }
 
     /// Elements this element depends on. The model refuses edits that would
@@ -49,6 +78,8 @@ impl Element {
                 .collect(),
             ElementKind::Tag(t) => vec![t.view, t.host],
             ElementKind::Sketch(s) => s.level.into_iter().collect(),
+            ElementKind::Cut(c) => vec![c.target, c.cutter],
+            ElementKind::Guide(g) => g.level.into_iter().collect(),
         }
     }
 
@@ -72,6 +103,8 @@ impl Element {
             ElementKind::Dimension(_) => "Dimension",
             ElementKind::Tag(_) => "Tag",
             ElementKind::Sketch(_) => "Sketch",
+            ElementKind::Cut(_) => "Cut",
+            ElementKind::Guide(_) => "Guide",
         }
     }
 
@@ -195,6 +228,20 @@ impl Element {
                     _ => Ok(()),
                 }
             }
+            ElementKind::Cut(c) => {
+                if c.target == c.cutter {
+                    Err("an element can't cut itself".into())
+                } else {
+                    Ok(())
+                }
+            }
+            ElementKind::Guide(g) => {
+                if g.a.is_finite() && g.b.is_finite() && g.a.distance(g.b) > 1e-6 {
+                    Ok(())
+                } else {
+                    Err("a guide needs two different points".into())
+                }
+            }
         }
     }
 }
@@ -214,6 +261,31 @@ pub enum ElementKind {
     Dimension(Dimension),
     Tag(Tag),
     Sketch(Sketch),
+    Cut(Cut),
+    Guide(Guide),
+}
+
+impl ElementKind {
+    /// The variant name, as it appears in saved files (`"Wall"`, `"Level"`...).
+    pub fn name(&self) -> &'static str {
+        match self {
+            ElementKind::Level(_) => "Level",
+            ElementKind::Grid(_) => "Grid",
+            ElementKind::Wall(_) => "Wall",
+            ElementKind::Slab(_) => "Slab",
+            ElementKind::Opening(_) => "Opening",
+            ElementKind::FreeMesh(_) => "FreeMesh",
+            ElementKind::View(_) => "View",
+            ElementKind::Sheet(_) => "Sheet",
+            ElementKind::Viewport(_) => "Viewport",
+            ElementKind::Material(_) => "Material",
+            ElementKind::Dimension(_) => "Dimension",
+            ElementKind::Tag(_) => "Tag",
+            ElementKind::Sketch(_) => "Sketch",
+            ElementKind::Cut(_) => "Cut",
+            ElementKind::Guide(_) => "Guide",
+        }
+    }
 }
 
 /// Pattern drawn on cut faces.
@@ -292,6 +364,26 @@ impl HostPoint {
             from_end: false,
         }
     }
+}
+
+/// A boolean between two elements, like IFC's IfcRelVoidsElement: `target`
+/// is shown as `target op cutter` and the cutter itself is hidden (drawn as
+/// a ghost in 3D, left out of drawings and exports). Deleting either
+/// element deletes the cut.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Cut {
+    pub target: ElementId,
+    pub cutter: ElementId,
+    pub op: crate::csg::BoolOp,
+}
+
+/// A construction line, endless through `a` and `b`, to snap to. Guides are
+/// drawn dashed in plans (on their level) and in 3D, never exported.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Guide {
+    pub level: Option<ElementId>,
+    pub a: DVec3,
+    pub b: DVec3,
 }
 
 /// An aligned dimension in one view, measuring from `a` to `b`. Its line
