@@ -763,7 +763,12 @@ impl Builder {
         let ours = creabim_element(attrs);
         let id = self.id(path);
         let element = match ours {
-            Some((name, kind @ ElementKind::Material(_))) => Element { id, name, kind },
+            Some((name, kind @ ElementKind::Material(_))) => Element {
+                id,
+                name,
+                kind,
+                source: None,
+            },
             _ => {
                 let name = attrs
                     .get(MATERIAL)
@@ -782,6 +787,7 @@ impl Builder {
                     })
                     .unwrap_or([0.75; 3]);
                 Element {
+                    source: None,
                     id,
                     kind: ElementKind::Material(Material {
                         hatch: hatch_for(&name, "", ""),
@@ -826,6 +832,7 @@ impl Builder {
                 ),
             };
             self.levels.push(Element {
+                source: None,
                 id,
                 name,
                 kind: ElementKind::Level(Level {
@@ -884,7 +891,12 @@ impl Builder {
                 .copied();
             if let Some((name, kind)) = creabim_element(&o.attributes) {
                 let id = self.id(&o.path.clone());
-                let e = Element { id, name, kind };
+                let e = Element {
+                    id,
+                    name,
+                    kind,
+                    source: None,
+                };
                 match &e.kind {
                     ElementKind::Opening(_) => self.openings.push(e),
                     ElementKind::Grid(_) => self.grids.push(e),
@@ -932,6 +944,7 @@ impl Builder {
                         },
                     );
                     self.main.push(Element {
+                        source: None,
                         id,
                         name,
                         kind: ElementKind::Wall(Wall {
@@ -953,6 +966,7 @@ impl Builder {
                     if let Some(&(_, level)) = top {
                         let id = self.id(&o.path.clone());
                         self.main.push(Element {
+                            source: None,
                             id,
                             name,
                             kind: ElementKind::Slab(Slab {
@@ -983,6 +997,7 @@ impl Builder {
                         OpeningKind::Window
                     };
                     self.openings.push(Element {
+                        source: None,
                         id,
                         name,
                         kind: ElementKind::Opening(Opening {
@@ -1008,6 +1023,7 @@ impl Builder {
             }
             let id = self.id(&o.path.clone());
             self.main.push(Element {
+                source: None,
                 id,
                 name,
                 kind: ElementKind::FreeMesh(FreeMesh {

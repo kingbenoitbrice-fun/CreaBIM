@@ -447,6 +447,7 @@ impl<'a> Importer<'a> {
                     .unwrap_or_else(|| format!("Level {i}"));
             }
             self.level_elems.push(Element {
+                source: None,
                 id: lid,
                 name,
                 kind: ElementKind::Level(Level {
@@ -754,6 +755,7 @@ impl<'a> Importer<'a> {
                 },
             );
             self.wall_elems.push(Element {
+                source: None,
                 id: eid,
                 name: Self::name(e, "Wall"),
                 kind: ElementKind::Wall(Wall { material, ..w }),
@@ -836,6 +838,7 @@ impl<'a> Importer<'a> {
         let material = self.material_for(id);
         let eid = self.new_id(e);
         self.wall_elems.push(Element {
+            source: None,
             id: eid,
             name: Self::name(e, "Slab"),
             kind: ElementKind::Slab(Slab {
@@ -916,6 +919,7 @@ impl<'a> Importer<'a> {
             "Window"
         };
         self.opening_elems.push(Element {
+            source: None,
             id: eid,
             name: Self::name(e, fallback),
             kind: ElementKind::Opening(Opening {
@@ -975,6 +979,7 @@ impl<'a> Importer<'a> {
         let material = self.material_for(id);
         let eid = self.new_id(e);
         self.other_elems.push(Element {
+            source: None,
             id: eid,
             name: Self::name(e, class),
             kind: ElementKind::FreeMesh(FreeMesh {

@@ -151,6 +151,44 @@ impl CreaBimApp {
 
     /// Open a project file, or import and link any other file.
     fn open_path(&mut self, path: &str) {
+        let lower = path.to_ascii_lowercase();
+        if lower.ends_with(".ifc") || lower.ends_with(".ifcx") {
+            let r = std::fs::read_to_string(path)
+                .map_err(|e| e.to_string())
+                .and_then(|t| {
+                    if lower.ends_with(".ifcx") {
+                        creabim_ifc::import_ifcx(&t)
+                    } else {
+                        creabim_ifc::import_ifc(&t)
+                    }
+                    .map_err(|e| e.to_string())
+                });
+            match r {
+                Ok(imported) => {
+                    let n = imported.model.len();
+                    let warnings = imported.warnings.len();
+                    self.load_model(imported.model);
+                    self.watch = Default::default();
+                    self.path = with_extension(path, "creabim");
+                    self.status = format!(
+                        "Opened {} ({}): {n} elements{}. Save keeps it as {}.",
+                        file_label(path),
+                        imported.schema,
+                        if warnings > 0 {
+                            format!(", {warnings} notes (see the terminal)")
+                        } else {
+                            String::new()
+                        },
+                        file_label(&self.path)
+                    );
+                    for w in &imported.warnings {
+                        eprintln!("IFC import: {w}");
+                    }
+                }
+                Err(e) => self.status = format!("Couldn't open {path}: {e}"),
+            }
+            return;
+        }
         if !crate::files::is_project(path) {
             self.link_file(path);
             return;
@@ -1594,7 +1632,7 @@ impl CreaBimApp {
                 ui.separator();
                 if ui
                     .button("Open")
-                    .on_hover_text("Open the .creabim project named in the File box. Other files (.blend, .FCStd) are imported into this project.")
+                    .on_hover_text("Open the .creabim, .ifc or .ifcx file named in the File box. Other files (.blend, .FCStd) are linked into this project.")
                     .clicked()
                 {
                     let path = self.path.clone();
@@ -1646,6 +1684,15 @@ impl CreaBimApp {
                     let r = creabim_exchange::freecad::export_fcstd(self.doc.model(), &stem(&self.path))
                         .map_err(|e| e.to_string())
                         .and_then(|b| std::fs::write(&out, b).map_err(|e| e.to_string()));
+                    self.report(r, format!("Exported {out}"));
+                }
+                if ui
+                    .button("Export IFC5 (.ifcx, alpha)")
+                    .on_hover_text("The new JSON-based IFC. Its schema is still an alpha, so other tools may not read it yet.")
+                    .clicked()
+                {
+                    let out = with_extension(&self.path, "ifcx");
+                    let r = std::fs::write(&out, creabim_ifc::export_ifcx(self.doc.model()));
                     self.report(r, format!("Exported {out}"));
                 }
                 if ui.button("Export IFC4").clicked() {
