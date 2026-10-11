@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 /// One reversible change to the model. Ops carry full element values so every
 /// op can be inverted without consulting the model.
+// a replace holds two elements by design; boxing them buys nothing here
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Op {
     Insert(Element),

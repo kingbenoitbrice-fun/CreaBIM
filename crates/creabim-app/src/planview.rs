@@ -2,6 +2,11 @@
 //! drawing tools. Edits made here are ordinary model edits, so the 3D view
 //! and any other open view update at once.
 
+use crate::handles::{self, PaneInput};
+use crate::modal::{self, Modal, Mode, Outcome, PaneMap, Space};
+use crate::sketch::{level_below, Click, SketchDraft};
+use crate::snaps::{self, Snapper};
+use creabim_core::Workplane;
 use creabim_core::{
     Dimension, Document, EditMesh, Element, ElementId, ElementKind, FreeMesh, HostPoint, Opening,
     OpeningKind, Slab, Tag, Transaction, View, ViewKind, Wall,
@@ -24,10 +29,11 @@ pub enum Tool {
     Elevation,
     Dimension,
     Tag,
+    Sketch,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 10] = [
+    pub const ALL: [Tool; 11] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
@@ -38,6 +44,7 @@ impl Tool {
         Tool::Elevation,
         Tool::Dimension,
         Tool::Tag,
+        Tool::Sketch,
     ];
 
     pub fn label(self) -> &'static str {
@@ -52,12 +59,13 @@ impl Tool {
             Tool::Elevation => "Elevation",
             Tool::Dimension => "Dimension",
             Tool::Tag => "Tag",
+            Tool::Sketch => "Sketch",
         }
     }
 
     pub fn hint(self) -> &'static str {
         match self {
-            Tool::Select => "Click an element to select it.",
+            Tool::Select => "Click an element to select it. With the pointer over a view, G moves it, R rotates, S scales and Shift+D duplicates.",
             Tool::Wall => "Click to start, click again to place each wall. Esc or right-click ends the chain. Shift keeps it orthogonal.",
             Tool::Door => "Click on a wall to place a door.",
             Tool::Window => "Click on a wall to place a window.",
@@ -67,18 +75,20 @@ impl Tool {
             Tool::Elevation => "Click two points for the elevation line, outside the building. It looks to the left of the direction you draw.",
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to wall corners, door and window edges and levels, and stay attached to them.",
             Tool::Tag => "Click a door, window, wall or slab, then click where its tag goes.",
+            Tool::Sketch => "Click the corners of a sketch on this level. Click the first corner to close it, Enter or right-click to leave it open, Esc to cancel. Then E extrudes it.",
         }
     }
 
     /// The hint for this tool in a section or elevation.
     fn section_hint(self) -> &'static str {
         match self {
-            Tool::Select => "Click to select. Drag a tag or dimension to move it.",
+            Tool::Select => "Click to select. Drag a selected element, tag or dimension to move it. G moves, S scales, Shift+D duplicates.",
             Tool::Wall => "Click two points: the wall runs along the section line, as high as you draw it.",
             Tool::Slab => "Click two corners of the slab's edge. Its top snaps to the nearest level; it runs back as far as the walls.",
             Tool::Section => "Click where the new section cuts, then click on the side it should look towards.",
             Tool::Elevation => "Click where the new elevation stands, then click on the side it should look towards.",
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to levels.",
+            Tool::Sketch => "Click the corners of a sketch on the section plane. Click the first corner to close it, Enter or right-click to leave it open. Then E extrudes it.",
             t => t.hint(),
         }
     }
@@ -149,6 +159,17 @@ pub struct PlanState {
     tag_host: Option<ElementId>,
     /// Tag or dimension being dragged: where the drag began and its offset then.
     anno_drag: Option<(ElementId, DVec2, DVec2)>,
+    /// A keyboard move, rotate or scale, in whichever pane started it.
+    pub modal: Option<Modal>,
+    /// A sketch being drawn, in whichever pane started it.
+    pub sketch: Option<SketchDraft>,
+    /// A handle or selected element being dragged in a plan or section.
+    grip: Option<handles::Drag>,
+    /// Snaps for each 2D view: built from its drawing without the listed
+    /// elements, at a model revision.
+    snaps: HashMap<ElementId, (u64, Vec<ElementId>, Snapper)>,
+    /// A message for the status bar, taken by the app each frame.
+    pub status: Option<String>,
 }
 
 impl Default for PlanState {
@@ -162,6 +183,11 @@ impl Default for PlanState {
             dim: vec![],
             tag_host: None,
             anno_drag: None,
+            modal: None,
+            sketch: None,
+            grip: None,
+            snaps: HashMap::new(),
+            status: None,
         }
     }
 }
@@ -172,11 +198,16 @@ impl PlanState {
         self.pending = None;
         self.dim.clear();
         self.tag_host = None;
+        self.sketch = None;
     }
 
     /// Is a tool waiting for more clicks?
     pub fn busy(&self) -> bool {
-        self.pending.is_some() || !self.dim.is_empty() || self.tag_host.is_some()
+        self.pending.is_some()
+            || !self.dim.is_empty()
+            || self.tag_host.is_some()
+            || self.sketch.is_some()
+            || self.modal.is_some()
     }
 }
 
@@ -290,8 +321,27 @@ pub fn show(
     }
 
     let shift = ui.input(|i| i.modifiers.shift);
+    // snaps: the selection and what joins it are left out while selecting,
+    // since dragging them must not snap to themselves
+    let exclude = match tool {
+        Tool::Select => selection.map(|id| joined_with(doc, id)).unwrap_or_default(),
+        _ => vec![],
+    };
+    if matches!(kind, PaneKind::Plan { .. } | PaneKind::Section { .. }) {
+        refresh_snaps(state, view, doc.model().revision(), plan, &exclude);
+    }
+    let pane_project = |p: DVec3| Some(xf.to_screen(p.truncate()));
+    let tool_snap = response.hover_pos().and_then(|p| {
+        let snapper = &state.snaps.get(&view)?.2;
+        let from = state.pending.map(|a| a.extend(0.0));
+        let s = snapper.snap(p, &pane_project, from, Some(xf.to_world(p).extend(0.0)))?;
+        Some(s)
+    });
     let hover_world = response.hover_pos().map(|p| match kind {
-        PaneKind::Plan { level } => snap(doc, level, &xf, xf.to_world(p), state.pending, shift),
+        PaneKind::Plan { .. } if !shift => tool_snap.map_or(xf.to_world(p), |s| s.p.truncate()),
+        PaneKind::Plan { level } => {
+            snap(doc, level, &xf, xf.to_world(p), state.pending, shift, &[])
+        }
         PaneKind::Axonometric | PaneKind::Schedule => xf.to_world(p),
         PaneKind::Section { .. } => {
             let mut p = xf.to_world(p);
@@ -306,6 +356,103 @@ pub fn show(
             (p / 0.05).round() * 0.05
         }
     });
+
+    // pointer edits: keyboard move, rotate and scale; sketches; grips
+    let space = match kind {
+        PaneKind::Plan { .. } => Some(Space::Plan),
+        PaneKind::Section { start, end } => Some(Space::Section { start, end }),
+        PaneKind::Axonometric | PaneKind::Schedule => None,
+    };
+    if let Some(space) = space {
+        let to_model = |pos: Pos2, _axis: Option<creabim_core::Axis>, pivot: DVec3| {
+            Some(pane_to_model(space, xf.to_world(pos), pivot.z))
+        };
+        let project = |p: DVec3| Some(xf.to_screen(model_to_pane(space, p)));
+        let map = PaneMap {
+            to_model: &to_model,
+            project: &project,
+        };
+        if let Some(r) = keyboard_edits(
+            ui, doc, view, space, &painter, &response, state, selection, &map,
+        ) {
+            return r;
+        }
+        if tool == Tool::Sketch {
+            let level_z = match kind {
+                PaneKind::Plan { level } => doc.model().level(level).map_or(0.0, |l| l.elevation),
+                _ => 0.0,
+            };
+            let hover = hover_world.map(|w| pane_to_model(space, w, level_z));
+            if let Some(r) = sketch_tool(
+                ui, doc, view, space, &xf, &painter, &response, state, selection, hover, shift,
+            ) {
+                return r;
+            }
+        }
+        if tool == Tool::Select {
+            let level_z = match kind {
+                PaneKind::Plan { level } => doc.model().level(level).map_or(0.0, |l| l.elevation),
+                _ => 0.0,
+            };
+            let look = match space {
+                Space::Section { start, end } => {
+                    (end - start).normalize_or_zero().perp().extend(0.0)
+                }
+                _ => -DVec3::Z,
+            };
+            let snapper = &state.snaps[&view].2;
+            let ray = |pos: Pos2| {
+                let p = pane_to_model(space, xf.to_world(pos), level_z);
+                Some(handles::Ray {
+                    o: p - look * 1000.0,
+                    d: look,
+                })
+            };
+            let snap = |pos: Pos2, from: Option<DVec3>| {
+                let to_pane = |p: DVec3| model_to_pane(space, p).extend(0.0);
+                let pane_project = |p: DVec3| Some(xf.to_screen(p.truncate()));
+                let free = Some(xf.to_world(pos).extend(0.0));
+                let s = snapper.snap(pos, &pane_project, from.map(to_pane), free)?;
+                let z = from.map_or(level_z, |f| f.z);
+                let p = pane_to_model(space, s.p.truncate(), z);
+                Some((p, snaps::Snap { p, kind: s.kind }))
+            };
+            let grab_body = |pos: Pos2, id: ElementId| {
+                let w = xf.to_world(pos);
+                (hit_test(&plan.items, w, 6.0 / xf.scale as f64, mm) == Some(id))
+                    .then(|| pane_to_model(space, w, level_z))
+            };
+            let input = PaneInput {
+                ray: &ray,
+                project: &project,
+                look,
+                snap: &snap,
+                grab_body: &grab_body,
+                body_normal: if matches!(space, Space::Section { .. }) {
+                    look
+                } else {
+                    DVec3::Z
+                },
+            };
+            let mut status = None;
+            let busy = handles::interact(
+                doc,
+                &painter,
+                &response,
+                *selection,
+                None,
+                &mut state.grip,
+                &input,
+                &mut status,
+            );
+            if status.is_some() {
+                state.status = status;
+            }
+            if busy {
+                return None;
+            }
+        }
+    }
 
     // a selected section line in a plan can be dragged by its ends or middle
     if let (PaneKind::Plan { .. }, Tool::Select) = (kind, tool) {
@@ -389,6 +536,15 @@ pub fn show(
             _ => {}
         }
     }
+    if let (Some(s), PaneKind::Plan { .. }, false) = (tool_snap, kind, shift) {
+        if !matches!(
+            tool,
+            Tool::Select | Tool::Dimension | Tool::Tag | Tool::Sketch
+        ) {
+            let from = state.pending.map(|a| xf.to_screen(a));
+            snaps::draw(&painter, s, xf.to_screen(s.p.truncate()), from);
+        }
+    }
     if let Some(p) = hover_world {
         if !matches!(tool, Tool::Select | Tool::Dimension | Tool::Tag) {
             painter.circle_stroke(
@@ -444,7 +600,7 @@ pub fn show(
             egui::Align2::LEFT_BOTTOM,
             match (kind, tool) {
                 (PaneKind::Plan { .. }, Tool::Select) => {
-                    "Click an element to select it. Drag a tag, dimension or selected section line to move it."
+                    "Click to select. Drag a selected element to move it, or its square grips to stretch it. G move, R rotate, S scale, Shift+D duplicate."
                 }
                 (PaneKind::Plan { .. }, t) => t.hint(),
                 (PaneKind::Section { .. }, t) => t.section_hint(),
@@ -463,8 +619,8 @@ pub fn show(
     error
 }
 
-/// A click with a drawing tool in a plan.
-fn plan_tool(
+/// A click with a drawing tool in a plan (or on a level in the 3D view).
+pub fn plan_tool(
     doc: &mut Document,
     level: ElementId,
     tool: Tool,
@@ -510,7 +666,7 @@ fn plan_tool(
             Some(_) => Ok(()),
         },
         Tool::Door | Tool::Window => place_opening(doc, level, p, tool, selection),
-        Tool::Dimension | Tool::Tag => Ok(()),
+        Tool::Dimension | Tool::Tag | Tool::Sketch => Ok(()),
         Tool::Slab => match state.pending.take() {
             None => {
                 state.pending = Some(p);
@@ -534,13 +690,11 @@ fn plan_tool(
         Tool::Mass => {
             let e = Element::new(
                 "Mass",
-                ElementKind::FreeMesh(FreeMesh {
-                    level: Some(level),
-                    origin: DVec3::new(p.x, p.y, 0.0),
-                    mesh: EditMesh::cuboid(DVec3::new(2.0, 2.0, 3.0)),
-                    ifc_class: "IfcBuildingElementProxy".into(),
-                    material: None,
-                }),
+                ElementKind::FreeMesh(FreeMesh::new(
+                    Some(level),
+                    DVec3::new(p.x, p.y, 0.0),
+                    EditMesh::cuboid(DVec3::new(2.0, 2.0, 3.0)),
+                )),
             );
             *selection = Some(e.id);
             doc.commit(Transaction::new("Add mass").insert(e))
@@ -571,21 +725,6 @@ fn ray_pick(doc: &Document, view: ElementId, kind: PaneKind, p: DVec2) -> Option
     };
     let scene = creabim_geom::build_scene(doc.model());
     creabim_geom::pick::pick(&scene, o.as_vec3(), d.as_vec3()).map(|h| h.id)
-}
-
-/// The level a height belongs to: the highest one at or below it.
-fn level_below(doc: &Document, z: f64) -> Option<(ElementId, f64)> {
-    let levels: Vec<(ElementId, f64)> = doc
-        .model()
-        .levels()
-        .map(|(e, l)| (e.id, l.elevation))
-        .collect();
-    levels
-        .iter()
-        .filter(|(_, el)| *el <= z + 1e-6)
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .or_else(|| levels.iter().min_by(|a, b| a.1.total_cmp(&b.1)))
-        .copied()
 }
 
 /// A click with a drawing tool in a section or elevation. `p` is the
@@ -699,13 +838,11 @@ fn section_tool(
             let xy = at(p);
             let e = Element::new(
                 "Mass",
-                ElementKind::FreeMesh(FreeMesh {
-                    level: Some(level),
-                    origin: DVec3::new(xy.x, xy.y, p.y - elevation),
-                    mesh: EditMesh::cuboid(DVec3::new(2.0, 2.0, 3.0)),
-                    ifc_class: "IfcBuildingElementProxy".into(),
-                    material: None,
-                }),
+                ElementKind::FreeMesh(FreeMesh::new(
+                    Some(level),
+                    DVec3::new(xy.x, xy.y, p.y - elevation),
+                    EditMesh::cuboid(DVec3::new(2.0, 2.0, 3.0)),
+                )),
             );
             *selection = Some(e.id);
             doc.commit(Transaction::new("Add mass").insert(e))
@@ -884,6 +1021,260 @@ fn preview_cross_section(painter: &egui::Painter, xf: &Xf, a: DVec2, b: DVec2, a
     let tip = xf.to_screen(DVec2::new(a.x, b.y)) + Vec2::new(side * 24.0, 0.0);
     let root = xf.to_screen(DVec2::new(a.x, b.y));
     painter.arrow(root, tip - root, stroke);
+}
+
+/// From a pane's drawing point to the model: plans are level at `z`;
+/// sections stand on their line.
+fn pane_to_model(space: Space, w: DVec2, z: f64) -> DVec3 {
+    match space {
+        Space::Section { start, end } => {
+            (start + (end - start).normalize_or_zero() * w.x).extend(w.y)
+        }
+        Space::Plan | Space::Model => w.extend(z),
+    }
+}
+
+fn model_to_pane(space: Space, p: DVec3) -> DVec2 {
+    match space {
+        Space::Section { start, end } => DVec2::new(
+            (p.truncate() - start).dot((end - start).normalize_or_zero()),
+            p.z,
+        ),
+        Space::Plan | Space::Model => p.truncate(),
+    }
+}
+
+/// G, R and S move, rotate and scale the selection, and Shift+D copies it,
+/// while the pointer is over this pane. Returns `Some` while one runs here.
+#[allow(clippy::too_many_arguments)]
+fn keyboard_edits(
+    ui: &egui::Ui,
+    doc: &mut Document,
+    view: ElementId,
+    space: Space,
+    painter: &egui::Painter,
+    response: &egui::Response,
+    state: &mut PlanState,
+    selection: &mut Option<ElementId>,
+    map: &PaneMap,
+) -> Option<Option<String>> {
+    if let Some(m) = state.modal.as_mut().filter(|m| m.pane == Some(view)) {
+        match m.update(doc, ui.ctx(), painter, response.hover_pos(), map) {
+            Outcome::Running(s) => state.status = Some(s),
+            Outcome::Done(s) | Outcome::Cancelled(s) => {
+                state.status = Some(s);
+                state.modal = None;
+            }
+        }
+        return Some(None);
+    }
+    if state.modal.is_some() || !response.hovered() || ui.ctx().egui_wants_keyboard_input() {
+        return None;
+    }
+    let id = (*selection)?;
+    let mode = start_keys(ui.ctx())?;
+    let grab = response.hover_pos()?;
+    state.cancel();
+    match start_modal(doc, mode, id, None, space, Some(view), grab) {
+        Ok((m, copy)) => {
+            *selection = Some(copy);
+            state.status = Some(format!(
+                "{:?}: move the pointer, or type a value. X, Y or Z keeps to an axis.",
+                m.mode
+            ));
+            state.modal = Some(m);
+        }
+        Err(e) => state.status = Some(e),
+    }
+    Some(None)
+}
+
+/// Which keyboard edit the keys pressed this frame start, if any:
+/// (mode, duplicate first).
+pub fn start_keys(ctx: &egui::Context) -> Option<(Mode, bool)> {
+    ctx.input(|i| {
+        if i.modifiers.command || i.modifiers.alt {
+            return None;
+        }
+        let shift = i.modifiers.shift;
+        if shift && i.key_pressed(egui::Key::D) {
+            Some((Mode::Move, true))
+        } else if shift {
+            None
+        } else if i.key_pressed(egui::Key::G) {
+            Some((Mode::Move, false))
+        } else if i.key_pressed(egui::Key::R) {
+            Some((Mode::Rotate, false))
+        } else if i.key_pressed(egui::Key::S) {
+            Some((Mode::Scale, false))
+        } else {
+            None
+        }
+    })
+}
+
+/// Start a keyboard edit, copying the element first for Shift+D. Returns
+/// the edit and the element it works on (the copy, if one was made).
+pub fn start_modal(
+    doc: &mut Document,
+    (mode, duplicate): (Mode, bool),
+    id: ElementId,
+    face: Option<usize>,
+    space: Space,
+    pane: Option<ElementId>,
+    grab: Pos2,
+) -> Result<(Modal, ElementId), String> {
+    let target = if duplicate {
+        modal::duplicate(doc, id)?
+    } else {
+        id
+    };
+    let face = face.filter(|_| !duplicate);
+    match Modal::start(doc, mode, target, face, space, pane, grab) {
+        Ok(mut m) => {
+            m.duplicated = duplicate;
+            Ok((m, target))
+        }
+        Err(e) => {
+            if duplicate {
+                doc.discard_last();
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Drawing a sketch in a plan or section. Returns `Some` when it used the
+/// frame's input.
+#[allow(clippy::too_many_arguments)]
+fn sketch_tool(
+    ui: &egui::Ui,
+    doc: &mut Document,
+    view: ElementId,
+    space: Space,
+    xf: &Xf,
+    painter: &egui::Painter,
+    response: &egui::Response,
+    state: &mut PlanState,
+    selection: &mut Option<ElementId>,
+    hover: Option<DVec3>,
+    shift: bool,
+) -> Option<Option<String>> {
+    let project = |p: DVec3| Some(xf.to_screen(model_to_pane(space, p)));
+    // a sketch being drawn in another pane is left alone
+    let mine = state.sketch.as_ref().is_some_and(|d| d.pane == Some(view));
+    let tol = 10.0 / xf.scale as f64;
+    let on_plane = match (&state.sketch, hover) {
+        (Some(d), Some(m)) if mine => Some(d.snap(d.plane.to_plane(m), tol, shift)),
+        _ => None,
+    };
+    if let (Some(d), true) = (&state.sketch, mine) {
+        d.draw(painter, &project, on_plane);
+    }
+    if !mine && !response.clicked() {
+        return None;
+    }
+    let (enter, escape) = ui.input(|i| {
+        (
+            i.key_pressed(egui::Key::Enter),
+            i.key_pressed(egui::Key::Escape),
+        )
+    });
+    let finish =
+        |doc: &mut Document, state: &mut PlanState, selection: &mut Option<ElementId>, closed| {
+            let d = state.sketch.take()?;
+            match d.finish(doc, closed) {
+                Ok(Some(id)) => {
+                    *selection = Some(id);
+                    state.status = Some(
+                        "Sketch added. Press E to extrude it into a mass, or G to move it.".into(),
+                    );
+                    Some(None)
+                }
+                Ok(None) => Some(None),
+                Err(e) => Some(Some(e.to_string())),
+            }
+        };
+    if escape && state.sketch.is_some() {
+        state.sketch = None;
+        return Some(None);
+    }
+    if enter || (response.secondary_clicked() && state.sketch.is_some()) {
+        return finish(doc, state, selection, false);
+    }
+    if !response.clicked() {
+        return None;
+    }
+    let m = hover?;
+    if !mine {
+        state.sketch = None;
+    }
+    match &mut state.sketch {
+        None => {
+            let plane = match space {
+                Space::Section { start, end } => Workplane {
+                    origin: m,
+                    x: (end - start).normalize_or_zero().extend(0.0),
+                    y: DVec3::Z,
+                },
+                Space::Plan | Space::Model => Workplane {
+                    origin: m,
+                    ..Workplane::ground(m.z)
+                },
+            };
+            state.sketch = Some(SketchDraft::new(plane, Some(view)));
+            Some(None)
+        }
+        Some(d) => match d.click(on_plane?) {
+            Some(Click::Closed) => finish(doc, state, selection, true),
+            _ => Some(None),
+        },
+    }
+}
+
+/// The element and the walls whose ends meet it: what a drag on it may
+/// change, so it must not snap to itself.
+pub fn joined_with(doc: &Document, id: ElementId) -> Vec<ElementId> {
+    let mut out = vec![id];
+    if let Some(ElementKind::Wall(w)) = doc.model().get(id).map(|e| &e.kind) {
+        for e in doc.model().iter() {
+            if let ElementKind::Wall(o) = &e.kind {
+                let touch = [o.start, o.end]
+                    .iter()
+                    .any(|p| p.distance(w.start) < 1e-3 || p.distance(w.end) < 1e-3);
+                if touch && e.id != id {
+                    out.push(e.id);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Rebuild a view's snaps when the model changed, but not during a drag,
+/// which changes the model every frame.
+fn refresh_snaps(
+    state: &mut PlanState,
+    view: ElementId,
+    revision: u64,
+    plan: &Drawing,
+    exclude: &[ElementId],
+) {
+    let dragging = state.grip.is_some();
+    let fresh = state
+        .snaps
+        .get(&view)
+        .is_some_and(|(r, ex, _)| ex == exclude && (*r == revision || dragging));
+    if !fresh {
+        state.snaps.insert(
+            view,
+            (
+                revision,
+                exclude.to_vec(),
+                Snapper::from_drawing(&plan.items, exclude),
+            ),
+        );
+    }
 }
 
 /// Handles on a selected section or elevation line. Returns `Some` while a
@@ -1594,6 +1985,7 @@ fn snap(
     p: DVec2,
     from: Option<DVec2>,
     ortho: bool,
+    exclude: &[ElementId],
 ) -> DVec2 {
     let mut p = p;
     if let (true, Some(a)) = (ortho, from) {
@@ -1608,7 +2000,7 @@ fn snap(
     let mut best: Option<(f64, DVec2)> = None;
     for e in doc.model().iter() {
         if let ElementKind::Wall(w) = &e.kind {
-            if w.level != level {
+            if w.level != level || exclude.contains(&e.id) {
                 continue;
             }
             for q in [w.start, w.end] {

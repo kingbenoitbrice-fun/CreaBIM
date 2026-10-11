@@ -54,3 +54,35 @@ fn door_splits_wall_into_two_cut_pieces_with_a_swing() {
     assert_eq!(svg.matches("<polygon").count(), 2);
     assert!(svg.matches("<polyline").count() >= 8);
 }
+
+#[test]
+fn a_mass_pushed_out_of_a_wall_face_shows_in_the_plan() {
+    let mut m = sample::sample_house();
+    let level = m.levels().next().map(|(e, _)| e.id).unwrap();
+    let sketch = Sketch {
+        level: Some(level),
+        plane: Workplane::facing(glam::DVec3::new(-0.15, 1.35, 2.5), -glam::DVec3::X),
+        points: vec![
+            DVec2::ZERO,
+            DVec2::new(0.0, -2.0),
+            DVec2::new(1.5, -2.0),
+            DVec2::new(1.5, 0.0),
+        ],
+        closed: true,
+    };
+    let mass = Element::new(
+        "Mass",
+        ElementKind::FreeMesh(FreeMesh::new(
+            Some(level),
+            sketch.plane.origin,
+            sketch.extrude(1.0),
+        )),
+    );
+    let id = mass.id;
+    let mut doc = Document::from_model(m);
+    doc.commit(Transaction::new("t").insert(mass)).unwrap();
+    m = doc.model().clone();
+    let plan = plan_view(&m, level, 1.2);
+    let lines = plan.items.iter().filter(|i| i.id() == id).count();
+    assert!(lines >= 4, "{lines} lines");
+}

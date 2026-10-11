@@ -13,6 +13,8 @@ rust-version = "1.85"
 creabim-core = { path = "crates/creabim-core" }
 creabim-geom = { path = "crates/creabim-geom" }
 creabim-ifc = { path = "crates/creabim-ifc" }
+creabim-store = { path = "crates/creabim-store" }
+rusqlite = { version = "0.40", features = ["bundled"] }
 glam = { version = "0.30", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

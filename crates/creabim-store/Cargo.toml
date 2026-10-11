@@ -1,0 +1,20 @@
+[package]
+name = "creabim-store"
+description = "The .creabim project file: a SQLite database of elements and edit history"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+creabim-core.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+# exact f64 parsing, so a saved model reloads bit-for-bit
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+glam.workspace = true
+tempfile = "3"
