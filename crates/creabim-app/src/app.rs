@@ -8,9 +8,9 @@ use crate::sheetview::{self, SheetState};
 use crate::sketch::{Click, SketchDraft};
 use crate::snaps::{self, SnapKind, Snapper};
 use creabim_core::{
-    element::FREE_MESH_CLASSES, sample::sample_house, Axis, Document, Element, ElementId,
-    ElementKind, Hatch, Material, Model, Modifier, ModifierKind, ScheduleCategory, Sheet,
-    Transaction, View, ViewKind, ViewStyle, Workplane,
+    element::FREE_MESH_CLASSES, sample::sample_house, Axis, BoolOp, Cut, Document, Element,
+    ElementId, ElementKind, Hatch, Material, Model, Modifier, ModifierKind, ScheduleCategory,
+    Sheet, Transaction, View, ViewKind, ViewStyle, Workplane,
 };
 use creabim_geom::sheet::{self as sheets, PlacedView, SheetInfo};
 use creabim_geom::{
@@ -373,8 +373,21 @@ impl CreaBimApp {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         let highlight = [0.95, 0.55, 0.20];
+        let mut ghost_lines: Vec<(DVec3, DVec3, [f32; 3])> = Vec::new();
         for item in &self.scene {
             let selected = Some(item.id) == self.selection;
+            if item.ghost {
+                // cutters show as their outline only
+                let c = if selected {
+                    highlight
+                } else {
+                    [0.35, 0.45, 0.75]
+                };
+                for (a, b) in snaps::feature_edges(&item.mesh) {
+                    ghost_lines.push((a, b, c));
+                }
+                continue;
+            }
             let base = vertices.len() as u32;
             let face_tris = match (
                 selected,
@@ -403,7 +416,10 @@ impl CreaBimApp {
             if let Some(tris) = &face_tris {
                 for &t in tris {
                     for k in 0..3 {
-                        colors[item.mesh.indices[t * 3 + k] as usize] = highlight;
+                        // a cut mesh no longer matches its faces one to one
+                        if let Some(&v) = item.mesh.indices.get(t * 3 + k) {
+                            colors[v as usize] = highlight;
+                        }
                     }
                 }
             }
@@ -426,6 +442,10 @@ impl CreaBimApp {
             .fold(0.0f32, f32::min)
             - 0.01;
         let mut lines = Vec::new();
+        for (a, b, c) in &ghost_lines {
+            lines.push(line_vertex(a.as_vec3().to_array(), *c));
+            lines.push(line_vertex(b.as_vec3().to_array(), *c));
+        }
         let grid = [0.80, 0.80, 0.82];
         for i in -20..=30 {
             let v = i as f32;
@@ -1683,6 +1703,100 @@ impl CreaBimApp {
         });
     }
 
+    /// Booleans on a wall, slab or mass: the cuts it has, and a menu to cut
+    /// it with another element (which then turns into a see-through ghost).
+    fn cuts_panel(&mut self, ui: &mut egui::Ui, id: ElementId) {
+        let cuttable = |k: &ElementKind| {
+            matches!(
+                k,
+                ElementKind::Wall(_) | ElementKind::Slab(_) | ElementKind::FreeMesh(_)
+            )
+        };
+        let model = self.doc.model();
+        if !model.get(id).is_some_and(|e| cuttable(&e.kind)) {
+            return;
+        }
+        let existing: Vec<(ElementId, Cut, String)> = model
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::Cut(c) if c.target == id => Some((
+                    e.id,
+                    *c,
+                    model
+                        .get(c.cutter)
+                        .map_or(String::new(), |x| x.name.clone()),
+                )),
+                _ => None,
+            })
+            .collect();
+        // masses first: they are what you usually cut with
+        let mut candidates: Vec<(bool, ElementId, String)> = model
+            .iter()
+            .filter(|e| e.id != id && cuttable(&e.kind))
+            .filter(|e| !existing.iter().any(|(_, c, _)| c.cutter == e.id))
+            .map(|e| {
+                (
+                    !matches!(e.kind, ElementKind::FreeMesh(_)),
+                    e.id,
+                    e.name.clone(),
+                )
+            })
+            .collect();
+        candidates.sort_by_key(|c| c.0);
+        ui.separator();
+        ui.label("Booleans");
+        let mut remove = None;
+        let mut select = None;
+        for (cid, c, name) in &existing {
+            ui.horizontal(|ui| {
+                ui.label(format!("{} {name}", c.op.label()));
+                if ui.small_button("Select").clicked() {
+                    select = Some(*cid);
+                }
+                if ui.small_button("Remove").clicked() {
+                    remove = Some(*cid);
+                }
+            });
+        }
+        let mut add = None;
+        egui::ComboBox::from_id_salt("cut_with")
+            .selected_text("Subtract…")
+            .show_ui(ui, |ui| {
+                for (_, cid, name) in &candidates {
+                    if ui.selectable_label(false, name).clicked() {
+                        add = Some(*cid);
+                    }
+                }
+            });
+        ui.label(
+            egui::RichText::new(
+                "Pick an element to cut away. It turns into a see-through ghost you can still select and move.",
+            )
+            .weak(),
+        );
+        if let Some(c) = remove {
+            let r = self
+                .doc
+                .commit(Transaction::new("Remove boolean").remove_cascade(self.doc.model(), c));
+            self.report(r, "Boolean removed.");
+        }
+        if let Some(cutter) = add {
+            let e = Element::new(
+                "Cut",
+                ElementKind::Cut(Cut {
+                    target: id,
+                    cutter,
+                    op: BoolOp::Difference,
+                }),
+            );
+            let r = self.doc.commit(Transaction::new("Subtract").insert(e));
+            self.report(r, "Subtracted. Move the ghost to change the cut.");
+        }
+        if let Some(c) = select {
+            self.selection = Some(c);
+        }
+    }
+
     fn properties(&mut self, ui: &mut egui::Ui) {
         ui.heading("Properties");
         let Some(id) = self.selection else {
@@ -2312,6 +2426,40 @@ impl CreaBimApp {
                     label = "Subdivide mesh";
                 }
             }
+            ElementKind::Cut(c) => {
+                let name = |id| {
+                    self.doc
+                        .model()
+                        .get(id)
+                        .map_or("(missing)".to_string(), |e| e.name.clone())
+                };
+                ui.label(format!(
+                    "{} {} with {}",
+                    c.op.label(),
+                    name(c.target),
+                    name(c.cutter)
+                ));
+                for op in BoolOp::ALL {
+                    if ui.radio_value(&mut c.op, op, op.label()).changed() {
+                        label = "Change boolean";
+                    }
+                }
+            }
+            ElementKind::Guide(g) => {
+                ui.label(
+                    egui::RichText::new(
+                        "A construction line to snap to. It is never printed or exported.",
+                    )
+                    .weak(),
+                );
+                if num(ui, "From X", &mut g.a.x, -1e4, 1e4)
+                    | num(ui, "From Y", &mut g.a.y, -1e4, 1e4)
+                    | num(ui, "To X", &mut g.b.x, -1e4, 1e4)
+                    | num(ui, "To Y", &mut g.b.y, -1e4, 1e4)
+                {
+                    label = "Move guide";
+                }
+            }
         }
         if !label.is_empty() {
             let r = self.doc.edit_merged(id, label, |e| *e = edited.clone());
@@ -2321,6 +2469,8 @@ impl CreaBimApp {
             self.extrude_sketch();
             return;
         }
+
+        self.cuts_panel(ui, id);
 
         ui.add_space(10.0);
         let deps = self.doc.model().dependents(id).len();

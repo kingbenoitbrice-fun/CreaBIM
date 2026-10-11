@@ -190,7 +190,8 @@ impl Document {
         let Some(tx) = self.undo.pop() else {
             return false;
         };
-        tx.tx.inverse()
+        tx.tx
+            .inverse()
             .apply(&mut self.model)
             .expect("undoing a committed transaction cannot fail");
         true

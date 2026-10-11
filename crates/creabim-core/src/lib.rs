@@ -4,6 +4,7 @@
 //! the model directly; they are expressed as a [`Transaction`] of [`Op`]s and
 //! committed through a [`Document`], which records them for undo and redo.
 
+pub mod csg;
 pub mod document;
 pub mod editmesh;
 pub mod element;
@@ -17,12 +18,13 @@ pub mod polygon;
 pub mod sample;
 pub mod transform;
 
+pub use csg::BoolOp;
 pub use document::{Document, Step, StepId};
 pub use editmesh::EditMesh;
 pub use element::{
-    Dimension, Element, ElementKind, FreeMesh, Grid, Hatch, HostPoint, Level, Material, Opening,
-    OpeningKind, ScheduleCategory, Sheet, Sketch, Slab, Tag, View, ViewKind, ViewStyle, Viewport,
-    Wall, Workplane,
+    Cut, Dimension, Element, ElementKind, FreeMesh, Grid, Guide, Hatch, HostPoint, Level, Material,
+    Opening, OpeningKind, ScheduleCategory, Sheet, Sketch, Slab, Tag, View, ViewKind, ViewStyle,
+    Viewport, Wall, Workplane,
 };
 pub use id::ElementId;
 pub use joins::{wall_joins, WallEnds};

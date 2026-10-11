@@ -295,7 +295,7 @@ pub fn feature_edges(mesh: &creabim_geom::mesh::TriMesh) -> Vec<(DVec3, DVec3)> 
         })
     };
     let mut tris = Vec::new();
-    for t in mesh.indices.as_chunks::<3>().0 {
+    for t in mesh.indices.chunks(3) {
         let v = [
             welded(mesh.positions[t[0] as usize]),
             welded(mesh.positions[t[1] as usize]),

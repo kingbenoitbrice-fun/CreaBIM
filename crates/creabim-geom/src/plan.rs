@@ -518,7 +518,27 @@ impl PlanView {
 pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
     let mut items = Vec::new();
     let joins = creabim_core::wall_joins(model);
+    let cuts = crate::scene::cuts(model);
+    let cutters: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.1).collect();
+    let targets: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.0).collect();
+    // elements whose plan comes from slicing their final 3D shape
+    let mut sliced: Vec<ElementId> = Vec::new();
     for e in model.iter() {
+        if cutters.contains(&e.id) {
+            continue;
+        }
+        let on_level = match &e.kind {
+            ElementKind::Wall(w) => w.level == level,
+            ElementKind::Slab(s) => s.level == level,
+            ElementKind::FreeMesh(f) => f.level == Some(level),
+            _ => false,
+        };
+        if on_level && (targets.contains(&e.id) || matches!(e.kind, ElementKind::FreeMesh(_))) {
+            sliced.push(e.id);
+            if !matches!(e.kind, ElementKind::Wall(_)) {
+                continue;
+            }
+        }
         match &e.kind {
             ElementKind::Grid(g) => {
                 items.push(PlanItem::Line {
@@ -647,29 +667,6 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                     }
                 }
             }
-            ElementKind::FreeMesh(f) if f.level == Some(level) => {
-                let mut seen = std::collections::HashSet::new();
-                let mesh = f.evaluated().mesh;
-                for face in &mesh.faces {
-                    for i in 0..face.len() {
-                        let (a, b) = (face[i], face[(i + 1) % face.len()]);
-                        if !seen.insert((a.min(b), a.max(b))) {
-                            continue;
-                        }
-                        let pa = mesh.vertices[a as usize] + f.origin;
-                        let pb = mesh.vertices[b as usize] + f.origin;
-                        if pa.truncate().distance(pb.truncate()) < 1e-6 {
-                            continue;
-                        }
-                        items.push(PlanItem::Line {
-                            id: e.id,
-                            pen: Pen::Projection,
-                            a: pa.truncate(),
-                            b: pb.truncate(),
-                        });
-                    }
-                }
-            }
             ElementKind::View(v) => {
                 if let creabim_core::ViewKind::Section {
                     start, end, cut, ..
@@ -681,8 +678,72 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
             _ => {}
         }
     }
+    // a cut wall keeps its opening symbols but takes its outline from the slice
+    items.retain(|it| !sliced.contains(&it.id()) || matches!(it, PlanItem::Label { .. }));
     clean_up_cuts(model, &mut items);
+    if !sliced.is_empty() {
+        let z = model.level(level).map_or(0.0, |l| l.elevation) + cut_height;
+        let scene = crate::scene::build_scene(model);
+        for item in scene.iter().filter(|i| sliced.contains(&i.id)) {
+            sliced_plan(model, item, z, &mut items);
+        }
+    }
     PlanView { items }
+}
+
+/// The plan of a shape with no simple footprint: its section at `z`,
+/// filled, and its edges below `z` in projection.
+fn sliced_plan(model: &Model, item: &crate::scene::SceneItem, z: f64, items: &mut Vec<PlanItem>) {
+    let mut cut: Vec<(DVec2, DVec2)> = Vec::new();
+    for lp in crate::slice::slice(&item.mesh, z) {
+        let n = lp.len();
+        for i in 0..n {
+            cut.push((lp[i], lp[(i + 1) % n]));
+            items.push(PlanItem::Line {
+                id: item.id,
+                pen: Pen::Cut,
+                a: lp[i],
+                b: lp[(i + 1) % n],
+            });
+        }
+        items.push(PlanItem::Fill {
+            id: item.id,
+            points: lp,
+            hatch: hatch_of(model, item.id),
+        });
+    }
+    for (a, b) in crate::section::feature_edges(item) {
+        let (a, b) = if a.z <= b.z { (a, b) } else { (b, a) };
+        if a.z >= z - 1e-6 {
+            continue;
+        }
+        // keep the part below the cut
+        let b = if b.z > z {
+            a + (b - a) * ((z - a.z) / (b.z - a.z))
+        } else {
+            b
+        };
+        // edges seen end-on, and those lying in the cut, add nothing
+        let (a, b) = (a.truncate(), b.truncate());
+        if a.distance(b) < 1e-6 {
+            continue;
+        }
+        // edges hidden under the heavy cut line
+        let on = |p: DVec2, (s, e): (DVec2, DVec2)| {
+            let d = e - s;
+            let t = ((p - s).dot(d) / d.length_squared().max(1e-12)).clamp(0.0, 1.0);
+            p.distance(s + d * t) < 1e-4
+        };
+        if cut.iter().any(|&c| on(a, c) && on(b, c)) {
+            continue;
+        }
+        items.push(PlanItem::Line {
+            id: item.id,
+            pen: Pen::Projection,
+            a,
+            b,
+        });
+    }
 }
 
 /// Section line with view arrows, or an elevation marker, as drawn in plan.
