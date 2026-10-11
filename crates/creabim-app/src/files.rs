@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
 
 /// The kinds of file that come in as linked objects.
-pub const LINKABLE: &[&str] = &["blend"];
+pub const LINKABLE: &[&str] = &["blend", "fcstd"];
 
 fn ext(path: &str) -> String {
     Path::new(path)
@@ -31,6 +31,7 @@ pub fn is_linkable(path: &str) -> bool {
 pub fn read_incoming(path: &str) -> Result<Vec<Incoming>, String> {
     match ext(path).as_str() {
         "blend" => creabim_exchange::blend::read_file(Path::new(path)).map_err(|e| e.to_string()),
+        "fcstd" => creabim_exchange::freecad::read_file(Path::new(path)).map_err(|e| e.to_string()),
         other => Err(format!("CreaBIM can't read .{other} files yet.")),
     }
 }

@@ -1,0 +1,14 @@
+schema_version = "1.0.0"
+
+id = "creabim_link"
+version = "0.1.0"
+name = "CreaBIM Link"
+tagline = "Model in Blender next to a live CreaBIM project"
+maintainer = "CreaBIM contributors"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+tags = ["Import-Export", "Object"]
+
+[permissions]
+files = "Import CreaBIM models and save the .blend that CreaBIM reloads"

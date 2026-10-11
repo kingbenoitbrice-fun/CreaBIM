@@ -53,7 +53,8 @@ impl Assign {
         let l = t.to_ascii_lowercase();
         let l = l.strip_prefix("ifc").unwrap_or(&l);
         Some(match l {
-            "" => return None,
+            // a plain shape: no kind asked for
+            "" | "mesh" | "free shape" | "none" => return None,
             "wall" | "wallstandardcase" => Assign::Wall,
             "slab" | "floor" => Assign::Slab,
             "door" => Assign::Door,

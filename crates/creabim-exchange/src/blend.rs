@@ -53,8 +53,9 @@ fn object(scene: &BlendScene, o: &BlendObject) -> Option<Incoming> {
     let element = prop(&["creabim_id"])
         .and_then(|v| uuid::Uuid::parse_str(&v).ok())
         .map(ElementId);
-    let hint = prop(&["creabim_kind", "ifc_class", "IfcClass", "ifc_type"])
+    let hint = prop(&["creabim_kind"])
         .and_then(|v| Assign::parse(&v))
+        .or_else(|| prop(&["ifc_class", "IfcClass", "ifc_type"]).and_then(|v| Assign::parse(&v)))
         .or_else(|| o.collections.iter().find_map(|c| collection_hint(c)));
     let material = main_material(scene, o);
     Some(Incoming {

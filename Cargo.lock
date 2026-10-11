@@ -721,6 +721,7 @@ name = "creabim-cli"
 version = "0.1.0"
 dependencies = [
  "creabim-core",
+ "creabim-exchange",
  "creabim-geom",
  "creabim-ifc",
  "creabim-store",
@@ -745,6 +746,7 @@ version = "0.1.0"
 dependencies = [
  "creabim-blend",
  "creabim-core",
+ "creabim-freecad",
  "creabim-geom",
  "glam",
  "serde_json",

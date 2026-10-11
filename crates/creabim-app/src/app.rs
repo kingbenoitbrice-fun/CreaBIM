@@ -1594,7 +1594,7 @@ impl CreaBimApp {
                 ui.separator();
                 if ui
                     .button("Open")
-                    .on_hover_text("Open the .creabim project named in the File box. Other files (.blend) are imported into this project.")
+                    .on_hover_text("Open the .creabim project named in the File box. Other files (.blend, .FCStd) are imported into this project.")
                     .clicked()
                 {
                     let path = self.path.clone();
@@ -1610,7 +1610,7 @@ impl CreaBimApp {
                 ui.separator();
                 if ui
                     .button("Import and link…")
-                    .on_hover_text("Bring in the objects of the .blend file named in the File box. Saving it in Blender updates them here.")
+                    .on_hover_text("Bring in the objects of the .blend or .FCStd file named in the File box. Saving it in Blender or FreeCAD updates them here.")
                     .clicked()
                 {
                     let path = self.path.clone();
@@ -1636,6 +1636,17 @@ impl CreaBimApp {
                     let out = with_extension(&self.path, "glb");
                     let r = std::fs::write(&out, creabim_exchange::gltf::export_glb(self.doc.model()));
                     self.report(r, format!("Exported {out}. In Blender: File > Import > glTF, or use the CreaBIM add-on."));
+                }
+                if ui
+                    .button("Export FreeCAD (.FCStd)")
+                    .on_hover_text("Every element as a solid with its BIM type and CreaBIM id; open it in FreeCAD, edit, save, and link it back.")
+                    .clicked()
+                {
+                    let out = with_extension(&self.path, "FCStd");
+                    let r = creabim_exchange::freecad::export_fcstd(self.doc.model(), &stem(&self.path))
+                        .map_err(|e| e.to_string())
+                        .and_then(|b| std::fs::write(&out, b).map_err(|e| e.to_string()));
+                    self.report(r, format!("Exported {out}"));
                 }
                 if ui.button("Export IFC4").clicked() {
                     let out = with_extension(&self.path, "ifc");

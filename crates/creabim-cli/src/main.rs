@@ -26,7 +26,11 @@ usage: (<model> is a .creabim project or a legacy .creabim.json file)
   creabim pdf <model> <out.pdf>        export every sheet to one PDF
   creabim schedule <model> <doors|windows|walls|slabs> [out.csv]
                                        print or save a schedule as CSV
-  creabim stats <model>                count elements by IFC class";
+  creabim stats <model>                count elements by IFC class
+  creabim glb <model> <out.glb>        export glTF for Blender, with element ids
+  creabim fcstd <model> <out.FCStd>    export a FreeCAD document
+  creabim link <model> <file.blend|file.FCStd> <out-model>
+                                       bring in (or reload) a linked file's objects";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -44,6 +48,44 @@ fn main() -> ExitCode {
         ["save-db", input, out] => creabim_store::import_json(input)
             .map_err(|e| format!("{input}: {e}"))
             .and_then(|doc| creabim_store::save(out, &doc).map_err(|e| format!("{out}: {e}"))),
+        ["glb", input, out] => load(input).and_then(|m| {
+            std::fs::write(out, creabim_exchange::gltf::export_glb(&m)).map_err(|e| e.to_string())
+        }),
+        ["fcstd", input, out] => load(input).and_then(|m| {
+            let label = std::path::Path::new(out)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            creabim_exchange::freecad::export_fcstd(&m, &label)
+                .map_err(|e| e.to_string())
+                .and_then(|b| std::fs::write(out, b).map_err(|e| e.to_string()))
+        }),
+        ["link", input, linked, out] => load(input).and_then(|m| {
+            let file = std::fs::canonicalize(linked)
+                .map_err(|e| format!("{linked}: {e}"))?
+                .display()
+                .to_string();
+            let path = std::path::Path::new(&file);
+            let lower = file.to_ascii_lowercase();
+            let incoming = if lower.ends_with(".fcstd") {
+                creabim_exchange::freecad::read_file(path)
+            } else {
+                creabim_exchange::blend::read_file(path)
+            }
+            .map_err(|e| e.to_string())?;
+            let (tx, report) = creabim_exchange::sync(&m, &file, &incoming);
+            let mut doc = Document::from_model(m);
+            doc.commit(tx).map_err(|e| e.to_string())?;
+            println!("{}", report.summary());
+            for n in &report.notes {
+                println!("  {n}");
+            }
+            if is_json(out) {
+                std::fs::write(out, doc.model().to_json()).map_err(|e| e.to_string())
+            } else {
+                creabim_store::save(out, &doc).map_err(|e| format!("{out}: {e}"))
+            }
+        }),
         ["ifc", input, out] => load(input).and_then(|m| {
             let name = std::path::Path::new(out)
                 .file_stem()
