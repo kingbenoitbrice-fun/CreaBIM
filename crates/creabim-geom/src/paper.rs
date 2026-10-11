@@ -120,7 +120,7 @@ pub fn pen_stroke(pen: Pen) -> Stroke {
         Pen::Cut => CUT,
         Pen::Projection => PROJECTION,
         Pen::Symbol => SYMBOL,
-        Pen::Grid => GRID,
+        Pen::Grid | Pen::Guide => GRID,
     }
 }
 
@@ -138,6 +138,10 @@ pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
     let to = |p: DVec2| map.to_paper(p);
     for it in &drawing.items {
         match it {
+            // guides are for working, not for print
+            PlanItem::Line {
+                pen: Pen::Guide, ..
+            } => {}
             PlanItem::Fill { points, hatch, .. } => {
                 let pts: Vec<DVec2> = points.iter().map(|p| to(*p)).collect();
                 canvas.fill(&pts, hatch_fill(*hatch));

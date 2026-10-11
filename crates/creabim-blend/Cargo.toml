@@ -1,0 +1,13 @@
+[package]
+name = "creabim-blend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# ruzstd needs 1.87.
+rust-version = "1.87"
+
+[dependencies]
+flate2 = "1.1.10"
+ruzstd = "0.8.2"
+thiserror.workspace = true

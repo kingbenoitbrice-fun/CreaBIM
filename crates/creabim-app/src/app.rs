@@ -1,10 +1,16 @@
 use crate::camera::OrbitCamera;
+use crate::handles::{self, PaneInput, Ray};
+use crate::icons::{self, Icon};
+use crate::modal::{Outcome, PaneMap, Space};
 use crate::planview::{self, PaneStyle, PlanState, Tool};
 use crate::render3d::{Vertex, Viewport3d};
 use crate::sheetview::{self, SheetState};
+use crate::sketch::{Click, SketchDraft};
+use crate::snaps::{self, SnapKind, Snapper};
 use creabim_core::{
-    element::FREE_MESH_CLASSES, sample::sample_house, Document, Element, ElementId, ElementKind,
-    Hatch, Material, Model, ScheduleCategory, Sheet, Transaction, View, ViewKind, ViewStyle,
+    element::FREE_MESH_CLASSES, sample::sample_house, Axis, BoolOp, Cut, Document, Element,
+    ElementId, ElementKind, Hatch, Material, Model, Modifier, ModifierKind, ScheduleCategory,
+    Sheet, Transaction, View, ViewKind, ViewStyle, Workplane,
 };
 use creabim_geom::sheet::{self as sheets, PlacedView, SheetInfo};
 use creabim_geom::{
@@ -12,7 +18,7 @@ use creabim_geom::{
 };
 use eframe::egui::{self, Color32, Rect, Sense, Vec2};
 use eframe::egui_wgpu;
-use glam::{DVec2, Vec2 as GVec2};
+use glam::{DVec2, DVec3, Vec2 as GVec2};
 use std::collections::HashMap;
 
 /// What the 3D geometry was last built from; rebuild when any of it changes.
@@ -37,6 +43,28 @@ enum PlanPlacement {
     Hidden,
 }
 
+/// How the 3D view and the 2D pane share the window when docked. The
+/// divider between them drags like Blender's area borders.
+#[derive(Clone, Copy)]
+struct PaneLayout {
+    /// Share of the width (or height, when stacked) given to the first pane.
+    split: f32,
+    /// One above the other instead of side by side.
+    stacked: bool,
+    /// The 2D pane first (left or top) instead of the 3D view.
+    swapped: bool,
+}
+
+impl Default for PaneLayout {
+    fn default() -> Self {
+        Self {
+            split: 0.5,
+            stacked: false,
+            swapped: false,
+        }
+    }
+}
+
 pub struct CreaBimApp {
     doc: Document,
     selection: Option<ElementId>,
@@ -56,6 +84,14 @@ pub struct CreaBimApp {
     plan: PlanState,
     placement: PlanPlacement,
     plan_in_3d: bool,
+    layout: PaneLayout,
+    /// A handle or element being dragged in the 3D view.
+    handle_drag: Option<handles::Drag>,
+    /// Snaps for the 3D view: built from the scene without the listed
+    /// elements, at a model revision.
+    snaps_3d: Option<(u64, Vec<ElementId>, Snapper)>,
+    /// First click of a two-click tool in the 3D view, on a level.
+    pending_3d: Option<(DVec2, ElementId)>,
     extrude_distance: f64,
     path: String,
     status: String,
@@ -83,6 +119,10 @@ impl CreaBimApp {
             plan: PlanState::default(),
             placement: PlanPlacement::Docked,
             plan_in_3d: false,
+            layout: PaneLayout::default(),
+            handle_drag: None,
+            snaps_3d: None,
+            pending_3d: None,
             extrude_distance: 1.0,
             path: "project.creabim.json".into(),
             status: "Loaded the sample house. Orbit with left drag, pan with right drag, zoom with the wheel.".into(),
@@ -233,7 +273,15 @@ impl CreaBimApp {
             self.delete_selected();
         }
         if extrude {
-            self.extrude_face();
+            let sketch = self
+                .selection
+                .and_then(|id| self.doc.model().get(id))
+                .is_some_and(|e| matches!(e.kind, ElementKind::Sketch(_)));
+            if sketch {
+                self.extrude_sketch();
+            } else {
+                self.extrude_face();
+            }
         }
         self.drop_stale_selection();
     }
@@ -286,6 +334,26 @@ impl CreaBimApp {
         );
     }
 
+    fn extrude_sketch(&mut self) {
+        let Some(id) = self.selection else { return };
+        let d = self.extrude_distance;
+        match crate::sketch::extrude(&mut self.doc, id, d) {
+            Ok((mass, cap)) => {
+                self.selection = Some(mass);
+                self.face = cap;
+                self.status = match cap {
+                    Some(_) => format!(
+                        "Extruded the sketch {d:.2} m into a mass. Its far face is selected: press E to push it further."
+                    ),
+                    None => format!(
+                        "Extruded the open sketch {d:.2} m into a surface. Add a Solidify modifier to give it thickness."
+                    ),
+                };
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
     // ---- 3D -------------------------------------------------------------
 
     fn rebuild_geometry(&mut self, rs: &egui_wgpu::RenderState) {
@@ -305,15 +373,36 @@ impl CreaBimApp {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         let highlight = [0.95, 0.55, 0.20];
+        let mut ghost_lines: Vec<(DVec3, DVec3, [f32; 3])> = Vec::new();
         for item in &self.scene {
             let selected = Some(item.id) == self.selection;
+            if item.ghost {
+                // cutters show as their outline only
+                let c = if selected {
+                    highlight
+                } else {
+                    [0.35, 0.45, 0.75]
+                };
+                for (a, b) in snaps::feature_edges(&item.mesh) {
+                    ghost_lines.push((a, b, c));
+                }
+                continue;
+            }
             let base = vertices.len() as u32;
             let face_tris = match (
                 selected,
                 self.face,
                 self.doc.model().get(item.id).map(|e| &e.kind),
             ) {
-                (true, Some(f), Some(ElementKind::FreeMesh(m))) => Some(face_triangles(&m.mesh, f)),
+                (true, Some(f), Some(ElementKind::FreeMesh(m))) => {
+                    // the face and its copies made by modifiers
+                    let ev = m.evaluated();
+                    let tris: Vec<usize> = (0..ev.mesh.faces.len())
+                        .filter(|&i| ev.source[i] == Some(f))
+                        .flat_map(|i| face_triangles(&ev.mesh, i))
+                        .collect();
+                    Some(tris)
+                }
                 _ => None,
             };
             let mut colors = vec![
@@ -325,9 +414,12 @@ impl CreaBimApp {
                 item.mesh.positions.len()
             ];
             if let Some(tris) = &face_tris {
-                for t in tris.clone() {
+                for &t in tris {
                     for k in 0..3 {
-                        colors[item.mesh.indices[t * 3 + k] as usize] = highlight;
+                        // a cut mesh no longer matches its faces one to one
+                        if let Some(&v) = item.mesh.indices.get(t * 3 + k) {
+                            colors[v as usize] = highlight;
+                        }
                     }
                 }
             }
@@ -350,6 +442,10 @@ impl CreaBimApp {
             .fold(0.0f32, f32::min)
             - 0.01;
         let mut lines = Vec::new();
+        for (a, b, c) in &ghost_lines {
+            lines.push(line_vertex(a.as_vec3().to_array(), *c));
+            lines.push(line_vertex(b.as_vec3().to_array(), *c));
+        }
         let grid = [0.80, 0.80, 0.82];
         for i in -20..=30 {
             let v = i as f32;
@@ -414,6 +510,10 @@ impl CreaBimApp {
                                 seg(points[i], points[(i + 1) % points.len()], c);
                             }
                         }
+                        // guides show as their own lines in 3D
+                        PlanItem::Line {
+                            pen: Pen::Guide, ..
+                        } => {}
                         PlanItem::Line { a, b, .. } => seg(*a, *b, c),
                         PlanItem::Arc {
                             center,
@@ -464,10 +564,7 @@ impl CreaBimApp {
             );
             return;
         };
-        if response.dragged_by(egui::PointerButton::Primary) {
-            let d = response.drag_delta();
-            self.camera.orbit(GVec2::new(d.x, d.y));
-        }
+        let modal_here = self.plan.modal.as_ref().is_some_and(|m| m.pane.is_none());
         if response.dragged_by(egui::PointerButton::Secondary)
             || response.dragged_by(egui::PointerButton::Middle)
         {
@@ -482,21 +579,6 @@ impl CreaBimApp {
         }
         let aspect = rect.width() / rect.height().max(1.0);
         self.aspect = aspect;
-        if response.clicked() {
-            if let Some(p) = response.interact_pointer_pos() {
-                let ndc = GVec2::new(
-                    (p.x - rect.left()) / rect.width() * 2.0 - 1.0,
-                    1.0 - (p.y - rect.top()) / rect.height() * 2.0,
-                );
-                let (o, d) = self.camera.ray(ndc, aspect);
-                let hit = pick::pick(&self.scene, o, d);
-                self.selection = hit.map(|h| h.id);
-                self.face = hit.and_then(|h| match self.doc.model().get(h.id).map(|e| &e.kind) {
-                    Some(ElementKind::FreeMesh(m)) => pick::face_of_triangle(&m.mesh, h.triangle),
-                    _ => None,
-                });
-            }
-        }
 
         self.rebuild_geometry(rs);
         let ppp = ui.ctx().pixels_per_point();
@@ -517,6 +599,708 @@ impl CreaBimApp {
             egui::FontId::proportional(13.0),
             Color32::from_gray(80),
         );
+
+        // overlays and pointer input, drawn over the rendered image
+        let painter = ui.painter_at(rect);
+        let cam = self.camera.clone();
+        let view_proj = cam.view_proj(aspect);
+        let project = move |p: DVec3| -> Option<egui::Pos2> {
+            let c = view_proj * p.as_vec3().extend(1.0);
+            if c.w <= 1e-4 {
+                return None;
+            }
+            let n = c.truncate() / c.w;
+            Some(egui::pos2(
+                rect.left() + (n.x + 1.0) / 2.0 * rect.width(),
+                rect.top() + (1.0 - n.y) / 2.0 * rect.height(),
+            ))
+        };
+        let ray = |p: egui::Pos2| {
+            let ndc = GVec2::new(
+                (p.x - rect.left()) / rect.width() * 2.0 - 1.0,
+                1.0 - (p.y - rect.top()) / rect.height() * 2.0,
+            );
+            let (o, d) = cam.ray(ndc, aspect);
+            (o.as_dvec3(), d.as_dvec3())
+        };
+        let hover = response.hover_pos();
+        self.draw_sketches(&painter, &project);
+
+        // a keyboard move, rotate or scale running here
+        if modal_here {
+            let eye = cam.eye().as_dvec3();
+            let to_model = |pos: egui::Pos2, axis: Option<Axis>, pivot: DVec3| {
+                let (o, d) = ray(pos);
+                let plane = if axis == Some(Axis::Z) {
+                    // stand a plane up through the pivot, facing the camera
+                    let f = (pivot - eye).truncate().normalize_or(DVec2::X);
+                    Workplane::facing(pivot, -f.extend(0.0))
+                } else {
+                    Workplane::ground(pivot.z)
+                };
+                plane.intersect(o, d)
+            };
+            let map = PaneMap {
+                to_model: &to_model,
+                project: &project,
+            };
+            let ctx = ui.ctx().clone();
+            if let Some(m) = self.plan.modal.as_mut() {
+                match m.update(&mut self.doc, &ctx, &painter, hover, &map) {
+                    Outcome::Running(s) => self.status = s,
+                    Outcome::Done(s) | Outcome::Cancelled(s) => {
+                        self.status = s;
+                        self.plan.modal = None;
+                    }
+                }
+            }
+            ui.ctx().request_repaint();
+            return;
+        }
+        if response.hovered() && self.plan.modal.is_none() && !ui.ctx().egui_wants_keyboard_input()
+        {
+            if let (Some(keys), Some(id), Some(grab)) =
+                (planview::start_keys(ui.ctx()), self.selection, hover)
+            {
+                self.plan.cancel();
+                match planview::start_modal(
+                    &mut self.doc,
+                    keys,
+                    id,
+                    self.face,
+                    Space::Model,
+                    None,
+                    grab,
+                ) {
+                    Ok((m, target)) => {
+                        if target != id {
+                            self.selection = Some(target);
+                            self.face = None;
+                        }
+                        self.status = format!(
+                            "{:?}: move the pointer, or type a value. X, Y or Z keeps to an axis.",
+                            m.mode
+                        );
+                        self.plan.modal = Some(m);
+                    }
+                    Err(e) => self.status = e,
+                }
+                return;
+            }
+        }
+
+        if self.plan.tool == Tool::Sketch {
+            if response.dragged_by(egui::PointerButton::Primary) {
+                let d = response.drag_delta();
+                self.camera.orbit(GVec2::new(d.x, d.y));
+            }
+            self.sketch_3d(ui, &response, &painter, &project, &ray, &cam);
+            return;
+        }
+
+        // handles on the selection, and dragging the selection itself
+        let exclude = self
+            .selection
+            .map(|id| planview::joined_with(&self.doc, id))
+            .unwrap_or_default();
+        self.refresh_snaps_3d(&exclude);
+        let dragging = {
+            let snapper = &self.snaps_3d.as_ref().expect("just built").2;
+            let scene = &self.scene;
+            let ray_fn = |p: egui::Pos2| {
+                let (o, d) = ray(p);
+                Some(Ray { o, d })
+            };
+            let snap = |p: egui::Pos2, from: Option<DVec3>| {
+                let (o, d) = ray(p);
+                let free = Workplane::ground(from.map_or(0.0, |f| f.z)).intersect(o, d);
+                let s = snapper.snap(p, &project, from, free)?;
+                Some((s.p, s))
+            };
+            let grab_body = |p: egui::Pos2, id: ElementId| {
+                let (o, d) = ray(p);
+                let h = pick::pick(scene, o.as_vec3(), d.as_vec3())?;
+                (h.id == id).then(|| o + d * h.t as f64)
+            };
+            let (_, look) = ray(rect.center());
+            let input = PaneInput {
+                ray: &ray_fn,
+                project: &project,
+                look,
+                snap: &snap,
+                grab_body: &grab_body,
+                body_normal: DVec3::Z,
+            };
+            let mut status = None;
+            let busy = self.plan.tool == Tool::Select
+                && handles::interact(
+                    &mut self.doc,
+                    &painter,
+                    &response,
+                    self.selection,
+                    self.face,
+                    &mut self.handle_drag,
+                    &input,
+                    &mut status,
+                );
+            if let Some(s) = status {
+                self.status = s;
+            }
+            busy
+        };
+        if dragging {
+            return;
+        }
+        if response.dragged_by(egui::PointerButton::Primary) {
+            let d = response.drag_delta();
+            self.camera.orbit(GVec2::new(d.x, d.y));
+        }
+
+        if self.plan.outline.is_some() {
+            self.outline_3d(ui, &response, &painter, &project, &ray);
+            return;
+        }
+        if self.plan.tool != Tool::Select {
+            self.tools_3d(ui, &response, &painter, &project, &ray);
+            return;
+        }
+
+        if response.clicked() {
+            if let Some(p) = response.interact_pointer_pos() {
+                // sketch lines first: they have no surface to hit
+                let near_sketch = creabim_geom::scene::sketch_lines(self.doc.model())
+                    .into_iter()
+                    .filter_map(|(id, a, b)| {
+                        let (a, b) = (project(a)?, project(b)?);
+                        let d = egui::Rect::from_two_pos(a, b)
+                            .expand(6.0)
+                            .contains(p)
+                            .then(|| {
+                                let ab = b - a;
+                                let t =
+                                    ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+                                (a + ab * t).distance(p)
+                            })?;
+                        (d < 6.0).then_some((id, d))
+                    })
+                    .min_by(|x, y| x.1.total_cmp(&y.1));
+                if let Some((id, _)) = near_sketch {
+                    self.selection = Some(id);
+                    self.face = None;
+                    return;
+                }
+                let (o, d) = ray(p);
+                let hit = pick::pick(&self.scene, o.as_vec3(), d.as_vec3());
+                // guides cross everything, so they only take clicks that miss
+                if hit.is_none() {
+                    if let Some(id) = self.guide_near(p, &project) {
+                        self.selection = Some(id);
+                        self.face = None;
+                        return;
+                    }
+                }
+                self.selection = hit.map(|h| h.id);
+                self.face = hit.and_then(|h| match self.doc.model().get(h.id).map(|e| &e.kind) {
+                    Some(ElementKind::FreeMesh(m)) => {
+                        let ev = m.evaluated();
+                        let f = pick::face_of_triangle(&ev.mesh, h.triangle)?;
+                        ev.source.get(f).copied().flatten()
+                    }
+                    _ => None,
+                });
+            }
+        }
+    }
+
+    /// Rebuild the 3D snaps when the model changed, but not during a drag,
+    /// which changes the model every frame.
+    fn refresh_snaps_3d(&mut self, exclude: &[ElementId]) {
+        let rev = self.doc.model().revision();
+        let fresh = self
+            .snaps_3d
+            .as_ref()
+            .is_some_and(|(r, ex, _)| ex == exclude && (*r == rev || self.handle_drag.is_some()));
+        if !fresh {
+            let mut snapper = Snapper::from_scene(&self.scene, exclude);
+            snapper.add_guides(self.doc.model(), GUIDE_REACH_3D);
+            self.snaps_3d = Some((rev, exclude.to_vec(), snapper));
+        }
+    }
+
+    /// The level the 3D drawing tools draw on: the active plan's, else the
+    /// selected element's, else the lowest.
+    fn work_level(&self) -> Option<(ElementId, f64)> {
+        let m = self.doc.model();
+        let plan = self
+            .active_view
+            .and_then(|v| match self.view(v).map(|v| &v.kind) {
+                Some(ViewKind::Plan { level, .. }) => Some(*level),
+                _ => None,
+            });
+        let of_selection = self
+            .selection
+            .and_then(|id| match m.get(id).map(|e| &e.kind) {
+                Some(ElementKind::Wall(w)) => Some(w.level),
+                Some(ElementKind::Slab(s)) => Some(s.level),
+                Some(ElementKind::FreeMesh(f)) => f.level,
+                Some(ElementKind::Level(_)) => Some(id),
+                _ => None,
+            });
+        let lowest = m
+            .levels()
+            .min_by(|a, b| a.1.elevation.total_cmp(&b.1.elevation))
+            .map(|(e, _)| e.id);
+        let id = plan.or(of_selection).or(lowest)?;
+        Some((id, m.level(id).map_or(0.0, |l| l.elevation)))
+    }
+
+    /// Walls, slabs, doors, windows, masses and section lines drawn right in
+    /// the 3D view, on the working level, with the same snaps as dragging.
+    fn tools_3d(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        painter: &egui::Painter,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        ray: &dyn Fn(egui::Pos2) -> (DVec3, DVec3),
+    ) {
+        let tool = self.plan.tool;
+        if matches!(tool, Tool::Dimension | Tool::Tag) {
+            if response.clicked() {
+                self.status = format!(
+                    "The {} tool works in plans and sections for now.",
+                    tool.label()
+                );
+            }
+            return;
+        }
+        let Some((level, z)) = self.work_level() else {
+            return;
+        };
+        let accent = Color32::from_rgb(230, 120, 30);
+        let stroke = egui::Stroke::new(2.0, accent);
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) || response.secondary_clicked() {
+            self.pending_3d = None;
+        }
+        let Some(hover) = response.hover_pos() else {
+            return;
+        };
+        let (o, d) = ray(hover);
+        let hit = pick::pick(&self.scene, o.as_vec3(), d.as_vec3());
+        let level_name = self
+            .doc
+            .model()
+            .get(level)
+            .map_or(String::new(), |e| e.name.clone());
+
+        // doors and windows go into the wall under the pointer
+        if matches!(tool, Tool::Door | Tool::Window) {
+            let wall = hit.and_then(|h| match self.doc.model().get(h.id).map(|e| &e.kind) {
+                Some(ElementKind::Wall(w)) => Some((h, w.level)),
+                Some(ElementKind::Opening(op)) => {
+                    match self.doc.model().get(op.host).map(|e| &e.kind) {
+                        Some(ElementKind::Wall(w)) => Some((h, w.level)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            });
+            if let Some((h, wl)) = wall {
+                let at = o + d * h.t as f64;
+                if let Some(c) = project(at) {
+                    painter.circle_stroke(c, 6.0, stroke);
+                }
+                if response.clicked() {
+                    let mut sel = self.selection;
+                    let mut state = std::mem::take(&mut self.plan);
+                    let r = planview::plan_tool(
+                        &mut self.doc,
+                        wl,
+                        tool,
+                        at.truncate(),
+                        &mut state,
+                        &mut sel,
+                    );
+                    self.plan = state;
+                    self.selection = sel;
+                    self.report(
+                        r,
+                        format!(
+                            "{} placed. Drag its round handles to resize it.",
+                            tool.label()
+                        ),
+                    );
+                }
+            } else if response.clicked() {
+                self.status = format!(
+                    "Click a wall to put the {} in it.",
+                    tool.label().to_lowercase()
+                );
+            }
+            return;
+        }
+
+        // everything else is drawn on the working level
+        let from = self
+            .pending_3d
+            .filter(|(_, l)| *l == level)
+            .map(|(p, _)| p.extend(z));
+        let free = Workplane::ground(z).intersect(o, d);
+        let exclude: Vec<ElementId> = vec![];
+        self.refresh_snaps_3d(&exclude);
+        let snapper = &self.snaps_3d.as_ref().expect("just built").2;
+        let Some(snap) = snapper.snap(hover, project, from, free) else {
+            return;
+        };
+        let p = snap.p.truncate();
+        let at = p.extend(z);
+        if let Some(c) = project(at) {
+            if snap.kind == SnapKind::Grid {
+                painter.circle_stroke(c, 4.0, egui::Stroke::new(1.0, accent));
+            } else {
+                snaps::draw(painter, snap, c, from.and_then(project));
+            }
+        }
+        if let Some(a) = from {
+            match tool {
+                Tool::Guide => {
+                    let (through, dir) = match self.plan.guide_edge {
+                        Some((e0, e1)) => (at, (e1 - e0).extend(0.0)),
+                        None => (a, at - a),
+                    };
+                    draw_guide_3d(painter, project, through, through + dir, stroke);
+                    if let Some(sb) = project(at) {
+                        let text = match self.plan.guide_edge {
+                            Some((e0, e1)) => {
+                                let d = (e1 - e0).normalize_or_zero();
+                                format!("{:.2} m", (p - e0).perp_dot(d).abs())
+                            }
+                            None => format!("{:.2} m", a.truncate().distance(p)),
+                        };
+                        painter.text(
+                            sb + Vec2::new(10.0, -12.0),
+                            egui::Align2::LEFT_BOTTOM,
+                            text,
+                            egui::FontId::proportional(13.0),
+                            accent,
+                        );
+                    }
+                }
+                Tool::Slab => {
+                    let (lo, hi) = (a.truncate().min(p), a.truncate().max(p));
+                    let pts = [lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y), lo];
+                    let scr: Vec<egui::Pos2> =
+                        pts.iter().filter_map(|q| project(q.extend(z))).collect();
+                    painter.add(egui::Shape::line(scr, stroke));
+                }
+                _ => {
+                    if let (Some(sa), Some(sb)) = (project(a), project(at)) {
+                        painter.line_segment([sa, sb], stroke);
+                        painter.text(
+                            sb + Vec2::new(10.0, -12.0),
+                            egui::Align2::LEFT_BOTTOM,
+                            format!("{:.2} m", a.truncate().distance(p)),
+                            egui::FontId::proportional(13.0),
+                            accent,
+                        );
+                    }
+                    if tool == Tool::Wall {
+                        // the wall's height, so it reads as a wall
+                        let h = self.doc.model().level(level).map_or(3.0, |l| l.height);
+                        let up = DVec3::Z * h;
+                        let quad = [a, at, at + up, a + up, a];
+                        let scr: Vec<egui::Pos2> =
+                            quad.iter().filter_map(|q| project(*q)).collect();
+                        painter.add(egui::Shape::line(scr, egui::Stroke::new(1.0, accent)));
+                    }
+                }
+            }
+        }
+        if response.clicked() && tool == Tool::Guide && from.is_none() {
+            // clicking an edge first draws the guide parallel to it
+            self.plan.guide_edge = matches!(
+                snap.kind,
+                SnapKind::OnEdge | SnapKind::Guide | SnapKind::Midpoint
+            )
+            .then(|| snapper.edge_at(snap.p))
+            .flatten()
+            .filter(|(a, b)| a.truncate().distance(b.truncate()) > 1e-3)
+            .map(|(a, b)| (a.truncate(), b.truncate()));
+        }
+        if response.clicked() {
+            let mut sel = self.selection;
+            let mut state = std::mem::take(&mut self.plan);
+            state.pending = self.pending_3d.filter(|(_, l)| *l == level).map(|(p, _)| p);
+            let r = planview::plan_tool(&mut self.doc, level, tool, p, &mut state, &mut sel);
+            self.pending_3d = state.pending.take().map(|p| (p, level));
+            self.plan = state;
+            self.selection = sel;
+            if let Err(e) = r {
+                self.status = format!("Couldn't do that: {e}");
+            } else {
+                self.status = match (tool, self.pending_3d) {
+                    (Tool::Wall, Some(_)) => format!("Drawing walls on {level_name}. Click the next corner; Esc or right-click ends."),
+                    (Tool::Slab | Tool::Section | Tool::Elevation, Some(_)) => "Click the second corner.".into(),
+                    (Tool::Guide, Some(_)) if self.plan.guide_edge.is_some() => "Click where the parallel guide goes.".into(),
+                    (Tool::Guide, Some(_)) => "Click a second point the guide runs through.".into(),
+                    _ => format!("Added on {level_name}."),
+                };
+            }
+        } else if from.is_none() && response.hovered() {
+            self.status = format!(
+                "{} on {level_name} (the open plan's level). {}",
+                tool.label(),
+                tool.hint()
+            );
+        }
+    }
+
+    /// Redrawing a slab or wall in the 3D view, on its level, with snaps.
+    fn outline_3d(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        painter: &egui::Painter,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        ray: &dyn Fn(egui::Pos2) -> (DVec3, DVec3),
+    ) {
+        let Some(outline) = self.plan.outline.clone() else {
+            return;
+        };
+        let (enter, escape) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if escape {
+            self.plan.outline = None;
+            self.status = "Redraw cancelled.".into();
+            return;
+        }
+        let exclude = [outline.target];
+        self.refresh_snaps_3d(&exclude);
+        let hover = response.hover_pos().and_then(|h| {
+            let (o, d) = ray(h);
+            let free = Workplane::ground(outline.z).intersect(o, d);
+            let from = outline.points.last().map(|p| p.extend(outline.z));
+            let snapper = &self.snaps_3d.as_ref()?.2;
+            let s = snapper.snap(h, project, from, free)?;
+            if let Some(c) = project(s.p.truncate().extend(outline.z)) {
+                if s.kind != SnapKind::Grid {
+                    snaps::draw(painter, s, c, from.and_then(project));
+                }
+            }
+            Some((h, s.p.truncate()))
+        });
+        outline.draw(painter, project, hover.map(|h| h.1));
+        let finish = enter || (response.secondary_clicked() && !outline.points.is_empty());
+        let mut closed = false;
+        if response.clicked() {
+            if let Some((h, p)) = hover {
+                let near = outline.near_first(h, project);
+                let o = self.plan.outline.as_mut().expect("checked");
+                closed = o.click(p, near);
+            }
+        }
+        if finish || closed {
+            if let Some(o) = self.plan.outline.take() {
+                let r = o.finish(&mut self.doc, closed);
+                match r {
+                    Ok(msg) => self.status = msg,
+                    Err(e) => self.status = format!("Couldn't redraw: {e}"),
+                }
+            }
+        } else {
+            self.status = outline.hint().into();
+        }
+    }
+
+    /// The guide within a few pixels of `p` in the 3D view.
+    fn guide_near(
+        &self,
+        p: egui::Pos2,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+    ) -> Option<ElementId> {
+        let mut best: Option<(ElementId, f32)> = None;
+        for e in self.doc.model().iter() {
+            let ElementKind::Guide(g) = &e.kind else {
+                continue;
+            };
+            let Some(dir) = (g.b - g.a).try_normalize() else {
+                continue;
+            };
+            let m = (g.a + g.b) / 2.0;
+            let steps = 240;
+            let pts: Vec<Option<egui::Pos2>> = (0..=steps)
+                .map(|i| {
+                    let t = -GUIDE_REACH_3D + 2.0 * GUIDE_REACH_3D * i as f64 / steps as f64;
+                    project(m + dir * t)
+                })
+                .collect();
+            for w in pts.windows(2) {
+                let (Some(a), Some(b)) = (w[0], w[1]) else {
+                    continue;
+                };
+                let ab = b - a;
+                let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+                let d = (a + ab * t).distance(p);
+                if d < 5.0 && best.is_none_or(|(_, bd)| d < bd) {
+                    best = Some((e.id, d));
+                }
+            }
+        }
+        best.map(|(id, _)| id)
+    }
+
+    /// Every sketch as lines over the 3D view, and every guide dashed; the
+    /// selected one stands out.
+    fn draw_sketches(
+        &self,
+        painter: &egui::Painter,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+    ) {
+        for e in self.doc.model().iter() {
+            let ElementKind::Guide(g) = &e.kind else {
+                continue;
+            };
+            let stroke = if self.selection == Some(e.id) {
+                egui::Stroke::new(2.0, Color32::from_rgb(242, 140, 51))
+            } else {
+                egui::Stroke::new(1.0, planview::GUIDE_COLOR)
+            };
+            draw_guide_3d(painter, project, g.a, g.b, stroke);
+        }
+        for (id, a, b) in creabim_geom::scene::sketch_lines(self.doc.model()) {
+            let selected = self.selection == Some(id);
+            let stroke = if selected {
+                egui::Stroke::new(2.5, Color32::from_rgb(242, 140, 51))
+            } else {
+                egui::Stroke::new(1.5, Color32::from_rgb(40, 70, 140))
+            };
+            if let (Some(a), Some(b)) = (project(a), project(b)) {
+                painter.line_segment([a, b], stroke);
+            }
+        }
+    }
+
+    /// The Sketch tool in the 3D view: the first click sets the workplane on
+    /// the face under the pointer (or the ground), later clicks add corners.
+    fn sketch_3d(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        painter: &egui::Painter,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        ray: &dyn Fn(egui::Pos2) -> (DVec3, DVec3),
+        cam: &OrbitCamera,
+    ) {
+        // a sketch being drawn in a 2D pane is left alone until clicking here
+        let mine = self.plan.sketch.as_ref().is_some_and(|d| d.pane.is_none());
+        if !mine && response.clicked() {
+            self.plan.sketch = None;
+        }
+        let (enter, escape, shift) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+                i.modifiers.shift,
+            )
+        });
+        let hover = response.hover_pos();
+        // the plane a first click would start on
+        let candidate = |p: egui::Pos2| -> Option<Workplane> {
+            let (o, d) = ray(p);
+            match pick::pick(&self.scene, o.as_vec3(), d.as_vec3()) {
+                Some(h) => {
+                    let item = self.scene.iter().find(|s| s.id == h.id)?;
+                    let idx = &item.mesh.indices[h.triangle * 3..h.triangle * 3 + 3];
+                    let v = |k: usize| glam::Vec3::from(item.mesh.positions[idx[k] as usize]);
+                    let mut n = (v(1) - v(0))
+                        .cross(v(2) - v(0))
+                        .normalize_or_zero()
+                        .as_dvec3();
+                    if n.dot(d) > 0.0 {
+                        n = -n;
+                    }
+                    let at = o + d * h.t as f64;
+                    Some(Workplane::facing(at, n))
+                }
+                None => {
+                    let at = Workplane::ground(0.0).intersect(o, d)?;
+                    Some(Workplane {
+                        origin: at,
+                        ..Workplane::ground(0.0)
+                    })
+                }
+            }
+        };
+        let on_plane = match (&self.plan.sketch, hover) {
+            (Some(d), Some(p)) if mine => {
+                let (o, dir) = ray(p);
+                d.plane.intersect(o, dir).map(|m| {
+                    // 10 px at that distance, for closing on the first corner
+                    let dist = m.distance(cam.eye().as_dvec3());
+                    let tol = dist * 2.0 * (cam.fov_y as f64 / 2.0).tan() * 10.0
+                        / response.rect.height() as f64;
+                    d.snap(d.plane.to_plane(m), tol, shift)
+                })
+            }
+            _ => None,
+        };
+        let accent = Color32::from_rgb(230, 120, 30);
+        match self.plan.sketch.as_ref().filter(|_| mine) {
+            Some(d) => d.draw(painter, project, on_plane),
+            None => {
+                if let Some(plane) = hover.and_then(candidate) {
+                    crate::sketch::draw_plane(painter, project, &plane, accent);
+                }
+            }
+        }
+        let finish = |app: &mut Self, closed: bool| {
+            let Some(d) = app.plan.sketch.take() else {
+                return;
+            };
+            match d.finish(&mut app.doc, closed) {
+                Ok(Some(id)) => {
+                    app.selection = Some(id);
+                    app.face = None;
+                    app.status =
+                        "Sketch added. Press E to extrude it into a mass, or G to move it.".into();
+                }
+                Ok(None) => {}
+                Err(e) => app.status = format!("Couldn't do that: {e}"),
+            }
+        };
+        if !mine && !response.clicked() {
+            return;
+        }
+        if escape {
+            self.plan.sketch = None;
+            return;
+        }
+        if enter || (response.secondary_clicked() && self.plan.sketch.is_some()) {
+            finish(self, false);
+            return;
+        }
+        if !response.clicked() {
+            return;
+        }
+        match &mut self.plan.sketch {
+            None => {
+                if let Some(plane) = hover.and_then(candidate) {
+                    self.plan.sketch = Some(SketchDraft::new(plane, None));
+                    self.status = "Workplane set. Click the corners; click the first one to close the sketch, Enter to leave it open.".into();
+                }
+            }
+            Some(d) => {
+                if let Some(p) = on_plane {
+                    if let Some(Click::Closed) = d.click(p) {
+                        finish(self, true);
+                    }
+                }
+            }
+        }
     }
 
     fn show_plan(&mut self, ui: &mut egui::Ui, rect: Rect, background: Color32) {
@@ -779,6 +1563,11 @@ impl CreaBimApp {
                     "Overlaid in the 3D workspace",
                 );
                 ui.radio_value(&mut self.placement, PlanPlacement::Hidden, "Hidden");
+                ui.separator();
+                ui.label("Docked layout (drag the divider to resize)");
+                ui.radio_value(&mut self.layout.stacked, false, "Side by side");
+                ui.radio_value(&mut self.layout.stacked, true, "One above the other");
+                ui.checkbox(&mut self.layout.swapped, "2D view first");
                 ui.separator();
                 ui.checkbox(&mut self.plan_in_3d, "Show the 2D view in 3D space");
                 if ui.button("Frame all").clicked() {
@@ -1047,24 +1836,125 @@ impl CreaBimApp {
                     "Sheet" => format!("Sheets ({}), click to open", items.len()),
                     _ => format!("{class} ({})", items.len()),
                 };
-                egui::CollapsingHeader::new(title)
-                    .default_open(class == "IfcBuildingStorey" || opens)
-                    .show(ui, |ui| {
-                        for (id, name) in items {
-                            if ui
-                                .selectable_label(self.selection == Some(id), name)
-                                .clicked()
-                            {
-                                self.selection = Some(id);
-                                self.face = None;
-                                if opens {
-                                    self.active_view = Some(id);
-                                }
+                let id = ui.make_persistent_id(("group", &class));
+                egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    id,
+                    class == "IfcBuildingStorey" || opens,
+                )
+                .show_header(ui, |ui| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                    Icon::of_class(&class).paint(ui.painter(), r);
+                    ui.label(title);
+                })
+                .body(|ui| {
+                    for (id, name) in items {
+                        let icon = self.doc.model().get(id).map_or(Icon::Mass, Icon::of);
+                        if icons::row(ui, icon, self.selection == Some(id), &name).clicked() {
+                            self.selection = Some(id);
+                            self.face = None;
+                            if opens {
+                                self.active_view = Some(id);
                             }
                         }
-                    });
+                    }
+                });
             }
         });
+    }
+
+    /// Booleans on a wall, slab or mass: the cuts it has, and a menu to cut
+    /// it with another element (which then turns into a see-through ghost).
+    fn cuts_panel(&mut self, ui: &mut egui::Ui, id: ElementId) {
+        let cuttable = |k: &ElementKind| {
+            matches!(
+                k,
+                ElementKind::Wall(_) | ElementKind::Slab(_) | ElementKind::FreeMesh(_)
+            )
+        };
+        let model = self.doc.model();
+        if !model.get(id).is_some_and(|e| cuttable(&e.kind)) {
+            return;
+        }
+        let existing: Vec<(ElementId, Cut, String)> = model
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::Cut(c) if c.target == id => Some((
+                    e.id,
+                    *c,
+                    model
+                        .get(c.cutter)
+                        .map_or(String::new(), |x| x.name.clone()),
+                )),
+                _ => None,
+            })
+            .collect();
+        // masses first: they are what you usually cut with
+        let mut candidates: Vec<(bool, ElementId, String)> = model
+            .iter()
+            .filter(|e| e.id != id && cuttable(&e.kind))
+            .filter(|e| !existing.iter().any(|(_, c, _)| c.cutter == e.id))
+            .map(|e| {
+                (
+                    !matches!(e.kind, ElementKind::FreeMesh(_)),
+                    e.id,
+                    e.name.clone(),
+                )
+            })
+            .collect();
+        candidates.sort_by_key(|c| c.0);
+        ui.separator();
+        ui.label("Booleans");
+        let mut remove = None;
+        let mut select = None;
+        for (cid, c, name) in &existing {
+            ui.horizontal(|ui| {
+                ui.label(format!("{} {name}", c.op.label()));
+                if ui.small_button("Select").clicked() {
+                    select = Some(*cid);
+                }
+                if ui.small_button("Remove").clicked() {
+                    remove = Some(*cid);
+                }
+            });
+        }
+        let mut add = None;
+        egui::ComboBox::from_id_salt("cut_with")
+            .selected_text("Subtract…")
+            .show_ui(ui, |ui| {
+                for (_, cid, name) in &candidates {
+                    if ui.selectable_label(false, name).clicked() {
+                        add = Some(*cid);
+                    }
+                }
+            });
+        ui.label(
+            egui::RichText::new(
+                "Pick an element to cut away. It turns into a see-through ghost you can still select and move.",
+            )
+            .weak(),
+        );
+        if let Some(c) = remove {
+            let r = self
+                .doc
+                .commit(Transaction::new("Remove boolean").remove_cascade(self.doc.model(), c));
+            self.report(r, "Boolean removed.");
+        }
+        if let Some(cutter) = add {
+            let e = Element::new(
+                "Cut",
+                ElementKind::Cut(Cut {
+                    target: id,
+                    cutter,
+                    op: BoolOp::Difference,
+                }),
+            );
+            let r = self.doc.commit(Transaction::new("Subtract").insert(e));
+            self.report(r, "Subtracted. Move the ghost to change the cut.");
+        }
+        if let Some(c) = select {
+            self.selection = Some(c);
+        }
     }
 
     fn properties(&mut self, ui: &mut egui::Ui) {
@@ -1090,6 +1980,7 @@ impl CreaBimApp {
 
         let mut edited = e.clone();
         let mut label = "";
+        let mut extrude_sketch = false;
         let num = |ui: &mut egui::Ui, text: &str, v: &mut f64, lo: f64, hi: f64| -> bool {
             ui.horizontal(|ui| {
                 ui.label(text);
@@ -1103,6 +1994,7 @@ impl CreaBimApp {
             })
             .inner
         };
+        let mut redraw = false;
         match &mut edited.kind {
             ElementKind::Level(l) => {
                 if num(ui, "Elevation", &mut l.elevation, -100.0, 1000.0) {
@@ -1137,6 +2029,13 @@ impl CreaBimApp {
                 {
                     label = "Move wall end"
                 }
+                if ui
+                    .button("Redraw path")
+                    .on_hover_text("Click a new path for this wall, in a plan or the 3D view. More corners make more walls like it.")
+                    .clicked()
+                {
+                    redraw = true;
+                }
             }
             ElementKind::Slab(s) => {
                 if num(ui, "Thickness", &mut s.thickness, 0.02, 3.0) {
@@ -1146,6 +2045,13 @@ impl CreaBimApp {
                     label = "Slab material"
                 }
                 ui.label(format!("{} boundary points", s.boundary.len()));
+                if ui
+                    .button("Redraw outline")
+                    .on_hover_text("Click a new outline for this slab, in a plan or the 3D view.")
+                    .clicked()
+                {
+                    redraw = true;
+                }
             }
             ElementKind::Opening(o) => {
                 if num(ui, "Width", &mut o.width, 0.1, 20.0) {
@@ -1408,6 +2314,48 @@ impl CreaBimApp {
                     }
                 });
             }
+            ElementKind::Sketch(sk) => {
+                ui.label(format!(
+                    "{} corners, {}",
+                    sk.points.len(),
+                    if sk.closed { "closed" } else { "open" }
+                ));
+                if sk.points.len() >= 3 && ui.checkbox(&mut sk.closed, "Closed").changed() {
+                    label = "Close sketch"
+                }
+                if num(ui, "Plane X", &mut sk.plane.origin.x, -1e4, 1e4)
+                    | num(ui, "Plane Y", &mut sk.plane.origin.y, -1e4, 1e4)
+                    | num(ui, "Plane Z", &mut sk.plane.origin.z, -1e3, 1e3)
+                {
+                    label = "Move sketch"
+                }
+                let n = sk.plane.normal();
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Its plane faces ({:.2}, {:.2}, {:.2}).",
+                        n.x, n.y, n.z
+                    ))
+                    .weak(),
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Extrude by");
+                    ui.add(
+                        egui::DragValue::new(&mut self.extrude_distance)
+                            .speed(0.05)
+                            .suffix(" m"),
+                    );
+                });
+                if ui
+                    .button(if sk.closed {
+                        "Extrude into a mass (E)"
+                    } else {
+                        "Extrude into a surface (E)"
+                    })
+                    .clicked()
+                {
+                    extrude_sketch = true;
+                }
+            }
             ElementKind::FreeMesh(m) => {
                 egui::ComboBox::from_label("IFC class")
                     .selected_text(m.ifc_class.clone())
@@ -1430,6 +2378,166 @@ impl CreaBimApp {
                 {
                     label = "Move mesh"
                 }
+                ui.horizontal(|ui| {
+                    ui.label("Rotation");
+                    if ui
+                        .add(egui::DragValue::new(&mut m.rotation).speed(1.0).suffix("°"))
+                        .changed()
+                    {
+                        label = "Rotate mesh"
+                    }
+                    ui.label("Scale");
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut m.scale)
+                                .speed(0.01)
+                                .range(0.01..=100.0),
+                        )
+                        .changed()
+                    {
+                        label = "Scale mesh"
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(
+                        "With the pointer over a view: G moves, R rotates, S scales, Shift+D duplicates.",
+                    )
+                    .weak(),
+                );
+
+                ui.separator();
+                ui.label(egui::RichText::new("Modifiers").strong());
+                if m.modifiers.is_empty() {
+                    ui.label(
+                        egui::RichText::new(
+                            "None yet. They change the shape without touching the mesh.",
+                        )
+                        .weak(),
+                    );
+                }
+                let count = m.modifiers.len();
+                let mut action: Option<(usize, i32)> = None; // (index, -1 up, 1 down, 0 remove, 2 apply)
+                for (i, md) in m.modifiers.iter_mut().enumerate() {
+                    ui.push_id(("modifier", i), |ui| {
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .checkbox(&mut md.enabled, md.kind.label())
+                                    .on_hover_text("Switch it off to see the mesh without it")
+                                    .changed()
+                                {
+                                    label = "Switch modifier"
+                                }
+                                if ui.small_button("Remove").clicked() {
+                                    action = Some((i, 0));
+                                }
+                                if i + 1 < count && ui.small_button("Down").clicked() {
+                                    action = Some((i, 1));
+                                }
+                                if i > 0 && ui.small_button("Up").clicked() {
+                                    action = Some((i, -1));
+                                }
+                                if i == 0
+                                    && ui
+                                        .small_button("Apply")
+                                        .on_hover_text(
+                                            "Make it part of the mesh, so you can edit the result",
+                                        )
+                                        .clicked()
+                                {
+                                    action = Some((i, 2));
+                                }
+                            });
+                            match &mut md.kind {
+                                ModifierKind::Array { count, offset } => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Count");
+                                        if ui
+                                            .add(
+                                                egui::DragValue::new(count)
+                                                    .speed(0.1)
+                                                    .range(1..=200),
+                                            )
+                                            .changed()
+                                        {
+                                            label = "Array count"
+                                        }
+                                    });
+                                    if num(ui, "Offset X", &mut offset.x, -1e3, 1e3)
+                                        | num(ui, "Offset Y", &mut offset.y, -1e3, 1e3)
+                                        | num(ui, "Offset Z", &mut offset.z, -1e3, 1e3)
+                                    {
+                                        label = "Array offset"
+                                    }
+                                }
+                                ModifierKind::Mirror { axis, plane } => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Across");
+                                        for a in Axis::ALL {
+                                            if ui.radio_value(axis, a, a.label()).changed() {
+                                                label = "Mirror axis"
+                                            }
+                                        }
+                                    });
+                                    if num(ui, "Mirror plane at", plane, -1e3, 1e3) {
+                                        label = "Mirror plane"
+                                    }
+                                }
+                                ModifierKind::Solidify { thickness } => {
+                                    if num(ui, "Thickness", thickness, -10.0, 10.0) {
+                                        label = "Solidify thickness"
+                                    }
+                                }
+                                ModifierKind::Subdivision { levels } => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Levels");
+                                        if ui
+                                            .add(
+                                                egui::DragValue::new(levels)
+                                                    .speed(0.05)
+                                                    .range(0..=4),
+                                            )
+                                            .changed()
+                                        {
+                                            label = "Subdivision levels"
+                                        }
+                                    });
+                                }
+                            }
+                        });
+                    });
+                }
+                match action {
+                    Some((i, 0)) => {
+                        m.modifiers.remove(i);
+                        label = "Remove modifier";
+                    }
+                    Some((i, 1)) => {
+                        m.modifiers.swap(i, i + 1);
+                        label = "Reorder modifiers";
+                    }
+                    Some((i, -1)) => {
+                        m.modifiers.swap(i, i - 1);
+                        label = "Reorder modifiers";
+                    }
+                    Some((_, _)) => {
+                        let first = m.modifiers.remove(0);
+                        m.mesh = creabim_core::modifiers::evaluate(&m.mesh, &[first]).mesh;
+                        self.face = None;
+                        label = "Apply modifier";
+                    }
+                    None => {}
+                }
+                egui::ComboBox::from_id_salt("add_modifier")
+                    .selected_text("Add modifier…")
+                    .show_ui(ui, |ui| {
+                        for k in ModifierKind::presets() {
+                            if ui.selectable_label(false, k.label()).clicked() {
+                                m.modifiers.push(Modifier::new(k));
+                                label = "Add modifier";
+                            }
+                        }
+                    });
                 ui.label(format!(
                     "{} vertices, {} faces",
                     m.mesh.vertices.len(),
@@ -1437,6 +2545,11 @@ impl CreaBimApp {
                 ));
                 ui.separator();
                 ui.label(egui::RichText::new("Mesh edit").strong());
+                if !m.modifiers.is_empty() {
+                    ui.label(
+                        egui::RichText::new("Edits change the mesh under the modifiers.").weak(),
+                    );
+                }
                 match self.face {
                     Some(f) => ui.label(format!("Face {f} selected (click a face in 3D)")),
                     None => ui.label("Click a face in the 3D view to edit it."),
@@ -1488,11 +2601,59 @@ impl CreaBimApp {
                     label = "Subdivide mesh";
                 }
             }
+            ElementKind::Cut(c) => {
+                let name = |id| {
+                    self.doc
+                        .model()
+                        .get(id)
+                        .map_or("(missing)".to_string(), |e| e.name.clone())
+                };
+                ui.label(format!(
+                    "{} {} with {}",
+                    c.op.label(),
+                    name(c.target),
+                    name(c.cutter)
+                ));
+                for op in BoolOp::ALL {
+                    if ui.radio_value(&mut c.op, op, op.label()).changed() {
+                        label = "Change boolean";
+                    }
+                }
+            }
+            ElementKind::Guide(g) => {
+                ui.label(
+                    egui::RichText::new(
+                        "A construction line to snap to. It is never printed or exported.",
+                    )
+                    .weak(),
+                );
+                if num(ui, "From X", &mut g.a.x, -1e4, 1e4)
+                    | num(ui, "From Y", &mut g.a.y, -1e4, 1e4)
+                    | num(ui, "To X", &mut g.b.x, -1e4, 1e4)
+                    | num(ui, "To Y", &mut g.b.y, -1e4, 1e4)
+                {
+                    label = "Move guide";
+                }
+            }
         }
         if !label.is_empty() {
             let r = self.doc.edit_merged(id, label, |e| *e = edited.clone());
             self.report(r, format!("{label}."));
         }
+        if extrude_sketch {
+            self.extrude_sketch();
+            return;
+        }
+        if redraw {
+            self.plan.cancel();
+            self.plan.tool = Tool::Select;
+            self.plan.outline = crate::outline::Outline::start(self.doc.model(), id);
+            if let Some(o) = &self.plan.outline {
+                self.status = o.hint().into();
+            }
+        }
+
+        self.cuts_panel(ui, id);
 
         ui.add_space(10.0);
         let deps = self.doc.model().dependents(id).len();
@@ -1536,11 +2697,14 @@ impl eframe::App for CreaBimApp {
             let plan_bg = Color32::from_rgb(252, 252, 250);
             match self.placement {
                 PlanPlacement::Docked => {
-                    let mid = full.center().x;
-                    let left = Rect::from_min_max(full.min, egui::pos2(mid - 2.0, full.max.y));
-                    let right = Rect::from_min_max(egui::pos2(mid + 2.0, full.min.y), full.max);
-                    self.show_3d(ui, left, frame);
-                    self.show_plan(ui, right, plan_bg);
+                    let (first, second) = split_panes(&mut self.layout, ui, full);
+                    let (a, b) = if self.layout.swapped {
+                        (second, first)
+                    } else {
+                        (first, second)
+                    };
+                    self.show_3d(ui, a, frame);
+                    self.show_plan(ui, b, plan_bg);
                 }
                 PlanPlacement::Overlay => {
                     self.show_3d(ui, full, frame);
@@ -1565,6 +2729,10 @@ impl eframe::App for CreaBimApp {
             ui.allocate_rect(full, Sense::hover());
         });
 
+        if let Some(s) = self.plan.status.take() {
+            self.status = s;
+        }
+
         if self.placement == PlanPlacement::Window {
             let mut close = false;
             ctx.show_viewport_immediate(
@@ -1588,6 +2756,81 @@ impl eframe::App for CreaBimApp {
             }
         }
     }
+}
+
+/// Split `full` in two at the divider and let the divider be dragged.
+/// Double-clicking it evens the two halves out again.
+fn split_panes(l: &mut PaneLayout, ui: &mut egui::Ui, full: Rect) -> (Rect, Rect) {
+    let gap = 3.0;
+    let along = |r: Rect| if l.stacked { r.height() } else { r.width() };
+    let size = along(full);
+    let at = |f: f32| {
+        if l.stacked {
+            full.min.y + f * size
+        } else {
+            full.min.x + f * size
+        }
+    };
+    let cut = at(l.split);
+    let handle = if l.stacked {
+        Rect::from_min_max(
+            egui::pos2(full.min.x, cut - gap),
+            egui::pos2(full.max.x, cut + gap),
+        )
+    } else {
+        Rect::from_min_max(
+            egui::pos2(cut - gap, full.min.y),
+            egui::pos2(cut + gap, full.max.y),
+        )
+    };
+    let r = ui.interact(
+        handle,
+        ui.id().with("pane_divider"),
+        Sense::click_and_drag(),
+    );
+    if r.hovered() || r.dragged() {
+        ui.ctx().set_cursor_icon(if l.stacked {
+            egui::CursorIcon::ResizeVertical
+        } else {
+            egui::CursorIcon::ResizeHorizontal
+        });
+    }
+    if r.dragged() {
+        let d = if l.stacked {
+            r.drag_delta().y
+        } else {
+            r.drag_delta().x
+        };
+        l.split = (l.split + d / size).clamp(0.15, 0.85);
+    }
+    if r.double_clicked() {
+        l.split = 0.5;
+    }
+    let cut = at(l.split);
+    let color = if r.hovered() || r.dragged() {
+        Color32::from_rgb(90, 140, 220)
+    } else {
+        Color32::from_gray(200)
+    };
+    let (a, b) = if l.stacked {
+        (
+            Rect::from_min_max(full.min, egui::pos2(full.max.x, cut - gap)),
+            Rect::from_min_max(egui::pos2(full.min.x, cut + gap), full.max),
+        )
+    } else {
+        (
+            Rect::from_min_max(full.min, egui::pos2(cut - gap, full.max.y)),
+            Rect::from_min_max(egui::pos2(cut + gap, full.min.y), full.max),
+        )
+    };
+    let line = if l.stacked {
+        [egui::pos2(full.min.x, cut), egui::pos2(full.max.x, cut)]
+    } else {
+        [egui::pos2(cut, full.min.y), egui::pos2(cut, full.max.y)]
+    };
+    ui.painter()
+        .line_segment(line, egui::Stroke::new(2.0, color));
+    (a, b)
 }
 
 fn plan_bg_color() -> Color32 {
@@ -1658,4 +2901,39 @@ fn with_plan_views(model: Model) -> Model {
     // a failed insert leaves the model as it was, which still opens
     let _ = doc.commit(tx);
     doc.model().clone()
+}
+
+/// How far guides reach each way in the 3D view.
+const GUIDE_REACH_3D: f64 = 60.0;
+
+/// A guide through `a` and `b`, dashed across the 3D view. It is sampled
+/// along its length so the parts behind the camera drop out cleanly.
+fn draw_guide_3d(
+    painter: &egui::Painter,
+    project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+    a: DVec3,
+    b: DVec3,
+    stroke: egui::Stroke,
+) {
+    let Some(d) = (b - a).try_normalize() else {
+        return;
+    };
+    let m = (a + b) / 2.0;
+    let mut run: Vec<egui::Pos2> = Vec::new();
+    let steps = 240;
+    for i in 0..=steps {
+        let t = -GUIDE_REACH_3D + 2.0 * GUIDE_REACH_3D * i as f64 / steps as f64;
+        match project(m + d * t).filter(|p| painter.clip_rect().expand(200.0).contains(*p)) {
+            Some(p) => run.push(p),
+            None => {
+                if run.len() > 1 {
+                    painter.extend(egui::Shape::dashed_line(&run, stroke, 6.0, 4.0));
+                }
+                run.clear();
+            }
+        }
+    }
+    if run.len() > 1 {
+        painter.extend(egui::Shape::dashed_line(&run, stroke, 6.0, 4.0));
+    }
 }

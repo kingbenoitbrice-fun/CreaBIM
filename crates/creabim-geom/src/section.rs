@@ -9,7 +9,7 @@
 //! length and kept only where it is not behind a face.
 
 use crate::plan::{Pen, PlanItem, PlanView};
-use crate::{build_scene, SceneItem};
+use crate::SceneItem;
 use creabim_core::{ElementId, ElementKind, Model};
 use glam::{DVec2, DVec3, Vec3};
 use std::collections::HashMap;
@@ -59,7 +59,7 @@ pub fn section_view(
     shaded: bool,
 ) -> Drawing {
     let frame = SectionFrame::new(start, end, depth);
-    let scene = build_scene(model);
+    let scene = crate::scene::drawn_scene(model);
     let mut items = Vec::new();
 
     let project = |p: DVec3| frame.project(p);
@@ -131,7 +131,7 @@ impl AxoFrame {
     /// Viewer at compass `azimuth` (0 = south, counter-clockwise) and
     /// `altitude` above the horizon, looking at the model's centre.
     pub fn new(model: &Model, azimuth: f64, altitude: f64) -> Self {
-        let scene = build_scene(model);
+        let scene = crate::scene::drawn_scene(model);
         let (lo, hi) = scene
             .iter()
             .filter_map(|s| s.mesh.bounds())
@@ -171,7 +171,7 @@ impl AxoFrame {
 /// A parallel 3D view of the whole model, hidden lines removed, optionally shaded.
 pub fn axonometric_view(model: &Model, azimuth: f64, altitude: f64, shaded: bool) -> Drawing {
     let frame = AxoFrame::new(model, azimuth, altitude);
-    let scene = build_scene(model);
+    let scene = crate::scene::drawn_scene(model);
     let project = |p: DVec3| frame.project(p);
     let (lines, image) = hidden_lines(&scene, &project, frame.radius * 2.0, None, shaded);
     PlanView {

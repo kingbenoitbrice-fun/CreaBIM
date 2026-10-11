@@ -16,6 +16,7 @@ pub mod scene;
 pub mod schedule;
 pub mod section;
 pub mod sheet;
+pub mod slice;
 pub mod triangulate;
 pub mod wall;
 

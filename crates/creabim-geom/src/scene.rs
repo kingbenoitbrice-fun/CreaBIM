@@ -1,5 +1,5 @@
 use crate::{triangulate::triangulate, wall::wall_mesh, TriMesh};
-use creabim_core::{ElementId, ElementKind, Model, Opening};
+use creabim_core::{csg, BoolOp, ElementId, ElementKind, Model, Opening};
 use glam::{DVec2, DVec3};
 
 /// One element's renderable geometry.
@@ -8,6 +8,26 @@ pub struct SceneItem {
     pub id: ElementId,
     pub mesh: TriMesh,
     pub color: [f32; 3],
+    /// A cutter: drawn as a see-through outline in 3D, left out of
+    /// drawings and exports, but still clickable.
+    pub ghost: bool,
+}
+
+/// The lines of every sketch, in model coordinates: (sketch, from, to).
+pub fn sketch_lines(model: &Model) -> Vec<(ElementId, DVec3, DVec3)> {
+    let mut out = Vec::new();
+    for e in model.iter() {
+        if let ElementKind::Sketch(s) = &e.kind {
+            let z = s
+                .level
+                .and_then(|l| model.level(l))
+                .map_or(0.0, |l| l.elevation);
+            for (a, b) in s.segments() {
+                out.push((e.id, a + DVec3::Z * z, b + DVec3::Z * z));
+            }
+        }
+    }
+    out
 }
 
 /// Build viewport geometry for every element with a body.
@@ -58,7 +78,7 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                     .and_then(|l| model.level(l))
                     .map_or(0.0, |l| l.elevation);
                 (
-                    edit_mesh_to_tri(&f.mesh, f.origin + DVec3::Z * z),
+                    edit_mesh_to_tri(&f.evaluated().mesh, f.origin + DVec3::Z * z),
                     [0.62, 0.75, 0.90],
                 )
             }
@@ -69,7 +89,10 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             | ElementKind::Viewport(_)
             | ElementKind::Material(_)
             | ElementKind::Dimension(_)
-            | ElementKind::Tag(_) => continue,
+            | ElementKind::Tag(_)
+            | ElementKind::Sketch(_)
+            | ElementKind::Cut(_)
+            | ElementKind::Guide(_) => continue,
         };
         // a material's colour wins over the element type's default
         let color = creabim_core::material_of(model, e).map_or(color, |(_, m)| m.color);
@@ -77,9 +100,106 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             id: e.id,
             mesh,
             color,
+            ghost: false,
         });
     }
+    apply_cuts(model, &mut out);
     out
+}
+
+/// The scene as drawings show it: cutters left out.
+pub fn drawn_scene(model: &Model) -> Vec<SceneItem> {
+    let mut s = build_scene(model);
+    s.retain(|i| !i.ghost);
+    s
+}
+
+/// Every cut in the model, in order: (target, cutter, operation).
+pub fn cuts(model: &Model) -> Vec<(ElementId, ElementId, BoolOp)> {
+    model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Cut(c) => Some((c.target, c.cutter, c.op)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Is `id` used to cut something? Cutters are hidden from drawings.
+pub fn is_cutter(model: &Model, id: ElementId) -> bool {
+    model
+        .iter()
+        .any(|e| matches!(&e.kind, ElementKind::Cut(c) if c.cutter == id))
+}
+
+/// Apply every cut to the meshes of its target, using the cutters' own
+/// shapes (a cutter that is itself cut cuts with its uncut shape, so cuts
+/// can never loop), and turn the cutters into ghosts.
+fn apply_cuts(model: &Model, items: &mut [SceneItem]) {
+    let cuts = cuts(model);
+    if cuts.is_empty() {
+        return;
+    }
+    let original: std::collections::HashMap<ElementId, TriMesh> = cuts
+        .iter()
+        .filter_map(|(_, c, _)| {
+            let item = items.iter().find(|i| i.id == *c)?;
+            Some((*c, item.mesh.clone()))
+        })
+        .collect();
+    for (target, cutter, op) in &cuts {
+        let Some(tool) = original.get(cutter) else {
+            continue;
+        };
+        if let Some(item) = items.iter_mut().find(|i| i.id == *target) {
+            item.mesh = boolean_mesh(&item.mesh, tool, *op);
+        }
+    }
+    for item in items.iter_mut() {
+        if original.contains_key(&item.id) {
+            item.ghost = true;
+        }
+    }
+}
+
+/// `a op b` for two closed triangle meshes.
+pub fn boolean_mesh(a: &TriMesh, b: &TriMesh, op: BoolOp) -> TriMesh {
+    let polys = |m: &TriMesh| -> Vec<csg::Polygon> {
+        m.indices
+            .chunks_exact(3)
+            .filter_map(|t| {
+                let p = |i: u32| {
+                    let v = m.positions[i as usize];
+                    DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64)
+                };
+                csg::Polygon::new(vec![p(t[0]), p(t[1]), p(t[2])])
+            })
+            .collect()
+    };
+    let result = csg::boolean(polys(a), polys(b), op);
+    let mut out = TriMesh::default();
+    for p in &result {
+        let n = (p.points[1] - p.points[0])
+            .cross(p.points[2] - p.points[0])
+            .normalize_or_zero();
+        let fan: Vec<[usize; 3]> = (1..p.points.len() - 1).map(|i| [0, i, i + 1]).collect();
+        // the fan's winding already follows the polygon's
+        out.add_polygon(&p.points, &fan, newell(&p.points).normalize_or(n));
+    }
+    out
+}
+
+fn newell(p: &[DVec3]) -> DVec3 {
+    let mut n = DVec3::ZERO;
+    for i in 0..p.len() {
+        let (a, b) = (p[i], p[(i + 1) % p.len()]);
+        n += DVec3::new(
+            (a.y - b.y) * (a.z + b.z),
+            (a.z - b.z) * (a.x + b.x),
+            (a.x - b.x) * (a.y + b.y),
+        );
+    }
+    n
 }
 
 fn opening_color(o: &Opening) -> [f32; 3] {
@@ -163,8 +283,7 @@ pub fn edit_mesh_to_tri(mesh: &creabim_core::EditMesh, origin: DVec3) -> TriMesh
             .iter()
             .map(|&v| mesh.vertices[v as usize] + origin)
             .collect();
-        let tris: Vec<[usize; 3]> = (1..pts.len() - 1).map(|i| [0, i, i + 1]).collect();
-        m.add_polygon(&pts, &tris, mesh.face_normal(f));
+        m.add_polygon(&pts, &mesh.face_corners(f), mesh.face_normal(f));
     }
     m
 }

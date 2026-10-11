@@ -123,8 +123,9 @@ pub fn centre(model: &Model, id: ElementId) -> Option<DVec3> {
             c.extend(elevation(s.level) - s.thickness / 2.0)
         }
         ElementKind::FreeMesh(m) => {
-            let n = m.mesh.vertices.len().max(1) as f64;
-            let c = m.mesh.vertices.iter().copied().sum::<DVec3>() / n;
+            let mesh = m.evaluated().mesh;
+            let n = mesh.vertices.len().max(1) as f64;
+            let c = mesh.vertices.iter().copied().sum::<DVec3>() / n;
             c + m.origin + DVec3::Z * m.level.map_or(0.0, elevation)
         }
         _ => return None,

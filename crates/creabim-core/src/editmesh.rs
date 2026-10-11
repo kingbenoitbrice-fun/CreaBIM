@@ -1,4 +1,4 @@
-use glam::DVec3;
+use glam::{DVec2, DVec3};
 use serde::{Deserialize, Serialize};
 
 /// A polygon mesh for Blender-style editing: vertices plus faces as vertex
@@ -66,6 +66,52 @@ impl EditMesh {
             );
         }
         n.normalize_or_zero()
+    }
+
+    /// Triangles covering face `face`, as vertex indices, counter-clockwise
+    /// seen from outside. There are always `len - 2`, so triangle k of a
+    /// flattened mesh maps back to its face.
+    pub fn face_triangles(&self, face: usize) -> Vec<[u32; 3]> {
+        let f = &self.faces[face];
+        self.face_corners(face)
+            .into_iter()
+            .map(|t| [f[t[0]], f[t[1]], f[t[2]]])
+            .collect()
+    }
+
+    /// Like [`EditMesh::face_triangles`], as positions in the face's loop.
+    /// Concave faces (an L-shaped extrusion's cap) are ear-clipped; convex
+    /// ones are fanned from the first corner.
+    pub fn face_corners(&self, face: usize) -> Vec<[usize; 3]> {
+        let f = &self.faces[face];
+        let m = f.len();
+        let fan = || -> Vec<[usize; 3]> { (1..m - 1).map(|i| [0, i, i + 1]).collect() };
+        let n = self.face_normal(face);
+        if m <= 3 || n == DVec3::ZERO {
+            return fan();
+        }
+        let u = n.any_orthonormal_vector();
+        let v = n.cross(u);
+        let pts: Vec<DVec2> = f
+            .iter()
+            .map(|&i| {
+                let p = self.vertices[i as usize];
+                DVec2::new(p.dot(u), p.dot(v))
+            })
+            .collect();
+        let convex = (0..m).all(|i| {
+            let (a, b, c) = (pts[i], pts[(i + 1) % m], pts[(i + 2) % m]);
+            (b - a).perp_dot(c - b) >= -1e-12
+        });
+        if convex {
+            return fan();
+        }
+        let tris = crate::polygon::triangulate(&pts);
+        if tris.len() == m - 2 {
+            tris
+        } else {
+            fan()
+        }
     }
 
     pub fn face_center(&self, face: usize) -> DVec3 {
