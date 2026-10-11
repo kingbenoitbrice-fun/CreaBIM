@@ -24,6 +24,11 @@ CreaBIM is an open-source, BIM-native architectural modeler: one model for freef
 - **Move, rotate, scale, duplicate and stretch:** G, R and S (and Shift+D to copy) work Blender-style on the selected element in 3D, plans and sections, with axis keys and typed values. In plans, drag a selected element to move it, or its square grips to stretch walls, slabs and grids; joined walls follow.
 - **Undo and redo** for every edit. Dragging a value in the properties panel undoes as one step.
 - **Plan drawings generated from the model:** walls cut at a set height, door swings, window symbols, slabs and masses in projection. Export as SVG at 1:100.
+- **Drag handles and snaps everywhere:** select a wall, slab, door or window and drag its handles in 3D or in plans to change length, height, thickness, width or sill. Snaps to ends, midpoints, intersections, edges, perpendiculars, guides and axes. Walls, slabs, doors, windows and masses can be drawn right in the 3D view.
+- **Booleans, guides and redraw:** subtract (or unite, intersect) any solid from a wall, slab or mass; the cutter stays as a movable ghost. Construction guides through two points or parallel to an edge. Redraw a wall's path or a slab's outline.
+- **Blender and FreeCAD, natively:** link a `.blend` or `.FCStd` file and its objects come in, reloading whenever the file is saved. Make any object a wall, slab, door or window with *Assign as*, or mark it in the file. Export glTF for Blender (with the [CreaBIM Link add-on](tools/blender-addon) for the way back) and FreeCAD documents.
+- **IFC in and out:** open IFC2X3, IFC4 and IFC4X3 files (walls, slabs, doors and windows become native elements, everything else a mesh with its class) and IFC5 (`.ifcx`, alpha); export IFC4 and IFC5.
+- **Project file:** `.creabim` is a SQLite file that keeps the undo history.
 - **IFC4 export** with storeys, walls, slabs, openings, doors, windows and tessellated freeform elements. CI checks every export against the IFC schema and builds its geometry with [IfcOpenShell](https://ifcopenshell.org).
 - **IFC import** of IFC2X3, IFC4 and IFC4X3 files: straight walls, slabs on a storey and the doors and windows in those walls become native, editable elements; everything else with a body (columns, beams, roofs, stairs, furniture, terrain…) comes in as a free mesh that keeps its IFC class. Units, placements, mapped types, materials and GlobalIds are kept.
 - **IFC5 (experimental):** import and export of buildingSMART's alpha IFCX JSON format.
@@ -49,6 +54,9 @@ cargo run -p creabim-cli -- ifc house.creabim.json house.ifc     # export IFC4
 cargo run -p creabim-cli -- import-ifc other.ifc other.creabim.json   # import IFC2X3/4/4X3
 cargo run -p creabim-cli -- ifcx house.creabim.json house.ifcx   # export IFC5 (IFCX)
 cargo run -p creabim-cli -- import-ifcx house.ifcx back.creabim.json
+cargo run -p creabim-cli -- glb house.creabim house.glb          # glTF for Blender, with element ids
+cargo run -p creabim-cli -- fcstd house.creabim house.FCStd      # FreeCAD document
+cargo run -p creabim-cli -- link house.creabim garden.blend out.creabim  # bring in a .blend or .FCStd
 cargo run -p creabim-cli -- plan house.creabim.json "Ground Floor" gf.svg
 cargo run -p creabim-cli -- views house.creabim.json             # list plans, sections, elevations
 cargo run -p creabim-cli -- view house.creabim.json "Section A" a.svg
