@@ -5,6 +5,7 @@ mod camera;
 mod handles;
 mod icons;
 mod modal;
+mod outline;
 mod planview;
 mod render3d;
 mod schedulepane;

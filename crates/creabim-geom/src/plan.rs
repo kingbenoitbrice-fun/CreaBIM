@@ -15,6 +15,8 @@ pub enum Pen {
     Symbol,
     /// Grid lines: dashed.
     Grid,
+    /// Construction guides: shown while working, never printed.
+    Guide,
 }
 
 pub use creabim_core::Hatch;
@@ -449,6 +451,9 @@ impl PlanView {
                 PlanItem::Polygon { points, .. } | PlanItem::Fill { points, .. } => {
                     pts.extend(points.iter().copied())
                 }
+                PlanItem::Line {
+                    pen: Pen::Guide, ..
+                } => {}
                 PlanItem::Line { a, b, .. } => pts.extend([*a, *b]),
                 PlanItem::Arc { center, radius, .. } => pts.extend([
                     *center - DVec2::splat(*radius),
@@ -667,6 +672,16 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                     }
                 }
             }
+            ElementKind::Guide(g) if g.level.is_none_or(|l| l == level) => {
+                if let Some((a, b)) = guide_span(g.a.truncate(), g.b.truncate()) {
+                    items.push(PlanItem::Line {
+                        id: e.id,
+                        pen: Pen::Guide,
+                        a,
+                        b,
+                    });
+                }
+            }
             ElementKind::View(v) => {
                 if let creabim_core::ViewKind::Section {
                     start, end, cut, ..
@@ -689,6 +704,17 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
         }
     }
     PlanView { items }
+}
+
+/// How far guides reach each way from their points: endless for any
+/// building, short enough to stay well inside float precision.
+pub const GUIDE_REACH: f64 = 200.0;
+
+/// A guide through `a` and `b` as a long segment.
+pub fn guide_span(a: DVec2, b: DVec2) -> Option<(DVec2, DVec2)> {
+    let d = (b - a).try_normalize()?;
+    let m = (a + b) / 2.0;
+    Some((m - d * GUIDE_REACH, m + d * GUIDE_REACH))
 }
 
 /// The plan of a shape with no simple footprint: its section at `z`,

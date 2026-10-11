@@ -90,7 +90,7 @@ impl Snapper {
             let (a, b, ga) = self.segments[i];
             for j in i + 1..n {
                 let (c, d, gb) = self.segments[j];
-                if let Some(p) = crossing(flat(a), flat(b), flat(c), flat(d), ga || gb) {
+                if let Some(p) = crossing(flat(a), flat(b), flat(c), flat(d), ga, gb) {
                     out.push((p.extend(0.0), SnapKind::Intersection));
                 }
             }
@@ -108,7 +108,9 @@ impl Snapper {
                 continue;
             }
             match it {
-                PlanItem::Line { a, b, .. } => s.add_segment(p3(*a), p3(*b), false),
+                PlanItem::Line { a, b, pen, .. } => {
+                    s.add_segment(p3(*a), p3(*b), *pen == creabim_geom::plan::Pen::Guide)
+                }
                 PlanItem::Polygon { points, .. } => {
                     for i in 0..points.len() {
                         let j = (i + 1) % points.len();
@@ -136,6 +138,30 @@ impl Snapper {
             }
         }
         s
+    }
+
+    /// Every guide in the model, for the 3D view, `reach` metres each way.
+    pub fn add_guides(&mut self, model: &creabim_core::Model, reach: f64) {
+        for e in model.iter() {
+            if let creabim_core::ElementKind::Guide(g) = &e.kind {
+                if let Some(d) = (g.b - g.a).try_normalize() {
+                    let m = (g.a + g.b) / 2.0;
+                    self.add_segment(m - d * reach, m + d * reach, true);
+                }
+            }
+        }
+    }
+
+    /// The edge or guide that `p` lies on, if exactly one does: what a
+    /// parallel guide is drawn from.
+    pub fn edge_at(&self, p: DVec3) -> Option<(DVec3, DVec3)> {
+        let mut on = self
+            .segments
+            .iter()
+            .filter(|(a, b, _)| closest_on_segment(*a, *b, p).distance(p) < 1e-6)
+            .map(|(a, b, _)| (*a, *b));
+        let first = on.next()?;
+        on.next().is_none().then_some(first)
     }
 
     /// The best snap for the pointer at `cursor`. `from` is where the line
@@ -256,7 +282,14 @@ pub fn closest_on_segment(a: DVec3, b: DVec3, p: DVec3) -> DVec3 {
 
 /// Where segments ab and cd cross, if they do. A guide is endless, so it
 /// crosses wherever its line does.
-fn crossing(a: DVec2, b: DVec2, c: DVec2, d: DVec2, endless: bool) -> Option<DVec2> {
+fn crossing(
+    a: DVec2,
+    b: DVec2,
+    c: DVec2,
+    d: DVec2,
+    ab_endless: bool,
+    cd_endless: bool,
+) -> Option<DVec2> {
     let r = b - a;
     let s = d - c;
     let den = r.perp_dot(s);
@@ -267,7 +300,7 @@ fn crossing(a: DVec2, b: DVec2, c: DVec2, d: DVec2, endless: bool) -> Option<DVe
     let u = (c - a).perp_dot(r) / den;
     let inside = |v: f64| (-1e-9..=1.0 + 1e-9).contains(&v);
     // shared corners are already endpoints
-    if !endless && (!inside(t) || !inside(u)) {
+    if (!ab_endless && !inside(t)) || (!cd_endless && !inside(u)) {
         return None;
     }
     let p = a + r * t;

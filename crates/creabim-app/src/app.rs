@@ -510,6 +510,10 @@ impl CreaBimApp {
                                 seg(points[i], points[(i + 1) % points.len()], c);
                             }
                         }
+                        // guides show as their own lines in 3D
+                        PlanItem::Line {
+                            pen: Pen::Guide, ..
+                        } => {}
                         PlanItem::Line { a, b, .. } => seg(*a, *b, c),
                         PlanItem::Arc {
                             center,
@@ -752,6 +756,10 @@ impl CreaBimApp {
             self.camera.orbit(GVec2::new(d.x, d.y));
         }
 
+        if self.plan.outline.is_some() {
+            self.outline_3d(ui, &response, &painter, &project, &ray);
+            return;
+        }
         if self.plan.tool != Tool::Select {
             self.tools_3d(ui, &response, &painter, &project, &ray);
             return;
@@ -783,6 +791,14 @@ impl CreaBimApp {
                 }
                 let (o, d) = ray(p);
                 let hit = pick::pick(&self.scene, o.as_vec3(), d.as_vec3());
+                // guides cross everything, so they only take clicks that miss
+                if hit.is_none() {
+                    if let Some(id) = self.guide_near(p, &project) {
+                        self.selection = Some(id);
+                        self.face = None;
+                        return;
+                    }
+                }
                 self.selection = hit.map(|h| h.id);
                 self.face = hit.and_then(|h| match self.doc.model().get(h.id).map(|e| &e.kind) {
                     Some(ElementKind::FreeMesh(m)) => {
@@ -805,11 +821,9 @@ impl CreaBimApp {
             .as_ref()
             .is_some_and(|(r, ex, _)| ex == exclude && (*r == rev || self.handle_drag.is_some()));
         if !fresh {
-            self.snaps_3d = Some((
-                rev,
-                exclude.to_vec(),
-                Snapper::from_scene(&self.scene, exclude),
-            ));
+            let mut snapper = Snapper::from_scene(&self.scene, exclude);
+            snapper.add_guides(self.doc.model(), GUIDE_REACH_3D);
+            self.snaps_3d = Some((rev, exclude.to_vec(), snapper));
         }
     }
 
@@ -949,6 +963,29 @@ impl CreaBimApp {
         }
         if let Some(a) = from {
             match tool {
+                Tool::Guide => {
+                    let (through, dir) = match self.plan.guide_edge {
+                        Some((e0, e1)) => (at, (e1 - e0).extend(0.0)),
+                        None => (a, at - a),
+                    };
+                    draw_guide_3d(painter, project, through, through + dir, stroke);
+                    if let Some(sb) = project(at) {
+                        let text = match self.plan.guide_edge {
+                            Some((e0, e1)) => {
+                                let d = (e1 - e0).normalize_or_zero();
+                                format!("{:.2} m", (p - e0).perp_dot(d).abs())
+                            }
+                            None => format!("{:.2} m", a.truncate().distance(p)),
+                        };
+                        painter.text(
+                            sb + Vec2::new(10.0, -12.0),
+                            egui::Align2::LEFT_BOTTOM,
+                            text,
+                            egui::FontId::proportional(13.0),
+                            accent,
+                        );
+                    }
+                }
                 Tool::Slab => {
                     let (lo, hi) = (a.truncate().min(p), a.truncate().max(p));
                     let pts = [lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y), lo];
@@ -979,6 +1016,17 @@ impl CreaBimApp {
                 }
             }
         }
+        if response.clicked() && tool == Tool::Guide && from.is_none() {
+            // clicking an edge first draws the guide parallel to it
+            self.plan.guide_edge = matches!(
+                snap.kind,
+                SnapKind::OnEdge | SnapKind::Guide | SnapKind::Midpoint
+            )
+            .then(|| snapper.edge_at(snap.p))
+            .flatten()
+            .filter(|(a, b)| a.truncate().distance(b.truncate()) > 1e-3)
+            .map(|(a, b)| (a.truncate(), b.truncate()));
+        }
         if response.clicked() {
             let mut sel = self.selection;
             let mut state = std::mem::take(&mut self.plan);
@@ -993,6 +1041,8 @@ impl CreaBimApp {
                 self.status = match (tool, self.pending_3d) {
                     (Tool::Wall, Some(_)) => format!("Drawing walls on {level_name}. Click the next corner; Esc or right-click ends."),
                     (Tool::Slab | Tool::Section | Tool::Elevation, Some(_)) => "Click the second corner.".into(),
+                    (Tool::Guide, Some(_)) if self.plan.guide_edge.is_some() => "Click where the parallel guide goes.".into(),
+                    (Tool::Guide, Some(_)) => "Click a second point the guide runs through.".into(),
                     _ => format!("Added on {level_name}."),
                 };
             }
@@ -1005,12 +1055,122 @@ impl CreaBimApp {
         }
     }
 
-    /// Every sketch as lines over the 3D view; the selected one stands out.
+    /// Redrawing a slab or wall in the 3D view, on its level, with snaps.
+    fn outline_3d(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        painter: &egui::Painter,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        ray: &dyn Fn(egui::Pos2) -> (DVec3, DVec3),
+    ) {
+        let Some(outline) = self.plan.outline.clone() else {
+            return;
+        };
+        let (enter, escape) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if escape {
+            self.plan.outline = None;
+            self.status = "Redraw cancelled.".into();
+            return;
+        }
+        let exclude = [outline.target];
+        self.refresh_snaps_3d(&exclude);
+        let hover = response.hover_pos().and_then(|h| {
+            let (o, d) = ray(h);
+            let free = Workplane::ground(outline.z).intersect(o, d);
+            let from = outline.points.last().map(|p| p.extend(outline.z));
+            let snapper = &self.snaps_3d.as_ref()?.2;
+            let s = snapper.snap(h, project, from, free)?;
+            if let Some(c) = project(s.p.truncate().extend(outline.z)) {
+                if s.kind != SnapKind::Grid {
+                    snaps::draw(painter, s, c, from.and_then(project));
+                }
+            }
+            Some((h, s.p.truncate()))
+        });
+        outline.draw(painter, project, hover.map(|h| h.1));
+        let finish = enter || (response.secondary_clicked() && !outline.points.is_empty());
+        let mut closed = false;
+        if response.clicked() {
+            if let Some((h, p)) = hover {
+                let near = outline.near_first(h, project);
+                let o = self.plan.outline.as_mut().expect("checked");
+                closed = o.click(p, near);
+            }
+        }
+        if finish || closed {
+            if let Some(o) = self.plan.outline.take() {
+                let r = o.finish(&mut self.doc, closed);
+                match r {
+                    Ok(msg) => self.status = msg,
+                    Err(e) => self.status = format!("Couldn't redraw: {e}"),
+                }
+            }
+        } else {
+            self.status = outline.hint().into();
+        }
+    }
+
+    /// The guide within a few pixels of `p` in the 3D view.
+    fn guide_near(
+        &self,
+        p: egui::Pos2,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+    ) -> Option<ElementId> {
+        let mut best: Option<(ElementId, f32)> = None;
+        for e in self.doc.model().iter() {
+            let ElementKind::Guide(g) = &e.kind else {
+                continue;
+            };
+            let Some(dir) = (g.b - g.a).try_normalize() else {
+                continue;
+            };
+            let m = (g.a + g.b) / 2.0;
+            let steps = 240;
+            let pts: Vec<Option<egui::Pos2>> = (0..=steps)
+                .map(|i| {
+                    let t = -GUIDE_REACH_3D + 2.0 * GUIDE_REACH_3D * i as f64 / steps as f64;
+                    project(m + dir * t)
+                })
+                .collect();
+            for w in pts.windows(2) {
+                let (Some(a), Some(b)) = (w[0], w[1]) else {
+                    continue;
+                };
+                let ab = b - a;
+                let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+                let d = (a + ab * t).distance(p);
+                if d < 5.0 && best.is_none_or(|(_, bd)| d < bd) {
+                    best = Some((e.id, d));
+                }
+            }
+        }
+        best.map(|(id, _)| id)
+    }
+
+    /// Every sketch as lines over the 3D view, and every guide dashed; the
+    /// selected one stands out.
     fn draw_sketches(
         &self,
         painter: &egui::Painter,
         project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
     ) {
+        for e in self.doc.model().iter() {
+            let ElementKind::Guide(g) = &e.kind else {
+                continue;
+            };
+            let stroke = if self.selection == Some(e.id) {
+                egui::Stroke::new(2.0, Color32::from_rgb(242, 140, 51))
+            } else {
+                egui::Stroke::new(1.0, planview::GUIDE_COLOR)
+            };
+            draw_guide_3d(painter, project, g.a, g.b, stroke);
+        }
         for (id, a, b) in creabim_geom::scene::sketch_lines(self.doc.model()) {
             let selected = self.selection == Some(id);
             let stroke = if selected {
@@ -1834,6 +1994,7 @@ impl CreaBimApp {
             })
             .inner
         };
+        let mut redraw = false;
         match &mut edited.kind {
             ElementKind::Level(l) => {
                 if num(ui, "Elevation", &mut l.elevation, -100.0, 1000.0) {
@@ -1868,6 +2029,13 @@ impl CreaBimApp {
                 {
                     label = "Move wall end"
                 }
+                if ui
+                    .button("Redraw path")
+                    .on_hover_text("Click a new path for this wall, in a plan or the 3D view. More corners make more walls like it.")
+                    .clicked()
+                {
+                    redraw = true;
+                }
             }
             ElementKind::Slab(s) => {
                 if num(ui, "Thickness", &mut s.thickness, 0.02, 3.0) {
@@ -1877,6 +2045,13 @@ impl CreaBimApp {
                     label = "Slab material"
                 }
                 ui.label(format!("{} boundary points", s.boundary.len()));
+                if ui
+                    .button("Redraw outline")
+                    .on_hover_text("Click a new outline for this slab, in a plan or the 3D view.")
+                    .clicked()
+                {
+                    redraw = true;
+                }
             }
             ElementKind::Opening(o) => {
                 if num(ui, "Width", &mut o.width, 0.1, 20.0) {
@@ -2469,6 +2644,14 @@ impl CreaBimApp {
             self.extrude_sketch();
             return;
         }
+        if redraw {
+            self.plan.cancel();
+            self.plan.tool = Tool::Select;
+            self.plan.outline = crate::outline::Outline::start(self.doc.model(), id);
+            if let Some(o) = &self.plan.outline {
+                self.status = o.hint().into();
+            }
+        }
 
         self.cuts_panel(ui, id);
 
@@ -2718,4 +2901,39 @@ fn with_plan_views(model: Model) -> Model {
     // a failed insert leaves the model as it was, which still opens
     let _ = doc.commit(tx);
     doc.model().clone()
+}
+
+/// How far guides reach each way in the 3D view.
+const GUIDE_REACH_3D: f64 = 60.0;
+
+/// A guide through `a` and `b`, dashed across the 3D view. It is sampled
+/// along its length so the parts behind the camera drop out cleanly.
+fn draw_guide_3d(
+    painter: &egui::Painter,
+    project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+    a: DVec3,
+    b: DVec3,
+    stroke: egui::Stroke,
+) {
+    let Some(d) = (b - a).try_normalize() else {
+        return;
+    };
+    let m = (a + b) / 2.0;
+    let mut run: Vec<egui::Pos2> = Vec::new();
+    let steps = 240;
+    for i in 0..=steps {
+        let t = -GUIDE_REACH_3D + 2.0 * GUIDE_REACH_3D * i as f64 / steps as f64;
+        match project(m + d * t).filter(|p| painter.clip_rect().expand(200.0).contains(*p)) {
+            Some(p) => run.push(p),
+            None => {
+                if run.len() > 1 {
+                    painter.extend(egui::Shape::dashed_line(&run, stroke, 6.0, 4.0));
+                }
+                run.clear();
+            }
+        }
+    }
+    if run.len() > 1 {
+        painter.extend(egui::Shape::dashed_line(&run, stroke, 6.0, 4.0));
+    }
 }

@@ -30,10 +30,11 @@ pub enum Tool {
     Dimension,
     Tag,
     Sketch,
+    Guide,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 11] = [
+    pub const ALL: [Tool; 12] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
@@ -45,6 +46,7 @@ impl Tool {
         Tool::Dimension,
         Tool::Tag,
         Tool::Sketch,
+        Tool::Guide,
     ];
 
     pub fn label(self) -> &'static str {
@@ -60,6 +62,7 @@ impl Tool {
             Tool::Dimension => "Dimension",
             Tool::Tag => "Tag",
             Tool::Sketch => "Sketch",
+            Tool::Guide => "Guide",
         }
     }
 
@@ -76,6 +79,7 @@ impl Tool {
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to wall corners, door and window edges and levels, and stay attached to them.",
             Tool::Tag => "Click a door, window, wall or slab, then click where its tag goes.",
             Tool::Sketch => "Click the corners of a sketch on this level. Click the first corner to close it, Enter or right-click to leave it open, Esc to cancel. Then E extrudes it.",
+            Tool::Guide => "Click two points for a guide through them. Or click an edge, then click where its parallel guide goes. Everything snaps to guides.",
         }
     }
 
@@ -170,6 +174,10 @@ pub struct PlanState {
     snaps: HashMap<ElementId, (u64, Vec<ElementId>, Snapper)>,
     /// A message for the status bar, taken by the app each frame.
     pub status: Option<String>,
+    /// The edge a guide is drawn parallel to, picked by its first click.
+    pub guide_edge: Option<(DVec2, DVec2)>,
+    /// A slab outline or wall path being redrawn.
+    pub outline: Option<crate::outline::Outline>,
 }
 
 impl Default for PlanState {
@@ -188,6 +196,8 @@ impl Default for PlanState {
             grip: None,
             snaps: HashMap::new(),
             status: None,
+            guide_edge: None,
+            outline: None,
         }
     }
 }
@@ -199,6 +209,8 @@ impl PlanState {
         self.dim.clear();
         self.tag_host = None;
         self.sketch = None;
+        self.guide_edge = None;
+        self.outline = None;
     }
 
     /// Is a tool waiting for more clicks?
@@ -356,6 +368,50 @@ pub fn show(
             (p / 0.05).round() * 0.05
         }
     });
+
+    // redrawing a slab or wall on this plan's level
+    if let (Some(o), PaneKind::Plan { level }) = (&state.outline, kind) {
+        if o.level == level {
+            let o = o.clone();
+            let project = |p: DVec3| Some(xf.to_screen(p.truncate()));
+            if let (Some(s), false) = (tool_snap, shift) {
+                let from = o.points.last().map(|a| xf.to_screen(*a));
+                snaps::draw(&painter, s, xf.to_screen(s.p.truncate()), from);
+            }
+            o.draw(&painter, &project, hover_world);
+            let (enter, escape) = ui.input(|i| {
+                (
+                    i.key_pressed(egui::Key::Enter),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if escape {
+                state.outline = None;
+                state.status = Some("Redraw cancelled.".into());
+                return None;
+            }
+            let mut closed = false;
+            if response.clicked() {
+                if let (Some(p), Some(h)) = (hover_world, response.hover_pos()) {
+                    let near = o.near_first(h, &project);
+                    closed = state.outline.as_mut().is_some_and(|o| o.click(p, near));
+                }
+            }
+            let finish = enter || (response.secondary_clicked() && !o.points.is_empty());
+            if finish || closed {
+                let o = state.outline.take()?;
+                return match o.finish(doc, closed) {
+                    Ok(msg) => {
+                        state.status = Some(msg);
+                        None
+                    }
+                    Err(e) => Some(e.to_string()),
+                };
+            }
+            state.status = Some(o.hint().into());
+            return None;
+        }
+    }
 
     // pointer edits: keyboard move, rotate and scale; sketches; grips
     let space = match kind {
@@ -533,6 +589,37 @@ pub fn show(
                     egui::StrokeKind::Middle,
                 );
             }
+            Tool::Guide => {
+                let (through, dir, text) = match state.guide_edge {
+                    Some((e0, e1)) => {
+                        let d = (e1 - e0).normalize_or_zero();
+                        let off = (b - e0).perp_dot(d).abs();
+                        (b, d, format!("{off:.2} m"))
+                    }
+                    None => {
+                        let d = (b - a).normalize_or_zero();
+                        let deg = d.y.atan2(d.x).to_degrees().rem_euclid(180.0);
+                        (a, d, format!("{deg:.1}°"))
+                    }
+                };
+                let reach = rect.width().max(rect.height()) as f64 / xf.scale as f64;
+                painter.extend(egui::Shape::dashed_line(
+                    &[
+                        xf.to_screen(through - dir * reach),
+                        xf.to_screen(through + dir * reach),
+                    ],
+                    accent,
+                    10.0,
+                    5.0,
+                ));
+                painter.text(
+                    xf.to_screen(b) + Vec2::new(12.0, -12.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    text,
+                    egui::FontId::proportional(13.0),
+                    accent.color,
+                );
+            }
             _ => {}
         }
     }
@@ -586,7 +673,23 @@ pub fn show(
             (PaneKind::Section { start, end }, _) => {
                 section_tool(doc, start, end, tool, p, picked(), state, selection)
             }
-            (PaneKind::Plan { level }, tool) => plan_tool(doc, level, tool, p, state, selection),
+            (PaneKind::Plan { level }, tool) => {
+                if tool == Tool::Guide && state.pending.is_none() {
+                    state.guide_edge = tool_snap
+                        .filter(|s| {
+                            !shift
+                                && matches!(
+                                    s.kind,
+                                    snaps::SnapKind::OnEdge
+                                        | snaps::SnapKind::Guide
+                                        | snaps::SnapKind::Midpoint
+                                )
+                        })
+                        .and_then(|s| state.snaps.get(&view)?.2.edge_at(s.p))
+                        .map(|(a, b)| (a.truncate(), b.truncate()));
+                }
+                plan_tool(doc, level, tool, p, state, selection)
+            }
             (PaneKind::Axonometric | PaneKind::Schedule, _) => Ok(()),
         };
         if let Err(e) = result {
@@ -617,6 +720,35 @@ pub fn show(
         );
     }
     error
+}
+
+/// Guides are drawn in this colour, in every pane.
+pub const GUIDE_COLOR: Color32 = Color32::from_rgb(190, 60, 170);
+
+/// The part of the screen segment ab inside `r`.
+pub fn clip_to_rect(a: Pos2, b: Pos2, r: Rect) -> Option<(Pos2, Pos2)> {
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    let d = b - a;
+    for (p, q) in [
+        (-d.x, a.x - r.min.x),
+        (d.x, r.max.x - a.x),
+        (-d.y, a.y - r.min.y),
+        (d.y, r.max.y - a.y),
+    ] {
+        if p.abs() < 1e-9 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let t = q / p;
+            if p < 0.0 {
+                t0 = t0.max(t);
+            } else {
+                t1 = t1.min(t);
+            }
+        }
+    }
+    (t0 < t1).then(|| (a + d * t0, a + d * t1))
 }
 
 /// A click with a drawing tool in a plan (or on a level in the 3D view).
@@ -685,6 +817,29 @@ pub fn plan_tool(
                 );
                 *selection = Some(e.id);
                 doc.commit(Transaction::new("Draw slab").insert(e))
+            }
+        },
+        Tool::Guide => match state.pending.take() {
+            None => {
+                state.pending = Some(p);
+                Ok(())
+            }
+            Some(a) => {
+                let (ga, gb) = match state.guide_edge.take() {
+                    Some((e0, e1)) => (p, p + (e1 - e0)),
+                    None if a.distance(p) > 0.01 => (a, p),
+                    None => return Ok(()),
+                };
+                let z = doc.model().level(level).map_or(0.0, |l| l.elevation);
+                let e = Element::new(
+                    "Guide",
+                    ElementKind::Guide(creabim_core::Guide {
+                        level: Some(level),
+                        a: ga.extend(z),
+                        b: gb.extend(z),
+                    }),
+                );
+                doc.commit(Transaction::new("Add guide").insert(e))
             }
         },
         Tool::Mass => {
@@ -1475,6 +1630,21 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
         PlanItem::Line { pen, a, b, .. } => {
             let (a, b) = (xf.to_screen(*a), xf.to_screen(*b));
             match pen {
+                Pen::Guide => {
+                    if let Some((a, b)) = clip_to_rect(a, b, painter.clip_rect()) {
+                        let (w, c) = if selected {
+                            (2.0, highlight)
+                        } else {
+                            (1.0, GUIDE_COLOR)
+                        };
+                        painter.extend(egui::Shape::dashed_line(
+                            &[a, b],
+                            Stroke::new(w, c),
+                            6.0,
+                            4.0,
+                        ));
+                    }
+                }
                 Pen::Grid => {
                     painter.extend(egui::Shape::dashed_line(
                         &[a, b],
