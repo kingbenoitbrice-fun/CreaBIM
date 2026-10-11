@@ -742,7 +742,11 @@ name = "creabim-ifc"
 version = "0.1.0"
 dependencies = [
  "creabim-core",
+ "creabim-geom",
  "glam",
+ "indexmap",
+ "serde_json",
+ "thiserror 2.0.21",
  "uuid",
 ]
 
