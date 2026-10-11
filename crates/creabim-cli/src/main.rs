@@ -5,7 +5,7 @@
 
 use creabim_core::{sample::sample_house, Document, Model};
 use creabim_geom::sheet::{sheet_svg, sheets, sheets_pdf, SheetInfo};
-use creabim_ifc::{export_ifc4, ExportOptions};
+use creabim_ifc::{export_ifc4, export_ifcx, import_ifc, import_ifcx, ExportOptions, ImportResult};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
@@ -15,6 +15,9 @@ usage: (<model> is a .creabim project or a legacy .creabim.json file)
   creabim save-db <in.creabim.json> <out.creabim>
                                        convert a JSON model to a project file
   creabim ifc <model> <out.ifc>        export a model to IFC4
+  creabim import-ifc <in.ifc> <out>    import an IFC2X3, IFC4 or IFC4X3 file
+  creabim ifcx <model> <out.ifcx>      export to IFC5 IFCX JSON (experimental)
+  creabim import-ifcx <in.ifcx> <out>  import an IFC5 IFCX file (experimental)
   creabim plan <model> <level-name> <out.svg>
                                        draw a level's plan at 1:100
   creabim view <model> <view-name> <out.svg>
@@ -168,6 +171,14 @@ fn main() -> ExitCode {
                 }
             }
         }),
+        ["import-ifc", input, out] => read_text(input)
+            .and_then(|text| import_ifc(&text).map_err(|e| format!("{input}: {e}")))
+            .and_then(|r| save_import(r, out)),
+        ["ifcx", input, out] => load(input)
+            .and_then(|m| std::fs::write(out, export_ifcx(&m)).map_err(|e| e.to_string())),
+        ["import-ifcx", input, out] => read_text(input)
+            .and_then(|text| import_ifcx(&text).map_err(|e| format!("{input}: {e}")))
+            .and_then(|r| save_import(r, out)),
         ["stats", input] => load(input).map(|m| {
             let mut counts = std::collections::BTreeMap::new();
             for e in m.iter() {
@@ -200,6 +211,31 @@ fn info(path: &str) -> SheetInfo {
             .unwrap_or("CreaBIM project")
             .to_string(),
         date: creabim_geom::sheet::today(),
+    }
+}
+
+/// Read a text file; IFC files are ASCII by the standard, but some tools
+/// write Latin-1 or UTF-8 into strings, so invalid bytes are replaced, not fatal.
+fn read_text(path: &str) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Save an imported model in the format `out` names, reporting what was skipped.
+fn save_import(r: ImportResult, out: &str) -> Result<(), String> {
+    for w in &r.warnings {
+        eprintln!("warning: {w}");
+    }
+    let mut counts = std::collections::BTreeMap::new();
+    for e in r.model.iter() {
+        *counts.entry(e.ifc_class().to_string()).or_insert(0) += 1;
+    }
+    let summary: Vec<String> = counts.iter().map(|(c, n)| format!("{n} {c}")).collect();
+    eprintln!("imported {} ({})", r.schema, summary.join(", "));
+    if is_json(out) {
+        std::fs::write(out, r.model.to_json()).map_err(|e| e.to_string())
+    } else {
+        creabim_store::save(out, &Document::from_model(r.model)).map_err(|e| format!("{out}: {e}"))
     }
 }
 

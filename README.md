@@ -25,6 +25,8 @@ CreaBIM is an open-source, BIM-native architectural modeler: one model for freef
 - **Undo and redo** for every edit. Dragging a value in the properties panel undoes as one step.
 - **Plan drawings generated from the model:** walls cut at a set height, door swings, window symbols, slabs and masses in projection. Export as SVG at 1:100.
 - **IFC4 export** with storeys, walls, slabs, openings, doors, windows and tessellated freeform elements. CI checks every export against the IFC schema and builds its geometry with [IfcOpenShell](https://ifcopenshell.org).
+- **IFC import** of IFC2X3, IFC4 and IFC4X3 files: straight walls, slabs on a storey and the doors and windows in those walls become native, editable elements; everything else with a body (columns, beams, roofs, stairs, furniture, terrain…) comes in as a free mesh that keeps its IFC class. Units, placements, mapped types, materials and GlobalIds are kept.
+- **IFC5 (experimental):** import and export of buildingSMART's alpha IFCX JSON format.
 
 ## Build and run
 
@@ -44,6 +46,9 @@ cargo run -p creabim-cli -- sample house.creabim.json            # write the sam
 cargo run -p creabim-cli -- save-db house.creabim.json house.creabim  # convert to a SQLite project file
 # every command that reads a model accepts a .creabim or a .creabim.json file
 cargo run -p creabim-cli -- ifc house.creabim.json house.ifc     # export IFC4
+cargo run -p creabim-cli -- import-ifc other.ifc other.creabim.json   # import IFC2X3/4/4X3
+cargo run -p creabim-cli -- ifcx house.creabim.json house.ifcx   # export IFC5 (IFCX)
+cargo run -p creabim-cli -- import-ifcx house.ifcx back.creabim.json
 cargo run -p creabim-cli -- plan house.creabim.json "Ground Floor" gf.svg
 cargo run -p creabim-cli -- views house.creabim.json             # list plans, sections, elevations
 cargo run -p creabim-cli -- view house.creabim.json "Section A" a.svg
@@ -88,7 +93,7 @@ Files: *File → Save/Open* use the path in the toolbar (`.creabim.json`). *Expo
 | --- | --- |
 | `creabim-core` | Element store, edit transactions, undo history, Blender-style edit mesh, modifier stack, workplanes and transforms. Every edit is a reversible op, which later also powers version history and live collaboration. |
 | `creabim-geom` | Element geometry (walls with openings, slabs, meshes), plan drawing generation, picking. This is where OpenCascade plugs in for NURBS and B-rep work. |
-| `creabim-ifc` | IFC4 STEP writer. Element ids are IFC GlobalIds, so re-exports keep identity. |
+| `creabim-ifc` | IFC4 STEP writer, STEP reader and IFC2X3/IFC4/IFC4X3 importer, IFCX (IFC5 alpha) reader and writer. Element ids are IFC GlobalIds, so round trips keep identity. |
 | `creabim-store` | The `.creabim` project file: a SQLite database of the current elements plus the journal of every edit, so undo history survives closing the app. Records each edit incrementally (WAL) for cheap, crash-safe autosave. |
 | `creabim-app` | Desktop app: egui UI, wgpu 3D viewport rendered offscreen so any number of live views can exist. |
 | `creabim-cli` | Command-line export tools. |

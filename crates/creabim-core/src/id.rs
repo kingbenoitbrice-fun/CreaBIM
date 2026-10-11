@@ -19,6 +19,13 @@ impl ElementId {
     pub fn ifc_guid(&self) -> String {
         ifc_guid(self.0)
     }
+
+    /// The inverse of [`ElementId::ifc_guid`], so an imported element keeps
+    /// the identity it had in the IFC file. `None` if `guid` is not a valid
+    /// 22-character IFC GlobalId.
+    pub fn from_ifc_guid(guid: &str) -> Option<Self> {
+        from_ifc_guid(guid).map(Self)
+    }
 }
 
 impl Default for ElementId {
@@ -53,6 +60,24 @@ pub fn ifc_guid(uuid: Uuid) -> String {
     out
 }
 
+/// Decode an IFC GlobalId back into the UUID it encodes.
+pub fn from_ifc_guid(guid: &str) -> Option<Uuid> {
+    let bytes = guid.as_bytes();
+    if bytes.len() != 22 {
+        return None;
+    }
+    let digit = |c: u8| IFC_CHARS.iter().position(|&x| x == c).map(|d| d as u128);
+    let first = digit(bytes[0])?;
+    if first > 3 {
+        return None; // only 2 bits fit before the remaining 126
+    }
+    let mut n = first;
+    for &c in &bytes[1..] {
+        n = (n << 6) | digit(c)?;
+    }
+    Some(Uuid::from_u128(n))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +95,23 @@ mod tests {
     fn ifc_guid_known_values() {
         assert_eq!(ifc_guid(Uuid::nil()), "0000000000000000000000");
         assert_eq!(ifc_guid(Uuid::max()), "3$$$$$$$$$$$$$$$$$$$$$");
+    }
+
+    #[test]
+    fn ifc_guid_round_trips() {
+        for _ in 0..100 {
+            let id = ElementId::new();
+            assert_eq!(ElementId::from_ifc_guid(&id.ifc_guid()), Some(id));
+        }
+        assert_eq!(from_ifc_guid("0000000000000000000000"), Some(Uuid::nil()));
+        assert_eq!(from_ifc_guid("3$$$$$$$$$$$$$$$$$$$$$"), Some(Uuid::max()));
+    }
+
+    #[test]
+    fn invalid_ifc_guids_are_rejected() {
+        assert_eq!(from_ifc_guid(""), None);
+        assert_eq!(from_ifc_guid("4000000000000000000000"), None);
+        assert_eq!(from_ifc_guid("000000000000000000000!"), None);
+        assert_eq!(from_ifc_guid("00000000000000000000000"), None);
     }
 }
