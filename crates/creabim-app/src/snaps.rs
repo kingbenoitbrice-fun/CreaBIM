@@ -161,7 +161,7 @@ impl SnapSettings {
     }
 
     /// Each switch with its label, in the order the snap bar lists them.
-    fn switches(&mut self) -> [(&'static str, &mut bool); 11] {
+    pub fn switches(&mut self) -> [(&'static str, &mut bool); 11] {
         [
             ("Endpoint", &mut self.endpoint),
             ("Midpoint", &mut self.midpoint),

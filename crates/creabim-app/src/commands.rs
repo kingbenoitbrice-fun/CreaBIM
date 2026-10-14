@@ -29,6 +29,26 @@ pub enum Command {
 }
 
 impl Command {
+    pub const ALL: [Command; 17] = [
+        Command::Move,
+        Command::Rotate,
+        Command::Scale,
+        Command::Duplicate,
+        Command::Copy,
+        Command::Cut,
+        Command::Paste,
+        Command::Delete,
+        Command::Hide,
+        Command::Isolate,
+        Command::ShowAll,
+        Command::SelectAll,
+        Command::SelectNone,
+        Command::Undo,
+        Command::Redo,
+        Command::CursorHere,
+        Command::WorkplaneHere,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             Command::Move => "Move",

@@ -23,6 +23,9 @@ use eframe::egui_wgpu;
 use glam::{DVec2, DVec3, Vec2 as GVec2};
 use std::collections::HashMap;
 
+#[path = "shell.rs"]
+mod shell;
+
 /// What the 3D geometry was last built from; rebuild when any of it changes.
 /// ((model revision, hidden revision), selection, selected face, drawing
 /// shown in 3D, active view)
@@ -132,11 +135,13 @@ pub struct CreaBimApp {
     /// What Ctrl+C copied, for pasting when the system clipboard has none.
     clipboard: Vec<Element>,
     recent: crate::files::Recent,
+    /// The web interface round the views.
+    shell: shell::Shell,
 }
 
 impl CreaBimApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::light());
+        shell::style(&cc.egui_ctx, true);
         let viewport = cc
             .wgpu_render_state
             .as_ref()
@@ -175,6 +180,7 @@ impl CreaBimApp {
             hidden_rev: 0,
             clipboard: vec![],
             recent: crate::files::Recent::load(),
+            shell: Default::default(),
             status: "Loaded the sample house. Orbit with left drag, pan with right drag, zoom with the wheel.".into(),
         };
         app.load_model(sample_house());
@@ -1252,6 +1258,10 @@ impl CreaBimApp {
                     self.plan.cancel();
                     self.status = "Cancelled. Right-click or Esc again to leave the tool.".into();
                 } else if !self.plan.step_back() && right && self.plan.tool == Tool::Select {
+                    if self.plan.web_menus {
+                        self.plan.menu_request = response.interact_pointer_pos();
+                        self.shell.menu_3d = true;
+                    }
                     if let Some(p) = response.interact_pointer_pos() {
                         let (o, d) = ray(p);
                         let hit = pick::pick(&self.scene, o.as_vec3(), d.as_vec3());
@@ -1266,7 +1276,7 @@ impl CreaBimApp {
                     }
                 }
             }
-            if self.plan.tool == Tool::Select {
+            if self.plan.tool == Tool::Select && !self.plan.web_menus {
                 let n = self.selection.len();
                 let at = self.menu_at_3d;
                 let mut picked = None;
@@ -2345,305 +2355,6 @@ impl CreaBimApp {
 
     // ---- panels ---------------------------------------------------------
 
-    fn menu(&mut self, ui: &mut egui::Ui) {
-        egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
-                if ui.button("New sample house").clicked() {
-                    self.load_model(sample_house());
-                    self.status = "Loaded the sample house.".into();
-                }
-                if ui.button("New empty project").clicked() {
-                    let mut m = Document::new();
-                    let l = Element::new(
-                        "Level 0",
-                        ElementKind::Level(creabim_core::Level {
-                            elevation: 0.0,
-                            height: 3.0,
-                        }),
-                    );
-                    let _ = m.commit(Transaction::new("New project").insert(l));
-                    self.load_model(m.model().clone());
-                    self.status =
-                        "New project with one level. Pick the Wall tool to start drawing.".into();
-                }
-                if ui.button("New sheet").clicked() {
-                    self.new_sheet();
-                }
-                ui.menu_button("New schedule", |ui| {
-                    for c in ScheduleCategory::ALL {
-                        if ui.button(c.label()).clicked() {
-                            self.new_schedule(c);
-                        }
-                    }
-                });
-                ui.separator();
-                if ui
-                    .add(egui::Button::new("Open…").shortcut_text("Ctrl+O"))
-                    .on_hover_text("Open a .creabim, .ifc or .ifcx file. Other files (.blend, .FCStd) are linked into this project.")
-                    .clicked()
-                {
-                    self.open_dialog();
-                }
-                let recent = self.recent.files.clone();
-                ui.add_enabled_ui(!recent.is_empty(), |ui| {
-                    ui.menu_button("Open recent", |ui| {
-                        for f in &recent {
-                            if ui.button(file_label(f)).on_hover_text(f).clicked() {
-                                self.open_path(f);
-                            }
-                        }
-                        ui.separator();
-                        if ui.button("Clear the list").clicked() {
-                            self.recent.clear();
-                        }
-                    });
-                });
-                if ui
-                    .button("Open the path in the File box")
-                    .on_hover_text("For typing or pasting a path instead of browsing.")
-                    .clicked()
-                {
-                    let path = self.path.clone();
-                    self.open_path(&path);
-                }
-                if ui
-                    .add(egui::Button::new("Save").shortcut_text("Ctrl+S"))
-                    .on_hover_text("Save as a .creabim project file, with its undo history.")
-                    .clicked()
-                {
-                    self.save();
-                }
-                if ui.button("Save as…").clicked() {
-                    self.save_as();
-                }
-                ui.separator();
-                if ui
-                    .button("Import and link…")
-                    .on_hover_text("Bring in the objects of a .blend or .FCStd file. Saving it in Blender or FreeCAD updates them here.")
-                    .clicked()
-                {
-                    if let Some(path) = crate::files::pick_open() {
-                        self.link_file(&path);
-                    }
-                }
-                ui.checkbox(&mut self.live_reload, "Reload linked files when saved");
-                let linked = crate::files::linked_files(self.doc.model());
-                if !linked.is_empty() {
-                    ui.menu_button("Linked files", |ui| {
-                        for f in &linked {
-                            if ui.button(format!("Reload {}", file_label(f))).clicked() {
-                                self.reload(f);
-                            }
-                        }
-                    });
-                }
-                ui.separator();
-                if ui
-                    .button("Export glTF (.glb) for Blender")
-                    .on_hover_text("Every element as a mesh with its CreaBIM id, so edits saved in Blender come back to the same elements.")
-                    .clicked()
-                {
-                    let out = with_extension(&self.path, "glb");
-                    let r = std::fs::write(&out, creabim_exchange::gltf::export_glb(self.doc.model()));
-                    self.report(r, format!("Exported {out}. In Blender: File > Import > glTF, or use the CreaBIM add-on."));
-                }
-                if ui
-                    .button("Export FreeCAD (.FCStd)")
-                    .on_hover_text("Every element as a solid with its BIM type and CreaBIM id; open it in FreeCAD, edit, save, and link it back.")
-                    .clicked()
-                {
-                    let out = with_extension(&self.path, "FCStd");
-                    let r = creabim_exchange::freecad::export_fcstd(self.doc.model(), &stem(&self.path))
-                        .map_err(|e| e.to_string())
-                        .and_then(|b| std::fs::write(&out, b).map_err(|e| e.to_string()));
-                    self.report(r, format!("Exported {out}"));
-                }
-                if ui
-                    .button("Export IFC5 (.ifcx, alpha)")
-                    .on_hover_text("The new JSON-based IFC. Its schema is still an alpha, so other tools may not read it yet.")
-                    .clicked()
-                {
-                    let out = with_extension(&self.path, "ifcx");
-                    let r = std::fs::write(&out, creabim_ifc::export_ifcx(self.doc.model()));
-                    self.report(r, format!("Exported {out}"));
-                }
-                if ui.button("Export IFC4").clicked() {
-                    let out = with_extension(&self.path, "ifc");
-                    let opts = creabim_ifc::ExportOptions {
-                        project_name: stem(&self.path),
-                        ..Default::default()
-                    };
-                    let r = std::fs::write(&out, creabim_ifc::export_ifc4(self.doc.model(), &opts));
-                    self.report(r, format!("Exported {out}"));
-                }
-                if ui.button("Export sheets as PDF").clicked() {
-                    let out = with_extension(&self.path, "pdf");
-                    if sheets::sheets(self.doc.model()).is_empty() {
-                        self.status = "There are no sheets to export yet.".into();
-                    } else {
-                        let pdf = sheets::sheets_pdf(self.doc.model(), &self.sheet_info());
-                        let r = std::fs::write(&out, pdf);
-                        let n = sheets::sheets(self.doc.model()).len();
-                        self.report(r, format!("Exported {n} sheets to {out}"));
-                    }
-                }
-                if ui.button("Export view or sheet as SVG").clicked() {
-                    if let Some(sheet) = self.active_view.filter(|id| self.is_sheet(*id)) {
-                        let number = sheets::sheet_of(self.doc.model(), sheet)
-                            .map(|s| s.number.clone())
-                            .unwrap_or_default();
-                        let out = with_extension(&self.path, &format!("{number}.svg"));
-                        if let Some(svg) =
-                            sheets::sheet_svg(self.doc.model(), sheet, &self.sheet_info())
-                        {
-                            let r = std::fs::write(&out, svg);
-                            self.report(r, format!("Exported {out}"));
-                        }
-                    } else if let Some(view) = self.active_view {
-                        let name = self
-                            .doc
-                            .model()
-                            .get(view)
-                            .map(|e| e.name.replace(' ', "-"))
-                            .unwrap_or_default();
-                        let scale = self.view(view).map_or(100.0, |v| v.scale);
-                        let out = with_extension(&self.path, &format!("{name}.svg"));
-                        if let Some(d) = self.drawing(view) {
-                            let r = std::fs::write(&out, d.to_svg(scale));
-                            self.report(r, format!("Exported {out} at 1:{scale:.0}"));
-                        }
-                    }
-                }
-            });
-            ui.menu_button("Edit", |ui| {
-                let undo = self
-                    .doc
-                    .undo_label()
-                    .map(|l| format!("Undo {l}"))
-                    .unwrap_or("Undo".into());
-                if ui
-                    .add_enabled(self.doc.can_undo(), egui::Button::new(undo))
-                    .clicked()
-                {
-                    self.doc.undo();
-                    self.drop_stale_selection();
-                }
-                let redo = self
-                    .doc
-                    .redo_label()
-                    .map(|l| format!("Redo {l}"))
-                    .unwrap_or("Redo".into());
-                if ui
-                    .add_enabled(self.doc.can_redo(), egui::Button::new(redo))
-                    .clicked()
-                {
-                    self.doc.redo();
-                    self.drop_stale_selection();
-                }
-                ui.separator();
-                let some = self.selection.is_some();
-                if ui
-                    .add_enabled(some, egui::Button::new("Copy").shortcut_text("Ctrl+C"))
-                    .clicked()
-                    && self.copy_selected()
-                {
-                    ui.ctx().copy_text(self.clipboard_text());
-                    self.status = format!("Copied {} elements.", self.clipboard.len());
-                }
-                if ui
-                    .add_enabled(
-                        !self.clipboard.is_empty(),
-                        egui::Button::new("Paste in place").shortcut_text("Ctrl+V"),
-                    )
-                    .clicked()
-                {
-                    self.paste(self.clipboard.clone());
-                }
-                ui.separator();
-                if ui
-                    .button("Select all")
-                    .on_hover_text("Ctrl+A. Alt+A selects nothing.")
-                    .clicked()
-                {
-                    self.select_all();
-                }
-                let delete = match self.selection.len() {
-                    0 | 1 => "Delete selected".to_string(),
-                    n => format!("Delete {n} selected"),
-                };
-                if ui
-                    .add_enabled(some, egui::Button::new(delete).shortcut_text("Del"))
-                    .clicked()
-                {
-                    self.delete_selected();
-                }
-                ui.separator();
-                if ui
-                    .add_enabled(some, egui::Button::new("Hide selected").shortcut_text("H"))
-                    .clicked()
-                {
-                    self.hide_selected();
-                }
-                if ui
-                    .add_enabled(some, egui::Button::new("Show only selected").shortcut_text("Shift+H"))
-                    .clicked()
-                {
-                    self.isolate_selected();
-                }
-                if ui
-                    .add_enabled(!self.hidden.is_empty(), egui::Button::new("Show everything").shortcut_text("Alt+H"))
-                    .clicked()
-                {
-                    self.show_all();
-                }
-                ui.separator();
-                ui.menu_button("Pivot for rotate and scale", |ui| {
-                    for p in crate::modal::Pivot::ALL {
-                        ui.radio_value(&mut self.plan.pivot, p, p.label());
-                    }
-                    if ui
-                        .add_enabled(self.plan.cursor.is_some(), egui::Button::new("Clear the pivot cursor"))
-                        .clicked()
-                    {
-                        self.plan.cursor = None;
-                    }
-                });
-            });
-            ui.menu_button("View", |ui| {
-                ui.label("2D view");
-                ui.radio_value(
-                    &mut self.placement,
-                    PlanPlacement::Docked,
-                    "Docked beside 3D",
-                );
-                ui.radio_value(
-                    &mut self.placement,
-                    PlanPlacement::Window,
-                    "In its own window",
-                );
-                ui.radio_value(
-                    &mut self.placement,
-                    PlanPlacement::Overlay,
-                    "Overlaid in the 3D workspace",
-                );
-                ui.radio_value(&mut self.placement, PlanPlacement::Hidden, "Hidden");
-                ui.separator();
-                ui.label("Docked layout (drag the divider to resize)");
-                ui.radio_value(&mut self.layout.stacked, false, "Side by side");
-                ui.radio_value(&mut self.layout.stacked, true, "One above the other");
-                ui.checkbox(&mut self.layout.swapped, "2D view first");
-                ui.separator();
-                ui.checkbox(&mut self.plan_in_3d, "Show the 2D view in 3D space");
-                if ui.button("Frame all").clicked() {
-                    self.frame_all();
-                }
-            });
-            ui.separator();
-            ui.label("File:");
-            ui.add(egui::TextEdit::singleline(&mut self.path).desired_width(220.0));
-        });
-    }
-
     /// Where 3D sketches and guides go: the level, a face, three points,
     /// with an offset along the plane's normal.
     fn workplane_bar(&mut self, ui: &mut egui::Ui) {
@@ -2850,19 +2561,9 @@ impl CreaBimApp {
                     }
                 }
             });
-        let Some(view) = chosen else { return };
-        let at = sheets::free_spot(self.doc.model(), sheet, view);
-        let vp = sheets::new_viewport(self.doc.model(), sheet, view, at);
-        let e = Element::new("Viewport", ElementKind::Viewport(vp));
-        let id = e.id;
-        let r = self
-            .doc
-            .commit(Transaction::new("Place view on sheet").insert(e));
-        self.selection.only(id);
-        self.report(
-            r,
-            "Placed the view. Drag it to where it belongs on the sheet.",
-        );
+        if let Some(view) = chosen {
+            self.place_view(sheet, view);
+        }
     }
 
     fn new_sheet(&mut self) {
@@ -3093,7 +2794,13 @@ impl CreaBimApp {
     }
 
     fn properties(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Properties");
+        ui.label(
+            egui::RichText::new("PROPERTIES")
+                .size(11.0)
+                .strong()
+                .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(4.0);
         let Some(id) = self.selection.active else {
             ui.label(
                 "Nothing selected. Click an element in the plan, the 3D view or the model list.",
@@ -3866,6 +3573,11 @@ impl CreaBimApp {
 }
 
 impl eframe::App for CreaBimApp {
+    /// Keys typed while a web pane had the keyboard reach the views.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        raw_input.events.append(&mut self.shell.keys);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.shortcuts(&ctx);
@@ -3890,30 +3602,43 @@ impl eframe::App for CreaBimApp {
             }
         }
 
-        egui::Panel::top("menu").show(ui, |ui| {
-            self.menu(ui);
-            self.toolbar(ui);
-            ui.horizontal(|ui| {
-                let some = self.selection.is_some();
-                if let Some(c) = crate::commands::modify_bar(ui, some) {
-                    self.run_command(&ctx, c, None);
-                }
-            });
-        });
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(&self.status);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(format!("{} elements", self.doc.model().len()));
+        let web = self.web_panels(ui, frame);
+        self.plan.web_menus = web;
+        self.shell.menu_3d = false;
+        if !web {
+            egui::Panel::top("menu").show(ui, |ui| {
+                self.classic_menu(ui);
+                self.toolbar(ui);
+                ui.horizontal(|ui| {
+                    let some = self.selection.is_some();
+                    if let Some(c) = crate::commands::modify_bar(ui, some) {
+                        self.run_command(&ctx, c, None);
+                    }
                 });
             });
-        });
-        egui::Panel::left("outliner")
-            .default_size(220.0)
-            .show(ui, |ui| self.outliner(ui));
+            egui::Panel::bottom("status").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(&self.status);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(format!("{} elements", self.doc.model().len()));
+                    });
+                });
+            });
+            egui::Panel::left("outliner")
+                .default_size(220.0)
+                .show(ui, |ui| self.outliner(ui));
+        }
         egui::Panel::right("properties")
-            .default_size(260.0)
-            .show(ui, |ui| self.properties(ui));
+            .default_size(280.0)
+            .frame(
+                egui::Frame::side_top_panel(ui.style())
+                    .inner_margin(egui::Margin::symmetric(14, 12)),
+            )
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    .show(ui, |ui| self.properties(ui))
+            });
 
         egui::CentralPanel::default().show(ui, |ui| {
             let full = ui.available_rect_before_wrap();
@@ -3958,6 +3683,9 @@ impl eframe::App for CreaBimApp {
         for (c, at) in std::mem::take(&mut self.plan.commands) {
             self.run_command(&ctx, c, at);
         }
+        self.open_view_menu();
+        // a plan in its own window keeps egui's menus
+        self.plan.web_menus = false;
 
         if self.placement == PlanPlacement::Window {
             let mut close = false;
