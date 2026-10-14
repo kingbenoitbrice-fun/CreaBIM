@@ -176,8 +176,9 @@ pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
             PlanItem::Label { at, text, .. } => {
                 let p = to(*at);
                 // short tags (grids, section marks) sit in a bubble
-                if text.chars().count() <= 3 {
-                    canvas.circle(p, 2.5, Stroke::solid(0.18, 0.0));
+                if crate::plan::is_bubble(text) {
+                    let r = 2.5 * crate::plan::bubble_scale(text);
+                    canvas.circle(p, r, Stroke::solid(0.18, 0.0));
                 }
                 canvas.text(p, 2.5, text, Anchor::Middle);
             }

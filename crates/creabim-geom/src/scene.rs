@@ -92,7 +92,8 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             | ElementKind::Tag(_)
             | ElementKind::Sketch(_)
             | ElementKind::Cut(_)
-            | ElementKind::Guide(_) => continue,
+            | ElementKind::Guide(_)
+            | ElementKind::GridGroup(_) => continue,
         };
         // a material's colour wins over the element type's default
         let color = creabim_core::material_of(model, e).map_or(color, |(_, m)| m.color);

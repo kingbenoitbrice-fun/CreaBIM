@@ -276,6 +276,18 @@ pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
         return None;
     };
     let shaded = v.style == creabim_core::ViewStyle::Shaded;
+    // what the view leaves out: gone from the model it is drawn from, and
+    // from the drawing (for what has to stay in that model, like levels)
+    let mut hidden = v.hidden.hidden_set(model);
+    // a section never hides its own drawing, even with section marks off
+    hidden.remove(&view);
+    let filtered;
+    let model = if hidden.is_empty() {
+        model
+    } else {
+        filtered = creabim_core::visibility::without(model, &hidden);
+        &filtered
+    };
     let mut d = match &v.kind {
         creabim_core::ViewKind::Plan { level, cut_height } => {
             crate::plan_view(model, *level, *cut_height)
@@ -304,6 +316,9 @@ pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
         }
     }
     d.items.extend(crate::annotate::annotations(model, view, v));
+    if !hidden.is_empty() {
+        d.items.retain(|it| !hidden.contains(&it.id()));
+    }
     Some(d)
 }
 
