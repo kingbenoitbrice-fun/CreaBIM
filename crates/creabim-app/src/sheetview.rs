@@ -2,6 +2,7 @@
 //! Drag a view to move it on the sheet; double-click it to work on the model
 //! through it, with the same tools as the view itself.
 
+use crate::selection::Selection;
 use crate::planview::{self, PaneStyle, PlanState};
 use creabim_core::{Document, ElementId, ElementKind};
 use creabim_geom::paper::{self, Anchor, Canvas, Stroke};
@@ -147,7 +148,7 @@ pub fn show(
     info: &SheetInfo,
     state: &mut SheetState,
     plan: &mut PlanState,
-    selection: &mut Option<ElementId>,
+    selection: &mut Selection,
 ) -> Option<String> {
     let s = sheet::sheet_of(doc.model(), sheet_id)?.clone();
     let title = doc
@@ -216,7 +217,7 @@ pub fn show(
             paper::draw(&mut canvas, &v.drawing, &v.map);
         }
         sheet::draw_view_title(&mut canvas, v);
-        if *selection == Some(v.viewport) && state.active.is_none() {
+        if selection.contains(v.viewport) && state.active.is_none() {
             let (lo, hi) = v.bounds;
             painter.rect_stroke(
                 xf.rect_of(lo, hi).expand(4.0),
@@ -232,7 +233,7 @@ pub fn show(
     let pointer = response.interact_pointer_pos().or(response.hover_pos());
     let selected = views
         .iter()
-        .find(|v| *selection == Some(v.viewport) && state.active.is_none());
+        .find(|v| selection.contains(v.viewport) && state.active.is_none());
     if let Some(v) = selected {
         let crop = match doc.model().get(v.viewport).map(|e| &e.kind) {
             Some(ElementKind::Viewport(vp)) => vp.crop,
@@ -310,10 +311,10 @@ pub fn show(
     if response.double_clicked() {
         state.active = hit.map(|v| v.viewport);
         if state.active.is_some() {
-            *selection = None;
+            selection.clear();
         }
     } else if response.clicked() {
-        *selection = hit.map(|v| v.viewport);
+        selection.set(hit.map(|v| v.viewport));
         state.active = None;
     }
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !plan.busy() {
@@ -331,7 +332,7 @@ pub fn show(
                 _ => v.map.paper,
             };
             state.drag = Some((v.viewport, center, xf.to_paper(p)));
-            *selection = Some(v.viewport);
+            selection.only(v.viewport);
         }
     }
     if let (Some((id, c0, grab)), Some(p)) = (state.drag, pointer) {

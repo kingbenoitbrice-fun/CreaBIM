@@ -1,3 +1,4 @@
+use crate::selection::Selection;
 use crate::camera::OrbitCamera;
 use crate::handles::{self, PaneInput, Ray};
 use crate::icons::{self, Icon};
@@ -25,7 +26,7 @@ use std::collections::HashMap;
 /// (model revision, selection, selected face, drawing shown in 3D, active view)
 type GeometryKey = (
     u64,
-    Option<ElementId>,
+    Selection,
     Option<usize>,
     bool,
     Option<ElementId>,
@@ -67,7 +68,7 @@ impl Default for PaneLayout {
 
 pub struct CreaBimApp {
     doc: Document,
-    selection: Option<ElementId>,
+    selection: Selection,
     /// Selected face when a free mesh is selected (mesh edit mode).
     face: Option<usize>,
     /// What the 2D pane shows: a view (plan, section, elevation, 3D) or a sheet.
@@ -110,7 +111,7 @@ impl CreaBimApp {
             .map(|rs| Viewport3d::new(&rs.device));
         let mut app = Self {
             doc: Document::new(),
-            selection: None,
+            selection: Selection::default(),
             face: None,
             active_view: None,
             sheet: SheetState::default(),
@@ -139,7 +140,7 @@ impl CreaBimApp {
 
     fn load_model(&mut self, model: Model) {
         self.doc = Document::from_model(with_plan_views(model));
-        self.selection = None;
+        self.selection.clear();
         self.face = None;
         self.active_view = None;
         self.sheet = SheetState::default();
@@ -461,6 +462,7 @@ impl CreaBimApp {
         if extrude {
             let sketch = self
                 .selection
+                .active
                 .and_then(|id| self.doc.model().get(id))
                 .is_some_and(|e| matches!(e.kind, ElementKind::Sketch(_)));
             if sketch {
@@ -475,9 +477,10 @@ impl CreaBimApp {
     fn drop_stale_selection(&mut self) {
         if self
             .selection
+            .active
             .is_some_and(|id| self.doc.model().get(id).is_none())
         {
-            self.selection = None;
+            self.selection.clear();
             self.face = None;
         }
         if self
@@ -489,7 +492,7 @@ impl CreaBimApp {
     }
 
     fn delete_selected(&mut self) {
-        let Some(id) = self.selection else { return };
+        let Some(id) = self.selection.active else { return };
         let name = self
             .doc
             .model()
@@ -503,7 +506,7 @@ impl CreaBimApp {
     }
 
     fn extrude_face(&mut self) {
-        let (Some(id), Some(face)) = (self.selection, self.face) else {
+        let (Some(id), Some(face)) = (self.selection.active, self.face) else {
             return;
         };
         let d = self.extrude_distance;
@@ -521,11 +524,11 @@ impl CreaBimApp {
     }
 
     fn extrude_sketch(&mut self) {
-        let Some(id) = self.selection else { return };
+        let Some(id) = self.selection.active else { return };
         let d = self.extrude_distance;
         match crate::sketch::extrude(&mut self.doc, id, d) {
             Ok((mass, cap)) => {
-                self.selection = Some(mass);
+                self.selection.only(mass);
                 self.face = cap;
                 self.status = match cap {
                     Some(_) => format!(
@@ -545,12 +548,12 @@ impl CreaBimApp {
     fn rebuild_geometry(&mut self, rs: &egui_wgpu::RenderState) {
         let key = (
             self.doc.model().revision(),
-            self.selection,
+            self.selection.clone(),
             self.face,
             self.plan_in_3d,
             self.active_view,
         );
-        if self.geometry_key == Some(key) {
+        if self.geometry_key.as_ref() == Some(&key) {
             return;
         }
         self.geometry_key = Some(key);
@@ -561,7 +564,7 @@ impl CreaBimApp {
         let highlight = [0.95, 0.55, 0.20];
         let mut ghost_lines: Vec<(DVec3, DVec3, [f32; 3])> = Vec::new();
         for item in &self.scene {
-            let selected = Some(item.id) == self.selection;
+            let selected = self.selection.contains(item.id);
             if item.ghost {
                 // cutters show as their outline only
                 let c = if selected {
@@ -846,7 +849,7 @@ impl CreaBimApp {
         if response.hovered() && self.plan.modal.is_none() && !ui.ctx().egui_wants_keyboard_input()
         {
             if let (Some(keys), Some(id), Some(grab)) =
-                (planview::start_keys(ui.ctx()), self.selection, hover)
+                (planview::start_keys(ui.ctx()), self.selection.active, hover)
             {
                 self.plan.cancel();
                 match planview::start_modal(
@@ -860,7 +863,7 @@ impl CreaBimApp {
                 ) {
                     Ok((m, target)) => {
                         if target != id {
-                            self.selection = Some(target);
+                            self.selection.only(target);
                             self.face = None;
                         }
                         self.status = format!(
@@ -887,6 +890,7 @@ impl CreaBimApp {
         // handles on the selection, and dragging the selection itself
         let exclude = self
             .selection
+            .active
             .map(|id| planview::joined_with(&self.doc, id))
             .unwrap_or_default();
         self.refresh_snaps_3d(&exclude);
@@ -923,7 +927,7 @@ impl CreaBimApp {
                     &mut self.doc,
                     &painter,
                     &response,
-                    self.selection,
+                    self.selection.active,
                     self.face,
                     &mut self.handle_drag,
                     &input,
@@ -971,7 +975,7 @@ impl CreaBimApp {
                     })
                     .min_by(|x, y| x.1.total_cmp(&y.1));
                 if let Some((id, _)) = near_sketch {
-                    self.selection = Some(id);
+                    self.selection.only(id);
                     self.face = None;
                     return;
                 }
@@ -980,12 +984,12 @@ impl CreaBimApp {
                 // guides cross everything, so they only take clicks that miss
                 if hit.is_none() {
                     if let Some(id) = self.guide_near(p, &project) {
-                        self.selection = Some(id);
+                        self.selection.only(id);
                         self.face = None;
                         return;
                     }
                 }
-                self.selection = hit.map(|h| h.id);
+                self.selection.set(hit.map(|h| h.id));
                 self.face = hit.and_then(|h| match self.doc.model().get(h.id).map(|e| &e.kind) {
                     Some(ElementKind::FreeMesh(m)) => {
                         let ev = m.evaluated();
@@ -1025,6 +1029,7 @@ impl CreaBimApp {
             });
         let of_selection = self
             .selection
+            .active
             .and_then(|id| match m.get(id).map(|e| &e.kind) {
                 Some(ElementKind::Wall(w)) => Some(w.level),
                 Some(ElementKind::Slab(s)) => Some(s.level),
@@ -1097,7 +1102,7 @@ impl CreaBimApp {
                     painter.circle_stroke(c, 6.0, stroke);
                 }
                 if response.clicked() {
-                    let mut sel = self.selection;
+                    let mut sel = self.selection.clone();
                     let mut state = std::mem::take(&mut self.plan);
                     let r = planview::plan_tool(
                         &mut self.doc,
@@ -1214,7 +1219,7 @@ impl CreaBimApp {
             .map(|(a, b)| (a.truncate(), b.truncate()));
         }
         if response.clicked() {
-            let mut sel = self.selection;
+            let mut sel = self.selection.clone();
             let mut state = std::mem::take(&mut self.plan);
             state.pending = self.pending_3d.filter(|(_, l)| *l == level).map(|(p, _)| p);
             let r = planview::plan_tool(&mut self.doc, level, tool, p, &mut state, &mut sel);
@@ -1350,7 +1355,7 @@ impl CreaBimApp {
             let ElementKind::Guide(g) = &e.kind else {
                 continue;
             };
-            let stroke = if self.selection == Some(e.id) {
+            let stroke = if self.selection.contains(e.id) {
                 egui::Stroke::new(2.0, Color32::from_rgb(242, 140, 51))
             } else {
                 egui::Stroke::new(1.0, planview::GUIDE_COLOR)
@@ -1358,7 +1363,7 @@ impl CreaBimApp {
             draw_guide_3d(painter, project, g.a, g.b, stroke);
         }
         for (id, a, b) in creabim_geom::scene::sketch_lines(self.doc.model()) {
-            let selected = self.selection == Some(id);
+            let selected = self.selection.contains(id);
             let stroke = if selected {
                 egui::Stroke::new(2.5, Color32::from_rgb(242, 140, 51))
             } else {
@@ -1449,7 +1454,7 @@ impl CreaBimApp {
             };
             match d.finish(&mut app.doc, closed) {
                 Ok(Some(id)) => {
-                    app.selection = Some(id);
+                    app.selection.only(id);
                     app.face = None;
                     app.status =
                         "Sketch added. Press E to extrude it into a mass, or G to move it.".into();
@@ -1491,7 +1496,7 @@ impl CreaBimApp {
 
     fn show_plan(&mut self, ui: &mut egui::Ui, rect: Rect, background: Color32) {
         let Some(view) = self.active_view else { return };
-        let (before, revision) = (self.selection, self.doc.model().revision());
+        let (before, revision) = (self.selection.clone(), self.doc.model().revision());
         let schedule = match self.view(view).map(|v| &v.kind) {
             Some(ViewKind::Schedule { category }) => Some(*category),
             _ => None,
@@ -1961,7 +1966,7 @@ impl CreaBimApp {
         let r = self
             .doc
             .commit(Transaction::new("Place view on sheet").insert(e));
-        self.selection = Some(id);
+        self.selection.only(id);
         self.report(
             r,
             "Placed the view. Drag it to where it belongs on the sheet.",
@@ -1981,7 +1986,7 @@ impl CreaBimApp {
         let id = e.id;
         let r = self.doc.commit(Transaction::new("New sheet").insert(e));
         self.active_view = Some(id);
-        self.selection = Some(id);
+        self.selection.only(id);
         self.report(
             r,
             "New A3 sheet. Use Place view… in the toolbar to put views on it.",
@@ -2084,8 +2089,8 @@ impl CreaBimApp {
                 .body(|ui| {
                     for (id, name) in items {
                         let icon = self.doc.model().get(id).map_or(Icon::Mass, Icon::of);
-                        if icons::row(ui, icon, self.selection == Some(id), &name).clicked() {
-                            self.selection = Some(id);
+                        if icons::row(ui, icon, self.selection.contains(id), &name).clicked() {
+                            self.selection.only(id);
                             self.face = None;
                             if opens {
                                 self.active_view = Some(id);
@@ -2187,13 +2192,13 @@ impl CreaBimApp {
             self.report(r, "Subtracted. Move the ghost to change the cut.");
         }
         if let Some(c) = select {
-            self.selection = Some(c);
+            self.selection.only(c);
         }
     }
 
     fn properties(&mut self, ui: &mut egui::Ui) {
         ui.heading("Properties");
-        let Some(id) = self.selection else {
+        let Some(id) = self.selection.active else {
             ui.label(
                 "Nothing selected. Click an element in the plan, the 3D view or the model list.",
             );
@@ -2537,7 +2542,7 @@ impl CreaBimApp {
                     label = "Move tag"
                 }
                 if ui.button("Select the tagged element").clicked() {
-                    self.selection = Some(t.host);
+                    self.selection.only(t.host);
                 }
             }
             ElementKind::Grid(g) => {
