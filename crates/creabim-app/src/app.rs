@@ -1,4 +1,5 @@
 use crate::camera::OrbitCamera;
+use crate::commands::Command;
 use crate::handles::{self, PaneInput, Ray};
 use crate::icons::{self, Icon};
 use crate::modal::{Outcome, PaneMap, Space};
@@ -97,6 +98,8 @@ pub struct CreaBimApp {
     snaps_3d: Option<(u64, Vec<ElementId>, Snapper)>,
     /// First click of a two-click tool in the 3D view, on a level.
     pending_3d: Option<(DVec2, ElementId)>,
+    /// Where the 3D right-click menu was opened.
+    menu_at_3d: Option<DVec3>,
     extrude_distance: f64,
     path: String,
     status: String,
@@ -141,6 +144,7 @@ impl CreaBimApp {
             box_3d: None,
             snaps_3d: None,
             pending_3d: None,
+            menu_at_3d: None,
             extrude_distance: 1.0,
             path: "project.creabim".into(),
             watch: Default::default(),
@@ -470,6 +474,79 @@ impl CreaBimApp {
         };
     }
 
+    /// Run an edit picked from a key, a button or a menu. `at` is where a
+    /// right-click menu was opened.
+    fn run_command(&mut self, ctx: &egui::Context, c: Command, at: Option<DVec3>) {
+        if let Some(m) = c.modal() {
+            if self.selection.is_some() {
+                self.plan.cancel();
+                self.plan.armed = Some(m);
+                self.status = format!(
+                    "{}: point at a view and move the pointer, then click to finish. Right-click cancels.",
+                    c.label()
+                );
+            } else {
+                self.status = "Select something first.".into();
+            }
+            return;
+        }
+        match c {
+            Command::Copy | Command::Cut => {
+                if self.copy_selected() {
+                    let n = self.clipboard.len();
+                    ctx.copy_text(self.clipboard_text());
+                    if c == Command::Cut {
+                        self.delete_selected();
+                        self.status = format!("Cut {n} elements. Ctrl+V pastes them back.");
+                    } else {
+                        self.status = format!("Copied {n} elements. Ctrl+V pastes them.");
+                    }
+                }
+            }
+            Command::Paste => {
+                if self.clipboard.is_empty() {
+                    self.status = "Nothing copied yet.".into();
+                } else {
+                    self.paste(self.clipboard.clone());
+                }
+            }
+            Command::Delete => self.delete_selected(),
+            Command::Hide => self.hide_selected(),
+            Command::Isolate => self.isolate_selected(),
+            Command::ShowAll => self.show_all(),
+            Command::SelectAll => self.select_all(),
+            Command::SelectNone => {
+                self.selection.clear();
+                self.face = None;
+            }
+            Command::Undo => {
+                let label = self.doc.undo_label().map(str::to_owned);
+                if self.doc.undo() {
+                    self.status = format!("Undid: {}", label.unwrap_or_default());
+                    self.drop_stale_selection();
+                }
+            }
+            Command::Redo => {
+                let label = self.doc.redo_label().map(str::to_owned);
+                if self.doc.redo() {
+                    self.status = format!("Redid: {}", label.unwrap_or_default());
+                    self.drop_stale_selection();
+                }
+            }
+            Command::CursorHere => {
+                if let Some(p) = at {
+                    self.plan.cursor = Some(p);
+                    self.plan.pivot = crate::modal::Pivot::Cursor;
+                    self.status = format!(
+                        "Pivot cursor at {:.2}, {:.2}, {:.2}. Rotate and scale now turn about it.",
+                        p.x, p.y, p.z
+                    );
+                }
+            }
+            Command::Move | Command::Rotate | Command::Scale | Command::Duplicate => {}
+        }
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context) {
         if ctx.egui_wants_keyboard_input() {
             return;
@@ -527,33 +604,17 @@ impl CreaBimApp {
         }
         for e in &events {
             match e {
-                egui::Event::Copy | egui::Event::Cut => {
-                    if self.copy_selected() {
-                        let n = self.clipboard.len();
-                        ctx.copy_text(self.clipboard_text());
-                        if matches!(e, egui::Event::Cut) {
-                            self.delete_selected();
-                            self.status = format!("Cut {n} elements. Ctrl+V pastes them back.");
-                        } else {
-                            self.status = format!("Copied {n} elements. Ctrl+V pastes them.");
-                        }
-                    }
-                }
+                egui::Event::Copy => self.run_command(ctx, Command::Copy, None),
+                egui::Event::Cut => self.run_command(ctx, Command::Cut, None),
                 egui::Event::Paste(text) => self.paste_text(text),
                 _ => {}
             }
         }
         if undo {
-            let label = self.doc.undo_label().map(str::to_owned);
-            if self.doc.undo() {
-                self.status = format!("Undid: {}", label.unwrap_or_default());
-            }
+            self.run_command(ctx, Command::Undo, None);
         }
         if redo {
-            let label = self.doc.redo_label().map(str::to_owned);
-            if self.doc.redo() {
-                self.status = format!("Redid: {}", label.unwrap_or_default());
-            }
+            self.run_command(ctx, Command::Redo, None);
         }
         if delete {
             self.delete_selected();
@@ -864,14 +925,9 @@ impl CreaBimApp {
             indices.extend(item.mesh.indices.iter().map(|i| i + base));
         }
 
-        // ground grid, 1 m spacing
-        let lo = self
-            .scene
-            .iter()
-            .filter_map(|s| s.mesh.bounds())
-            .map(|b| b.0.z)
-            .fold(0.0f32, f32::min)
-            - 0.01;
+        // the working grid, 1 m spacing, just under the level the 3D tools
+        // draw on, so it stays put whatever the model's lowest point is
+        let lo = self.work_level().map_or(0.0, |(_, z)| z as f32) - 0.002;
         let mut lines = Vec::new();
         for (a, b, c) in &ghost_lines {
             lines.push(line_vertex(a.as_vec3().to_array(), *c));
@@ -1078,6 +1134,7 @@ impl CreaBimApp {
             };
             let ctx = ui.ctx().clone();
             if let Some(m) = self.plan.modal.as_mut() {
+                m.panel(&ctx, rect);
                 match m.update(&mut self.doc, &ctx, &painter, hover, &map) {
                     Outcome::Running(s) => self.status = s,
                     Outcome::Done(s) | Outcome::Cancelled(s) => {
@@ -1092,11 +1149,12 @@ impl CreaBimApp {
         if response.hovered() && self.plan.modal.is_none() && !ui.ctx().egui_wants_keyboard_input()
         {
             if let (Some(keys), true, Some(grab)) = (
-                planview::start_keys(ui.ctx()),
+                planview::start_keys(ui.ctx()).or(self.plan.armed),
                 self.selection.is_some(),
                 hover,
             ) {
                 self.plan.cancel();
+                self.plan.armed = None;
                 let ids = self.selection.all();
                 match planview::start_modal(
                     &mut self.doc,
@@ -1123,6 +1181,44 @@ impl CreaBimApp {
                     Err(e) => self.status = e,
                 }
                 return;
+            }
+        }
+
+        // Esc or right-click steps back: drop the tool's clicks, then the
+        // tool; in Select, right-click opens the menu
+        if self.plan.sketch.is_none() && self.plan.outline.is_none() {
+            let (esc, shift) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.modifiers.shift));
+            let esc = esc && response.hovered() && !ui.ctx().egui_wants_keyboard_input();
+            let right = response.secondary_clicked() && !shift;
+            if esc || right {
+                if self.pending_3d.take().is_some() {
+                    self.plan.cancel();
+                    self.status = "Cancelled. Right-click or Esc again to leave the tool.".into();
+                } else if !self.plan.step_back() && right && self.plan.tool == Tool::Select {
+                    if let Some(p) = response.interact_pointer_pos() {
+                        let (o, d) = ray(p);
+                        let hit = pick::pick(&self.scene, o.as_vec3(), d.as_vec3());
+                        if let Some(h) = hit.as_ref().filter(|h| !self.selection.contains(h.id)) {
+                            self.selection.only(h.id);
+                            self.face = None;
+                        }
+                        self.menu_at_3d = hit
+                            .map(|h| o + d * h.t as f64)
+                            .or_else(|| Workplane::ground(0.0).intersect(o, d));
+                    }
+                }
+            }
+            if self.plan.tool == Tool::Select {
+                let n = self.selection.len();
+                let at = self.menu_at_3d;
+                let mut picked = None;
+                response.context_menu(|ui| picked = crate::commands::context_menu(ui, n));
+                if let Some(c) = picked {
+                    match c.modal() {
+                        Some(m) => self.plan.armed = Some(m),
+                        None => self.plan.commands.push((c, at)),
+                    }
+                }
             }
         }
 
@@ -3424,6 +3520,12 @@ impl eframe::App for CreaBimApp {
         egui::Panel::top("menu").show(ui, |ui| {
             self.menu(ui);
             self.toolbar(ui);
+            ui.horizontal(|ui| {
+                let some = self.selection.is_some();
+                if let Some(c) = crate::commands::modify_bar(ui, some) {
+                    self.run_command(&ctx, c, None);
+                }
+            });
         });
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -3479,6 +3581,9 @@ impl eframe::App for CreaBimApp {
 
         if let Some(s) = self.plan.status.take() {
             self.status = s;
+        }
+        for (c, at) in std::mem::take(&mut self.plan.commands) {
+            self.run_command(&ctx, c, at);
         }
 
         if self.placement == PlanPlacement::Window {

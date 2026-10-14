@@ -3,6 +3,7 @@
 //! and any other open view update at once.
 
 use crate::boxsel;
+use crate::commands::Command;
 use crate::handles::{self, PaneInput};
 use crate::modal::{self, Modal, Mode, Outcome, PaneMap, Space};
 use crate::selection::Selection;
@@ -186,6 +187,14 @@ pub struct PlanState {
     pub pivot: modal::Pivot,
     /// The pivot cursor, placed with Shift+right-click.
     pub cursor: Option<DVec3>,
+    /// A move, rotate or scale picked from a button or menu, started by the
+    /// next view the pointer is over: (mode, copy first).
+    pub armed: Option<(Mode, bool)>,
+    /// Commands picked from a view's right-click menu, run by the app, with
+    /// the model point the menu was opened at.
+    pub commands: Vec<(Command, Option<DVec3>)>,
+    /// Where the right-click menu was opened, in the model.
+    menu_at: Option<DVec3>,
 }
 
 impl Default for PlanState {
@@ -209,6 +218,9 @@ impl Default for PlanState {
             boxsel: None,
             pivot: modal::Pivot::default(),
             cursor: None,
+            armed: None,
+            commands: vec![],
+            menu_at: None,
         }
     }
 }
@@ -222,6 +234,34 @@ impl PlanState {
         self.sketch = None;
         self.guide_edge = None;
         self.outline = None;
+    }
+
+    /// Is a tool part way through, with clicks to undo?
+    pub fn has_input(&self) -> bool {
+        self.pending.is_some()
+            || !self.dim.is_empty()
+            || self.tag_host.is_some()
+            || self.sketch.is_some()
+            || self.guide_edge.is_some()
+            || self.outline.is_some()
+            || self.armed.is_some()
+    }
+
+    /// Esc or right-click: drop what the tool has so far, or else leave the
+    /// tool for Select. False when there was nothing to step back from.
+    pub fn step_back(&mut self) -> bool {
+        if self.has_input() {
+            self.cancel();
+            self.armed = None;
+            self.status = Some("Cancelled. Right-click or Esc again to leave the tool.".into());
+            true
+        } else if self.tool != Tool::Select {
+            self.tool = Tool::Select;
+            self.status = Some("Back to Select.".into());
+            true
+        } else {
+            false
+        }
     }
 
     /// Is a tool waiting for more clicks?
@@ -719,8 +759,38 @@ pub fn show(
     if let (Some(space), Some(c)) = (space, state.cursor) {
         draw_cursor(&painter, xf.to_screen(model_to_pane(space, c)));
     }
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) || response.secondary_clicked() {
-        state.cancel();
+    let right = response.secondary_clicked() && !shift;
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !ui.ctx().egui_wants_keyboard_input() {
+        state.step_back();
+    }
+    if right && !state.step_back() && tool == Tool::Select {
+        // right-click on something not yet selected selects it first
+        if let Some(p) = response.interact_pointer_pos() {
+            let raw = xf.to_world(p);
+            let hit = hit_test(&plan.items, raw, 6.0 / scale as f64, mm)
+                .or_else(|| ray_pick(doc, view, kind, raw));
+            if let Some(id) = hit.filter(|id| !selection.contains(*id)) {
+                selection.only(id);
+            }
+            let level_z = match kind {
+                PaneKind::Plan { level } => doc.model().level(level).map_or(0.0, |l| l.elevation),
+                _ => 0.0,
+            };
+            let w = hover_world.unwrap_or(raw);
+            state.menu_at = space.map(|space| pane_to_model(space, w, level_z));
+        }
+    }
+    if tool == Tool::Select && state.modal.is_none() {
+        let n = selection.len();
+        let at = state.menu_at;
+        response.context_menu(|ui| {
+            if let Some(c) = crate::commands::context_menu(ui, n) {
+                match c.modal() {
+                    Some(m) => state.armed = Some(m),
+                    None => state.commands.push((c, at)),
+                }
+            }
+        });
     }
     if let (PaneKind::Section { .. }, Some(a), Some(b)) = (kind, state.pending, hover_world) {
         if matches!(tool, Tool::Section | Tool::Elevation) {
@@ -1295,6 +1365,7 @@ fn keyboard_edits(
     map: &PaneMap,
 ) -> Option<Option<String>> {
     if let Some(m) = state.modal.as_mut().filter(|m| m.pane == Some(view)) {
+        m.panel(ui.ctx(), response.rect);
         match m.update(doc, ui.ctx(), painter, response.hover_pos(), map) {
             Outcome::Running(s) => state.status = Some(s),
             Outcome::Done(s) | Outcome::Cancelled(s) => {
@@ -1308,8 +1379,9 @@ fn keyboard_edits(
         return None;
     }
     selection.active?;
-    let mode = start_keys(ui.ctx())?;
+    let mode = start_keys(ui.ctx()).or(state.armed)?;
     let grab = response.hover_pos()?;
+    state.armed = None;
     state.cancel();
     let ids = selection.all();
     match start_modal(

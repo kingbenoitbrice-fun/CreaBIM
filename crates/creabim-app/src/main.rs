@@ -3,6 +3,7 @@
 mod app;
 mod boxsel;
 mod camera;
+mod commands;
 mod files;
 mod handles;
 mod icons;

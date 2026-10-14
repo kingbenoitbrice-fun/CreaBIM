@@ -167,6 +167,8 @@ pub struct Modal {
     shown: String,
     /// Elements left out because they can't take this edit.
     skipped: usize,
+    /// Finish or Cancel pressed on the on-screen panel.
+    ask: Option<bool>,
 }
 
 pub enum Outcome {
@@ -227,6 +229,7 @@ impl Modal {
                     duplicated: false,
                     shown: String::new(),
                     skipped: 0,
+                    ask: None,
                 });
             }
         }
@@ -309,6 +312,7 @@ impl Modal {
             duplicated: false,
             shown: String::new(),
             skipped,
+            ask: None,
         })
     }
 
@@ -335,7 +339,11 @@ impl Modal {
         if let Some(p) = pointer {
             self.pointer = p;
         }
-        for e in &events {
+        // a click on the on-screen panel isn't a click in the view
+        let confirm = confirm && pointer.is_some();
+        let cancel = cancel && pointer.is_some();
+        let typing = ctx.egui_wants_keyboard_input();
+        for e in events.iter().filter(|_| !typing) {
             if let egui::Event::Text(t) = e {
                 for c in t.chars() {
                     match c.to_ascii_lowercase() {
@@ -348,10 +356,10 @@ impl Modal {
                 }
             }
         }
-        if backspace {
+        if backspace && !typing {
             self.typed.pop();
         }
-        if escape || cancel {
+        if escape || cancel || self.ask == Some(false) {
             self.cancel(doc);
             return Outcome::Cancelled(format!("{} cancelled.", self.mode.verb()));
         }
@@ -370,7 +378,7 @@ impl Modal {
             1 => " (1 selected element can't take this and stays put)".into(),
             n => format!(" ({n} selected elements can't take this and stay put)"),
         };
-        if enter || confirm {
+        if enter || confirm || self.ask == Some(true) {
             let done = format!("{}{skipped}. Ctrl+Z to undo.", self.shown);
             return Outcome::Done(done);
         }
@@ -388,6 +396,63 @@ impl Modal {
                 ", Ctrl snaps"
             }
         ))
+    }
+
+    /// The on-screen panel while the edit runs, for working without the
+    /// keyboard: axis buttons, a value box, Finish and Cancel.
+    pub fn panel(&mut self, ctx: &egui::Context, rect: egui::Rect) {
+        egui::Area::new(egui::Id::new("modal_panel"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::CENTER_BOTTOM)
+            .fixed_pos(rect.center_bottom() - egui::vec2(0.0, 28.0))
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(self.mode.verb()).strong());
+                        ui.separator();
+                        let axes: &[Axis] = match (self.mode, self.face.is_some()) {
+                            (Mode::Rotate, true) => &[],
+                            _ => &Axis::ALL,
+                        };
+                        if !axes.is_empty() {
+                            if ui.selectable_label(self.axis.is_none(), "Free").clicked() {
+                                self.axis = None;
+                            }
+                            for a in axes {
+                                let name = match (self.mode, a) {
+                                    (Mode::Rotate, Axis::X) => "Tilt X",
+                                    (Mode::Rotate, Axis::Y) => "Tilt Y",
+                                    (Mode::Rotate, Axis::Z) => "Turn",
+                                    (_, Axis::X) => "X",
+                                    (_, Axis::Y) => "Y",
+                                    (_, Axis::Z) => "Z",
+                                };
+                                if ui.selectable_label(self.axis == Some(*a), name).clicked() {
+                                    self.toggle(*a);
+                                }
+                            }
+                            ui.separator();
+                        }
+                        ui.label(match self.mode {
+                            Mode::Move => "Distance",
+                            Mode::Rotate => "Angle",
+                            Mode::Scale => "Factor",
+                        });
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.typed)
+                                .desired_width(60.0)
+                                .hint_text("type"),
+                        );
+                        ui.separator();
+                        if ui.button("✔ Finish").clicked() {
+                            self.ask = Some(true);
+                        }
+                        if ui.button("✖ Cancel").clicked() {
+                            self.ask = Some(false);
+                        }
+                    });
+                });
+            });
     }
 
     fn toggle(&mut self, a: Axis) {
