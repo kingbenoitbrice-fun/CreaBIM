@@ -226,6 +226,13 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
         }
         ElementKind::Sketch(s) => match t {
             Xform::Stretch { .. } => {
+                // curves and dimensions don't survive uneven scaling
+                if s.circle.is_some()
+                    || !s.constraints.is_empty()
+                    || s.kinds.iter().any(|k| *k != crate::SegmentKind::Line)
+                {
+                    return None;
+                }
                 // a stretched plane is still a plane: refit its axes
                 let z = DVec3::Z * elevation(s.level);
                 let pts: Vec<DVec3> = s
@@ -247,9 +254,7 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
                 s.plane.x = t.direction(s.plane.x);
                 s.plane.y = t.direction(s.plane.y);
                 if let Xform::Scale { factor, .. } = t {
-                    for p in &mut s.points {
-                        *p *= *factor;
-                    }
+                    s.scale(*factor);
                 }
             }
         },

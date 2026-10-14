@@ -2,8 +2,8 @@
 //! drawn with architectural symbols, everything below shown in projection.
 
 use crate::wall::Cut;
-use creabim_core::{ElementId, ElementKind, Model, OpeningKind};
-use glam::DVec2;
+use creabim_core::{Curve, ElementId, ElementKind, Model, OpeningKind};
+use glam::{DVec2, DVec3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pen {
@@ -534,6 +534,69 @@ impl PlanView {
 }
 
 /// Generate the plan of one level, cut `cut_height` metres above it.
+/// A sketch's lines and arcs in a drawing. `project` takes a point in the
+/// sketch's model coordinates (relative to its level) to drawing x and y,
+/// plus depth. Arcs on a plane facing the drawing stay arcs; seen at an
+/// angle they are drawn in short pieces.
+pub fn sketch_items(
+    id: ElementId,
+    sk: &creabim_core::Sketch,
+    project: &dyn Fn(DVec3) -> DVec3,
+) -> Vec<PlanItem> {
+    let at = |p: DVec2| project(sk.plane.to_model(p)).truncate();
+    let o = at(DVec2::ZERO);
+    let (x, y) = (at(DVec2::X) - o, at(DVec2::Y) - o);
+    let facing =
+        (x.length() - 1.0).abs() < 1e-6 && (y.length() - 1.0).abs() < 1e-6 && x.dot(y).abs() < 1e-6;
+    let mut out = Vec::new();
+    for c in sk.curves() {
+        match c {
+            Curve::Arc {
+                center,
+                radius,
+                start,
+                sweep,
+            } if facing => {
+                // seen from behind, the arc turns the other way
+                let flip = x.perp_dot(y) < 0.0;
+                let a0 = if flip {
+                    x.to_angle() - start
+                } else {
+                    x.to_angle() + start
+                };
+                let sweep = if flip { -sweep } else { sweep };
+                let (start, end) = if sweep < 0.0 {
+                    (a0 + sweep, a0)
+                } else {
+                    (a0, a0 + sweep)
+                };
+                out.push(PlanItem::Arc {
+                    id,
+                    pen: Pen::Symbol,
+                    center: at(center),
+                    radius,
+                    start,
+                    end,
+                });
+            }
+            _ => {
+                for w in c.points().windows(2) {
+                    let (a, b) = (at(w[0]), at(w[1]));
+                    if a.distance(b) > 1e-6 {
+                        out.push(PlanItem::Line {
+                            id,
+                            pen: Pen::Symbol,
+                            a,
+                            b,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
     let mut items = Vec::new();
     let joins = creabim_core::wall_joins(model);
@@ -675,16 +738,7 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                 );
             }
             ElementKind::Sketch(sk) if sk.level == Some(level) => {
-                for (a, b) in sk.segments() {
-                    if a.truncate().distance(b.truncate()) > 1e-6 {
-                        items.push(PlanItem::Line {
-                            id: e.id,
-                            pen: Pen::Symbol,
-                            a: a.truncate(),
-                            b: b.truncate(),
-                        });
-                    }
-                }
+                items.extend(sketch_items(e.id, sk, &|p| p));
             }
             ElementKind::Guide(g) if g.level.is_none_or(|l| l == level) => {
                 if let Some((a, b)) = guide_span(g.a.truncate(), g.b.truncate()) {

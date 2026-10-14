@@ -468,7 +468,6 @@ const ACCENT: Color32 = Color32::from_rgb(230, 120, 30);
 /// Draw the selected element's handles and run a drag on them (or on the
 /// element itself). Returns `true` while a drag runs, so the pane leaves
 /// the pointer alone, and puts a message for the status bar in `status`.
-#[allow(clippy::too_many_arguments)]
 /// Add a corner in the middle of a slab edge, or take a corner away.
 pub fn edit_corners(doc: &mut Document, id: ElementId, kind: HandleKind) -> Result<String, String> {
     let Some(ElementKind::Slab(s)) = doc.model().get(id).map(|e| &e.kind) else {
@@ -505,6 +504,7 @@ pub fn edit_corners(doc: &mut Document, id: ElementId, kind: HandleKind) -> Resu
     Ok(format!("{done} Ctrl+Z to undo."))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn interact(
     doc: &mut Document,
     painter: &Painter,
@@ -672,7 +672,7 @@ pub fn interact(
         (Constraint::Line { point, dir }, Some((p, snap)))
             if matches!(
                 snap.kind,
-                SnapKind::Endpoint | SnapKind::Midpoint | SnapKind::Intersection
+                SnapKind::Endpoint | SnapKind::Midpoint | SnapKind::Center | SnapKind::Intersection
             ) =>
         {
             if let Some(at) = (input.project)(p) {

@@ -1,3 +1,4 @@
+pub use crate::sketch::Sketch;
 use crate::{
     editmesh::EditMesh,
     modifiers::{Evaluated, Modifier},
@@ -211,23 +212,7 @@ impl Element {
                     Err("tag position must be finite".into())
                 }
             }
-            ElementKind::Sketch(s) => {
-                let p = &s.plane;
-                let square = (p.x.length() - 1.0).abs() < 1e-6
-                    && (p.y.length() - 1.0).abs() < 1e-6
-                    && p.x.dot(p.y).abs() < 1e-6;
-                if !(square && p.origin.is_finite()) {
-                    return Err("sketch plane needs perpendicular unit axes".into());
-                }
-                if s.points.iter().any(|q| !q.is_finite()) {
-                    return Err("sketch points must be finite".into());
-                }
-                match (s.points.len(), s.closed) {
-                    (0 | 1, _) => Err("a sketch needs at least 2 points".into()),
-                    (2, true) => Err("a closed sketch needs at least 3 points".into()),
-                    _ => Ok(()),
-                }
-            }
+            ElementKind::Sketch(s) => s.check(),
             ElementKind::Cut(c) => {
                 if c.target == c.cutter {
                     Err("an element can't cut itself".into())
@@ -606,68 +591,6 @@ impl Workplane {
     }
 }
 
-/// Lines drawn on a workplane: a profile to extrude into a mass, or
-/// construction lines. The plane's origin is relative to the level's
-/// elevation, like a mass's, so sketches move with their level.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Sketch {
-    pub level: Option<ElementId>,
-    pub plane: Workplane,
-    /// Corners in the plane's axes.
-    pub points: Vec<DVec2>,
-    /// The last point joins the first.
-    pub closed: bool,
-}
-
-impl Sketch {
-    /// The corners in model coordinates, relative to the level's elevation.
-    pub fn model_points(&self) -> Vec<DVec3> {
-        self.points
-            .iter()
-            .map(|p| self.plane.to_model(*p))
-            .collect()
-    }
-
-    /// Each line of the sketch as a pair of corners in model coordinates.
-    pub fn segments(&self) -> Vec<(DVec3, DVec3)> {
-        let pts = self.model_points();
-        let n = pts.len();
-        let count = if self.closed { n } else { n.saturating_sub(1) };
-        (0..count).map(|i| (pts[i], pts[(i + 1) % n])).collect()
-    }
-
-    /// The profile pushed `distance` along the plane's normal: a closed solid
-    /// for a closed sketch, a surface (to solidify) for an open one. Vertices
-    /// are relative to the plane's origin, ready for a mass placed there.
-    pub fn extrude(&self, distance: f64) -> EditMesh {
-        let mut pts = self.points.clone();
-        if self.closed && crate::polygon::signed_area2(&pts) < 0.0 {
-            pts.reverse();
-        }
-        let n = self.plane.normal() * distance;
-        let flat = |p: DVec2| self.plane.x * p.x + self.plane.y * p.y;
-        let m = pts.len() as u32;
-        let mut mesh = EditMesh::default();
-        mesh.vertices.extend(pts.iter().map(|p| flat(*p)));
-        mesh.vertices.extend(pts.iter().map(|p| flat(*p) + n));
-        let edges = if self.closed { m } else { m - 1 };
-        for i in 0..edges {
-            let j = (i + 1) % m;
-            mesh.faces.push(vec![i, j, j + m, i + m]);
-        }
-        if self.closed {
-            mesh.faces.insert(0, (0..m).rev().collect());
-            mesh.faces.insert(1, (m..2 * m).collect());
-        }
-        if distance < 0.0 {
-            for f in &mut mesh.faces {
-                f.reverse();
-            }
-        }
-        mesh
-    }
-}
-
 /// A drawing of the model. Views live in the model like any element, so they
 /// are saved, undone and (later) placed on sheets. Their drawings are always
 /// generated from the current model, never stored.
@@ -862,58 +785,3 @@ pub const FREE_MESH_CLASSES: &[&str] = &[
     "IfcCovering",
     "IfcFurniture",
 ];
-
-#[cfg(test)]
-mod sketch_tests {
-    use super::*;
-
-    fn l_shape(plane: Workplane, closed: bool) -> Sketch {
-        Sketch {
-            level: None,
-            plane,
-            points: vec![
-                DVec2::new(0.0, 0.0),
-                DVec2::new(4.0, 0.0),
-                DVec2::new(4.0, 2.0),
-                DVec2::new(2.0, 2.0),
-                DVec2::new(2.0, 4.0),
-                DVec2::new(0.0, 4.0),
-            ],
-            closed,
-        }
-    }
-
-    #[test]
-    fn workplanes_on_walls_keep_their_x_axis_level() {
-        let p = Workplane::facing(DVec3::new(1.0, 2.0, 3.0), DVec3::new(0.0, -1.0, 0.0));
-        assert!(p.x.z.abs() < 1e-12 && p.normal().distance(-DVec3::Y) < 1e-12);
-        let q = DVec3::new(4.0, 2.0, 7.0);
-        assert!(p.to_model(p.to_plane(q)).distance(q) < 1e-12);
-        let hit = p.intersect(DVec3::new(0.0, -5.0, 0.0), DVec3::Y).unwrap();
-        assert!((hit.y - 2.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn a_closed_sketch_extrudes_into_a_solid_on_any_plane() {
-        for plane in [
-            Workplane::ground(0.0),
-            Workplane::facing(DVec3::ZERO, DVec3::new(1.0, 1.0, 0.5)),
-        ] {
-            for d in [2.0, -2.0] {
-                let m = l_shape(plane, true).extrude(d);
-                m.validate().unwrap();
-                assert!((m.volume() - 24.0).abs() < 1e-9, "{d}");
-                // the concave caps triangulate with n - 2 triangles each
-                let caps: Vec<_> = (0..2).map(|f| m.face_triangles(f)).collect();
-                assert!(caps.iter().all(|t| t.len() == 4));
-            }
-        }
-    }
-
-    #[test]
-    fn an_open_sketch_extrudes_into_a_surface() {
-        let m = l_shape(Workplane::ground(0.0), false).extrude(3.0);
-        assert_eq!(m.faces.len(), 5);
-        assert_eq!(m.vertices.len(), 12);
-    }
-}
