@@ -1051,6 +1051,7 @@ impl Builder {
                             sill: sill.max(0.0),
                             width,
                             height,
+                            material,
                         }),
                     });
                     continue;

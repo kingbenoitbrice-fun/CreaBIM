@@ -36,6 +36,7 @@ fn door(host: ElementId) -> Element {
             sill: 0.0,
             width: 0.9,
             height: 2.1,
+            material: None,
         }),
     )
 }

@@ -31,12 +31,7 @@ pub fn marks(model: &Model) -> HashMap<ElementId, String> {
 
 /// The material an element is made of, if it has one and it still exists.
 pub fn material_of<'a>(model: &'a Model, e: &Element) -> Option<(&'a Element, &'a Material)> {
-    let id = match &e.kind {
-        ElementKind::Wall(w) => w.material,
-        ElementKind::Slab(s) => s.material,
-        ElementKind::FreeMesh(m) => m.material,
-        k => crate::members::material(k),
-    }?;
+    let id = crate::library::material_slot(e)??;
     let m = model.get(id)?;
     match &m.kind {
         ElementKind::Material(mat) => Some((m, mat)),

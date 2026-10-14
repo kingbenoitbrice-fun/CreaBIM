@@ -3116,6 +3116,9 @@ impl CreaBimApp {
                 if num(ui, "Offset along wall", &mut o.offset, 0.0, 1e4) {
                     label = "Move opening"
                 }
+                if self.material_combo(ui, &mut o.material) {
+                    label = "Material";
+                }
             }
             ElementKind::View(v) if matches!(v.kind, ViewKind::Schedule { .. }) => {
                 if let ViewKind::Schedule { category } = &mut v.kind {

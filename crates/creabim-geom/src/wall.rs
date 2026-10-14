@@ -164,6 +164,7 @@ mod tests {
             sill,
             width: w,
             height: h,
+            material: None,
         }
     }
 

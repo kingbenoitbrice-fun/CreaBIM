@@ -105,6 +105,7 @@ fn material_of(k: &ElementKind) -> Option<ElementId> {
         ElementKind::FreeMesh(f) => f.material,
         ElementKind::Wall(w) => w.material,
         ElementKind::Slab(s) => s.material,
+        ElementKind::Opening(o) => o.material,
         _ => None,
     }
 }
@@ -190,6 +191,7 @@ pub fn fit(
                 sill,
                 width: u1 - u0,
                 height: (hi.z - base - sill).min(w.height - sill),
+                material,
             }))
         }
         Assign::Class(_) => Err("A class is not a shape.".into()),

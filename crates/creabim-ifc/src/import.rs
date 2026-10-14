@@ -964,6 +964,8 @@ impl<'a> Importer<'a> {
                 .add("a door or window reaching past its wall's start or base was clipped to it");
         }
         self.done.insert(id);
+        let material = self.material_for(id);
+        let e = self.f.get(id).expect("checked above");
         let eid = self.new_id(e);
         let fallback = if kind == OpeningKind::Door {
             "Door"
@@ -981,6 +983,7 @@ impl<'a> Importer<'a> {
                 sill: sill.max(0.0),
                 width,
                 height,
+                material,
             }),
         });
     }

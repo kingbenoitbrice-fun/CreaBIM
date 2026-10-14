@@ -801,6 +801,9 @@ pub struct Opening {
     pub sill: f64,
     pub width: f64,
     pub height: f64,
+    /// What the door or window is made of; none draws it in its default colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<ElementId>,
 }
 
 /// A freely modelled object, edited Blender-style, that still carries BIM
