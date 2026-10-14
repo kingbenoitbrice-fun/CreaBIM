@@ -865,6 +865,7 @@ dependencies = [
  "gtk",
  "raw-window-handle",
  "rfd",
+ "serde",
  "serde_json",
  "winit",
  "wry",
