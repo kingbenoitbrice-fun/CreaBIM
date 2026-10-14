@@ -227,6 +227,7 @@ pub fn show(
             );
         }
     }
+    sheet::draw_sheet_notes(&mut canvas, doc.model(), sheet_id);
 
     // crop handles on the selected viewport: drag an edge to crop the view
     let mut error = None;
@@ -301,6 +302,30 @@ pub fn show(
     }
     if response.drag_stopped() {
         state.crop_drag = None;
+    }
+
+    // notes written on the sheet itself
+    if state.active.is_none() {
+        let pxf = planview::Xf {
+            rect,
+            center,
+            scale: zoom,
+        };
+        let took = crate::annotate::sheet_input(
+            doc,
+            sheet_id,
+            &painter,
+            &response,
+            plan.tool,
+            &mut plan.anno,
+            selection,
+            &pxf,
+            &mut plan.status,
+            &mut error,
+        );
+        if took {
+            return error;
+        }
     }
 
     // picking, moving and activating viewports

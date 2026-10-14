@@ -282,6 +282,8 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
         | ElementKind::Material(_)
         | ElementKind::Dimension(_)
         | ElementKind::Tag(_)
+        | ElementKind::Note(_)
+        | ElementKind::TextStyle(_)
         | ElementKind::Cut(_) => return None,
     }
     Some(out)

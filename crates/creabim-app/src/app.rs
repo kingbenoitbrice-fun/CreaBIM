@@ -1087,6 +1087,7 @@ impl CreaBimApp {
                         | PlanItem::Fill { .. }
                         | PlanItem::Text { .. }
                         | PlanItem::Tag { .. }
+                        | PlanItem::Annotation { .. }
                         | PlanItem::Image { .. } => {}
                     }
                 }
@@ -1742,7 +1743,7 @@ impl CreaBimApp {
         ray: &dyn Fn(egui::Pos2) -> (DVec3, DVec3),
     ) {
         let tool = self.plan.tool;
-        if matches!(tool, Tool::Dimension | Tool::Tag) {
+        if tool.is_annotation() {
             if response.clicked() {
                 self.status = format!(
                     "The {} tool works in plans and sections for now.",
@@ -2869,6 +2870,7 @@ impl CreaBimApp {
             .inner
         };
         let mut redraw = false;
+        let mut new_style = false;
         match &mut edited.kind {
             ElementKind::Level(l) => {
                 if num(ui, "Elevation", &mut l.elevation, -100.0, 1000.0) {
@@ -3177,12 +3179,22 @@ impl CreaBimApp {
                     .and_then(|dr| {
                         dr.items.into_iter().find_map(|i| match i {
                             PlanItem::Dimension { id: i, text, .. } if i == id => Some(text),
+                            PlanItem::Annotation { id: i, item } if i == id => Some(item.text),
                             _ => None,
                         })
                     })
                     .unwrap_or_else(|| "-".into());
-                ui.label(format!("Measures {measured} mm"));
-                let attached = [d.a.host, d.b.host].iter().flatten().count();
+                let unit = if d.kind == creabim_core::DimensionKind::Angular {
+                    ""
+                } else {
+                    " mm"
+                };
+                ui.label(format!("{}: {measured}{unit}", d.kind.label()));
+                let attached = [Some(d.a), Some(d.b), d.center]
+                    .iter()
+                    .flatten()
+                    .filter(|p| p.host.is_some())
+                    .count();
                 ui.label(
                     egui::RichText::new(match attached {
                         0 => "Not attached: it stays where it was drawn.".to_string(),
@@ -3190,8 +3202,14 @@ impl CreaBimApp {
                     })
                     .weak(),
                 );
-                if num(ui, "Line offset", &mut d.offset, -100.0, 100.0) {
+                let what = crate::annotate::offset_label(d.kind);
+                if num(ui, what, &mut d.offset, -100.0, 100.0) {
                     label = "Move dimension line"
+                }
+                match crate::annotate::look_ui(ui, self.doc.model(), &mut d.style, &mut d.color) {
+                    crate::annotate::LookEdit::Changed(l) => label = l,
+                    crate::annotate::LookEdit::NewStyle => new_style = true,
+                    crate::annotate::LookEdit::None => {}
                 }
             }
             ElementKind::Tag(t) => {
@@ -3210,6 +3228,40 @@ impl CreaBimApp {
                 if ui.button("Select the tagged element").clicked() {
                     self.selection.only(t.host);
                 }
+                match crate::annotate::look_ui(ui, self.doc.model(), &mut t.style, &mut t.color) {
+                    crate::annotate::LookEdit::Changed(l) => label = l,
+                    crate::annotate::LookEdit::NewStyle => new_style = true,
+                    crate::annotate::LookEdit::None => {}
+                }
+            }
+            ElementKind::Note(n) => {
+                // a leader's default reach: a metre at 1:100, 10 mm on a sheet
+                let unit = match self.view(n.view) {
+                    Some(v) => v.scale / 100.0,
+                    None => 10.0,
+                };
+                if let Some(l) =
+                    crate::annotate::note_ui(ui, n, &mut self.plan.anno.focus_text, unit)
+                {
+                    label = l;
+                }
+                match crate::annotate::look_ui(ui, self.doc.model(), &mut n.style, &mut n.color) {
+                    crate::annotate::LookEdit::Changed(l) => label = l,
+                    crate::annotate::LookEdit::NewStyle => new_style = true,
+                    crate::annotate::LookEdit::None => {}
+                }
+            }
+            ElementKind::TextStyle(s) => {
+                if let Some(l) = crate::annotate::style_ui(ui, s) {
+                    label = l;
+                }
+                let users = crate::annotate::style_users(self.doc.model(), id);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Used by {users} dimensions, tags and notes. Rename it above."
+                    ))
+                    .weak(),
+                );
             }
             ElementKind::Grid(g) => {
                 ui.horizontal(|ui| {
@@ -3539,9 +3591,23 @@ impl CreaBimApp {
                 }
             }
         }
+        if new_style {
+            match crate::annotate::new_text_style(&mut self.doc) {
+                Ok(sid) => {
+                    crate::annotate::set_style(&mut edited.kind, sid);
+                    label = "Text style";
+                }
+                Err(e) => self.status = format!("Couldn't do that: {e}"),
+            }
+        }
         if !label.is_empty() {
             let r = self.doc.edit_merged(id, label, |e| *e = edited.clone());
             self.report(r, format!("{label}."));
+        }
+        if new_style {
+            self.status =
+                "New text style. Select it in the model list to set its font, size and colour."
+                    .into();
         }
         if extrude_sketch {
             self.extrude_sketch();
@@ -3875,6 +3941,8 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Cut(_) => "cut",
         ElementKind::Dimension(_) => "dimension",
         ElementKind::Tag(_) => "tag",
+        ElementKind::Note(_) => "note",
+        ElementKind::TextStyle(_) => "text style",
         ElementKind::View(_) => "view",
         ElementKind::Sheet(_) => "sheet",
         ElementKind::Viewport(_) => "placed view",

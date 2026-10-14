@@ -335,7 +335,7 @@ pub fn sample_house() -> Model {
     let dim = |view: ElementId, a: HostPoint, b: HostPoint, offset: f64| {
         Element::new(
             "Dimension",
-            ElementKind::Dimension(Dimension { view, a, b, offset }),
+            ElementKind::Dimension(Dimension::linear(view, a, b, offset)),
         )
     };
     let on = |host: ElementId, u: f64, s: f64, from_end: bool| HostPoint {
@@ -376,20 +376,12 @@ pub fn sample_house() -> Model {
         let plan = if level == g { plan_g_id } else { plan_f_id };
         tx = tx.insert(Element::new(
             "Tag",
-            ElementKind::Tag(Tag {
-                view: plan,
-                host: opening,
-                offset,
-            }),
+            ElementKind::Tag(Tag::new(plan, opening, offset)),
         ));
         if opening == front_door_id {
             tx = tx.insert(Element::new(
                 "Tag",
-                ElementKind::Tag(Tag {
-                    view: entrance_id,
-                    host: opening,
-                    offset,
-                }),
+                ElementKind::Tag(Tag::new(entrance_id, opening, offset)),
             ));
         }
     }
