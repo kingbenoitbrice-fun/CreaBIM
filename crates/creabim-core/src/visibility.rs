@@ -27,6 +27,11 @@ pub enum Category {
     Tags,
     Sketches,
     Guides,
+    Columns,
+    Beams,
+    Roofs,
+    Stairs,
+    Railings,
     /// A category from a newer CreaBIM, kept so older versions still read
     /// the file.
     #[serde(other)]
@@ -34,7 +39,7 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 13] = [
+    pub const ALL: [Category; 18] = [
         Category::Walls,
         Category::Slabs,
         Category::Doors,
@@ -48,6 +53,11 @@ impl Category {
         Category::Tags,
         Category::Sketches,
         Category::Guides,
+        Category::Columns,
+        Category::Beams,
+        Category::Roofs,
+        Category::Stairs,
+        Category::Railings,
     ];
 
     pub fn label(self) -> &'static str {
@@ -65,6 +75,11 @@ impl Category {
             Category::Tags => "Tags",
             Category::Sketches => "Sketches",
             Category::Guides => "Guides",
+            Category::Columns => "Columns",
+            Category::Beams => "Beams",
+            Category::Roofs => "Roofs",
+            Category::Stairs => "Stairs",
+            Category::Railings => "Railings",
             Category::Other => "Other",
         }
     }
@@ -90,6 +105,11 @@ impl Category {
             ElementKind::Tag(_) => Category::Tags,
             ElementKind::Sketch(_) => Category::Sketches,
             ElementKind::Guide(_) => Category::Guides,
+            ElementKind::Column(_) => Category::Columns,
+            ElementKind::Beam(_) => Category::Beams,
+            ElementKind::Roof(_) => Category::Roofs,
+            ElementKind::Stair(_) => Category::Stairs,
+            ElementKind::Railing(_) => Category::Railings,
             _ => return None,
         })
     }

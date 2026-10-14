@@ -17,6 +17,8 @@ pub enum Pen {
     Grid,
     /// Construction guides: shown while working, never printed.
     Guide,
+    /// Above the cut plane (beams, the stair past its break): dashed.
+    Hidden,
 }
 
 pub use creabim_core::Hatch;
@@ -157,6 +159,7 @@ fn scan_lines(polygon: &[DVec2], angle: f64, spacing: f64, phase: f64) -> Vec<(D
 /// Which cut wins where two overlap: higher numbers cut through lower ones.
 fn cut_priority(model: &Model, id: ElementId) -> u8 {
     match model.get(id).map(|e| &e.kind) {
+        Some(ElementKind::Column(_)) => 3,
         Some(ElementKind::Wall(_)) => 2,
         Some(ElementKind::Slab(_)) => 1,
         _ => 0,
@@ -625,7 +628,7 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
             ElementKind::Wall(w) => w.level == level,
             ElementKind::Slab(s) => s.level == level,
             ElementKind::FreeMesh(f) => f.level == Some(level),
-            _ => false,
+            k => creabim_core::members::level_of(k) == Some(level),
         };
         if on_level && (targets.contains(&e.id) || matches!(e.kind, ElementKind::FreeMesh(_))) {
             sliced.push(e.id);
@@ -751,6 +754,9 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                         points: s.outline(),
                     },
                 );
+            }
+            k if on_level && creabim_core::members::is_member(k) => {
+                items.extend(crate::members::member_plan(model, e, cut_height));
             }
             ElementKind::Sketch(sk) if sk.level == Some(level) => {
                 items.extend(sketch_items(e.id, sk, &|p| p));

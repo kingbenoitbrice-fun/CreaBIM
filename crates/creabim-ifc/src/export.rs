@@ -353,6 +353,28 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     by_material.entry(m.id).or_default().push(r);
                 }
             }
+            k if creabim_core::members::is_member(k) => {
+                let level = creabim_core::members::level_of(k);
+                let Some(&(_, spl)) = level.and_then(|l| storeys.get(&l)) else {
+                    continue;
+                };
+                // the shape as built, tessellated in the storey's frame
+                let mesh = match cut {
+                    Some(m) => Some(m.clone()),
+                    None => creabim_geom::members::member_mesh(model, e).map(|m| m.0),
+                };
+                let Some(mesh) = mesh else { continue };
+                let pl = c.local_placement(Some(spl), DVec3::ZERO, None);
+                let z0 = elevation(level);
+                let fs = tessellate(&mut c, &mesh, |p| p - DVec3::Z * z0);
+                let shape = c.shape("Tessellation", &[fs]);
+                let (class, tail) = member_entity(k);
+                let r = product(&mut c, class, e, pl, shape, tail);
+                contained.entry(level).or_default().push(r);
+                if let Some((m, _)) = creabim_core::material_of(model, e) {
+                    by_material.entry(m.id).or_default().push(r);
+                }
+            }
             _ => {}
         }
     }
@@ -549,6 +571,26 @@ fn product(c: &mut Ctx, class: &str, e: &Element, pl: Ref, shape: Ref, tail: &st
             string(&e.name)
         ),
     )
+}
+
+/// The STEP entity and record tail (Tag, PredefinedType) of a member.
+fn member_entity(k: &ElementKind) -> (&'static str, &'static str) {
+    match k {
+        ElementKind::Column(_) => ("IFCCOLUMN", ",$,.COLUMN."),
+        ElementKind::Beam(_) => ("IFCBEAM", ",$,.BEAM."),
+        ElementKind::Roof(r) => (
+            "IFCROOF",
+            match r.effective_shape() {
+                creabim_core::RoofShape::Flat => ",$,.FLAT_ROOF.",
+                creabim_core::RoofShape::Shed => ",$,.SHED_ROOF.",
+                creabim_core::RoofShape::Gable => ",$,.GABLE_ROOF.",
+                creabim_core::RoofShape::Hip => ",$,.HIP_ROOF.",
+            },
+        ),
+        ElementKind::Stair(s) if s.landing.is_some() => ("IFCSTAIR", ",$,.QUARTER_TURN_STAIR."),
+        ElementKind::Stair(_) => ("IFCSTAIR", ",$,.STRAIGHT_RUN_STAIR."),
+        _ => ("IFCRAILING", ",$,.GUARDRAIL."),
+    }
 }
 
 /// The STEP entity and record tail for a free mesh's IFC class; classes the

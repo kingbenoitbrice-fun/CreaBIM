@@ -68,13 +68,27 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Sketch => "pen-tool",
         Tool::Guide => "slash",
         Tool::Grid => "grid-3x3",
+        Tool::Column => "rectangle-vertical",
+        Tool::Beam => "rectangle-horizontal",
+        Tool::Roof => "tent",
+        Tool::Stair => "chart-no-axes-column-increasing",
+        Tool::Railing => "fence",
     }
 }
 
 fn tool_group(t: Tool) -> u8 {
     match t {
         Tool::Select => 0,
-        Tool::Wall | Tool::Door | Tool::Window | Tool::Slab | Tool::Mass => 1,
+        Tool::Wall
+        | Tool::Door
+        | Tool::Window
+        | Tool::Slab
+        | Tool::Mass
+        | Tool::Column
+        | Tool::Beam
+        | Tool::Roof
+        | Tool::Stair
+        | Tool::Railing => 1,
         Tool::Section | Tool::Elevation => 2,
         Tool::Dimension | Tool::Tag => 3,
         Tool::Sketch | Tool::Guide | Tool::Grid => 4,
@@ -659,6 +673,7 @@ impl CreaBimApp {
                 }
             }
             "view.shaded" | "view.tag" => self.view_action(head),
+            "member" => crate::memberstool::toggle_option(&mut self.plan, arg),
             _ => {
                 self.grid_vis_action(head, arg);
             }
@@ -880,6 +895,7 @@ impl CreaBimApp {
             }));
             options.push(json!({"kind": "sep"}));
         }
+        options.extend(crate::memberstool::tool_options(&self.plan));
         if let Some((label, value, unit, _)) = self.view_number() {
             let (step, min, max) = if unit == "°" {
                 (1.0, -89.0, 89.0)
@@ -1086,6 +1102,9 @@ impl CreaBimApp {
                 let v = b["value"].as_f64().unwrap_or(0.0);
                 match b["key"].as_str().unwrap_or("") {
                     "wall.thickness" => self.plan.wall_thickness = v.clamp(0.05, 1.0),
+                    k if k.starts_with("member.") => {
+                        crate::memberstool::set_option(&mut self.plan, k, v)
+                    }
                     "view.number" => self.set_view_number(v),
                     _ => {}
                 }

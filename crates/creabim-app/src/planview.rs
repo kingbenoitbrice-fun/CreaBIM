@@ -36,16 +36,26 @@ pub enum Tool {
     Sketch,
     Guide,
     Grid,
+    Column,
+    Beam,
+    Roof,
+    Stair,
+    Railing,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 13] = [
+    pub const ALL: [Tool; 18] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
         Tool::Window,
         Tool::Slab,
         Tool::Mass,
+        Tool::Column,
+        Tool::Beam,
+        Tool::Roof,
+        Tool::Stair,
+        Tool::Railing,
         Tool::Section,
         Tool::Elevation,
         Tool::Dimension,
@@ -70,6 +80,11 @@ impl Tool {
             Tool::Sketch => "Sketch",
             Tool::Guide => "Guide",
             Tool::Grid => "Grid",
+            Tool::Column => "Column",
+            Tool::Beam => "Beam",
+            Tool::Roof => "Roof",
+            Tool::Stair => "Stair",
+            Tool::Railing => "Railing",
         }
     }
 
@@ -88,7 +103,17 @@ impl Tool {
             Tool::Sketch => "Click the corners of a sketch on this level. Click the first corner to close it, Enter or right-click to leave it open, Esc to cancel. L, A and C draw lines, arcs and circles. Then E extrudes it.",
             Tool::Guide => "Click two points for a guide through them. Or click an edge, then click where its parallel guide goes. Everything snaps to guides.",
             Tool::Grid => "Click two points for a grid line. It goes in the active grid system (top bar) and takes its next label. Shift keeps it straight.",
+            Tool::Column => "Click to place a column. It runs up to the next level; set its size in the top bar or Properties.",
+            Tool::Beam => "Click the beam's start, then its end; keep clicking to chain beams. Its top sits at the top of the storey. Esc or right-click ends.",
+            Tool::Roof => "Draw the roof's outline like a slab (1–4: Polygon, Rectangle, Fill room, From sketch). Pick Flat, Mono-pitch, Gable or Hip in the bar first.",
+            Tool::Stair => "Click where the stair starts, then click the way it climbs. It rises to the next level in equal risers.",
+            Tool::Railing => "Click inside a stair to rail both its sides, or click the points of a path; click the last point again to finish.",
         }
+    }
+
+    /// Tools that draw an outline the way the Slab tool does.
+    pub fn draws_outline(self) -> bool {
+        matches!(self, Tool::Slab | Tool::Roof)
     }
 
     /// The hint for this tool in a section or elevation.
@@ -217,6 +242,9 @@ pub struct PlanState {
     pub snap: snaps::SnapSettings,
     /// The grid system the Grid tool puts new lines in.
     pub grid_group: Option<ElementId>,
+    /// Sizes for new columns, beams, roofs, stairs and railings, and a
+    /// railing path being clicked.
+    pub members: crate::memberstool::MemberSettings,
 }
 
 impl Default for PlanState {
@@ -250,6 +278,7 @@ impl Default for PlanState {
             menu_request: None,
             snap: snaps::SnapSettings::default(),
             grid_group: None,
+            members: Default::default(),
         }
     }
 }
@@ -263,6 +292,7 @@ impl PlanState {
         self.sketch = None;
         self.guide_edge = None;
         self.outline = None;
+        self.members.path.clear();
     }
 
     /// Is a tool part way through, with clicks to undo?
@@ -274,6 +304,7 @@ impl PlanState {
             || self.guide_edge.is_some()
             || self.outline.is_some()
             || self.armed.is_some()
+            || !self.members.path.is_empty()
     }
 
     /// Esc or right-click: drop what the tool has so far, or else leave the
@@ -498,8 +529,8 @@ pub fn show(
             .outline
             .as_ref()
             .is_some_and(|o| o.level == level && !o.is_wall());
-        if tool == Tool::Slab || slab_outline {
-            let modes = tool == Tool::Slab;
+        if tool.draws_outline() || slab_outline {
+            let modes = tool.draws_outline();
             if let Some(msg) =
                 crate::slabtool::controls(ui, rect, Some(view), modes, doc, state, selection)
             {
@@ -776,7 +807,27 @@ pub fn show(
     if let (Some(a), Some(b)) = (state.pending, hover_world) {
         let accent = Stroke::new(1.5, Color32::from_rgb(230, 120, 30));
         match tool {
-            Tool::Wall | Tool::Section | Tool::Elevation | Tool::Grid => {
+            Tool::Wall
+            | Tool::Section
+            | Tool::Elevation
+            | Tool::Grid
+            | Tool::Beam
+            | Tool::Stair
+            | Tool::Railing => {
+                let level = match kind {
+                    PaneKind::Plan { level } => Some(level),
+                    _ => None,
+                };
+                crate::memberstool::preview(
+                    &painter,
+                    &|p| Some(xf.to_screen(p.truncate())),
+                    doc.model(),
+                    level,
+                    tool,
+                    state,
+                    a.extend(0.0),
+                    b.extend(0.0),
+                );
                 painter.line_segment([xf.to_screen(a), xf.to_screen(b)], accent);
                 let len = a.distance(b);
                 painter.text(
@@ -787,7 +838,7 @@ pub fn show(
                     accent.color,
                 );
             }
-            Tool::Slab => {
+            Tool::Slab | Tool::Roof => {
                 painter.rect_stroke(
                     Rect::from_two_pos(xf.to_screen(a), xf.to_screen(b)),
                     0.0,
@@ -1070,7 +1121,10 @@ pub fn plan_tool(
         },
         Tool::Door | Tool::Window => place_opening(doc, level, p, tool, selection),
         Tool::Dimension | Tool::Tag | Tool::Sketch => Ok(()),
-        Tool::Slab => crate::slabtool::click(doc, level, p, state, selection),
+        Tool::Slab | Tool::Roof => crate::slabtool::click(doc, level, p, state, selection),
+        Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing => {
+            crate::memberstool::click(doc, level, tool, p, state, selection)
+        }
         Tool::Guide => match state.pending.take() {
             None => {
                 state.pending = Some(p);
@@ -1988,6 +2042,19 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
                 }
                 Pen::Cut => {
                     painter.line_segment([a, b], Stroke::new(1.8, ink));
+                }
+                Pen::Hidden => {
+                    let (w, c) = if selected {
+                        (2.0, highlight)
+                    } else {
+                        (1.0, Color32::from_gray(110))
+                    };
+                    painter.extend(egui::Shape::dashed_line(
+                        &[a, b],
+                        Stroke::new(w, c),
+                        6.0,
+                        4.0,
+                    ));
                 }
                 _ => {
                     painter.line_segment([a, b], Stroke::new(1.0, ink));

@@ -37,8 +37,8 @@ pub fn show(
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(format!(
-                "Every {} in the model, read live. Edit a cell to change the model.",
-                category.label().to_lowercase().trim_end_matches('s')
+                "All {} in the model, read live. Edit a cell to change the model.",
+                category.label().to_lowercase()
             ))
             .weak(),
         );

@@ -1456,8 +1456,8 @@ impl CreaBimApp {
         }
 
         let slab_outline = self.plan.outline.as_ref().is_some_and(|o| !o.is_wall());
-        if self.plan.tool == Tool::Slab || slab_outline {
-            let modes = self.plan.tool == Tool::Slab;
+        if self.plan.tool.draws_outline() || slab_outline {
+            let modes = self.plan.tool.draws_outline();
             let (doc, plan, sel) = (&mut self.doc, &mut self.plan, &mut self.selection);
             if let Some(msg) = crate::slabtool::controls(ui, rect, None, modes, doc, plan, sel) {
                 self.status = msg;
@@ -1734,6 +1734,7 @@ impl CreaBimApp {
                 Some(ElementKind::Slab(s)) => Some(s.level),
                 Some(ElementKind::FreeMesh(f)) => f.level,
                 Some(ElementKind::Level(_)) => Some(id),
+                Some(k) => creabim_core::members::level_of(k),
                 _ => None,
             });
         let lowest = m
@@ -1774,9 +1775,9 @@ impl CreaBimApp {
         let accent = Color32::from_rgb(230, 120, 30);
         let stroke = egui::Stroke::new(2.0, accent);
         // a right-click with nothing drawn leaves the Slab tool
-        if tool == Tool::Slab && response.secondary_clicked() && self.pending_3d.is_none() {
+        if tool.draws_outline() && response.secondary_clicked() && self.pending_3d.is_none() {
             self.plan.tool = Tool::Select;
-            self.status = "Left the Slab tool.".into();
+            self.status = format!("Left the {} tool.", tool.label());
             return;
         }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) || response.secondary_clicked() {
@@ -1887,7 +1888,7 @@ impl CreaBimApp {
                         );
                     }
                 }
-                Tool::Slab => {
+                Tool::Slab | Tool::Roof => {
                     let (lo, hi) = (a.truncate().min(p), a.truncate().max(p));
                     let pts = [lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y), lo];
                     let scr: Vec<egui::Pos2> =
@@ -1895,6 +1896,16 @@ impl CreaBimApp {
                     painter.add(egui::Shape::line(scr, stroke));
                 }
                 _ => {
+                    crate::memberstool::preview(
+                        painter,
+                        project,
+                        self.doc.model(),
+                        Some(level),
+                        tool,
+                        &self.plan,
+                        a,
+                        at,
+                    );
                     if let (Some(sa), Some(sb)) = (project(a), project(at)) {
                         painter.line_segment([sa, sb], stroke);
                         painter.text(
@@ -1941,14 +1952,19 @@ impl CreaBimApp {
             } else {
                 self.status = match (tool, self.pending_3d) {
                     (Tool::Wall, Some(_)) => format!("Drawing walls on {level_name}. Click the next corner; Esc or right-click ends."),
-                    (Tool::Slab, _) => self.plan.status.take().unwrap_or_default(),
+                    (Tool::Slab | Tool::Roof, _) => self.plan.status.take().unwrap_or_default(),
+                    (Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing, _) => self
+                        .plan
+                        .status
+                        .take()
+                        .unwrap_or_else(|| format!("Added on {level_name}.")),
                     (Tool::Section | Tool::Elevation, Some(_)) => "Click the second corner.".into(),
                     (Tool::Guide, Some(_)) if self.plan.guide_edge.is_some() => "Click where the parallel guide goes.".into(),
                     (Tool::Guide, Some(_)) => "Click a second point the guide runs through.".into(),
                     _ => format!("Added on {level_name}."),
                 };
             }
-        } else if from.is_none() && response.hovered() && tool != Tool::Slab {
+        } else if from.is_none() && response.hovered() && !tool.draws_outline() {
             self.status = format!(
                 "{} on {level_name} (the open plan's level). {}",
                 tool.label(),
@@ -3566,6 +3582,32 @@ impl CreaBimApp {
                     }
                 }
             }
+            k @ (ElementKind::Column(_)
+            | ElementKind::Beam(_)
+            | ElementKind::Roof(_)
+            | ElementKind::Stair(_)
+            | ElementKind::Railing(_)) => {
+                let l = crate::memberstool::properties(ui, self.doc.model(), k);
+                if !l.is_empty() {
+                    label = l;
+                }
+                if let Some(m) = creabim_core::members::material_mut(k) {
+                    if self.material_combo(ui, m) {
+                        label = "Material";
+                    }
+                }
+                if matches!(k, ElementKind::Stair(_))
+                    && ui
+                        .button("Add railings")
+                        .on_hover_text("A railing along each side; they follow the stair.")
+                        .clicked()
+                {
+                    let mut sel = self.selection.clone();
+                    let h = self.plan.members.railing_height;
+                    let r = crate::memberstool::add_stair_railings(&mut self.doc, id, h, &mut sel);
+                    self.report(r, "Railings added along both sides.");
+                }
+            }
             ElementKind::Guide(g) => {
                 ui.label(
                     egui::RichText::new(
@@ -3927,6 +3969,11 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Sheet(_) => "sheet",
         ElementKind::Viewport(_) => "placed view",
         ElementKind::Material(_) => "material",
+        ElementKind::Column(_) => "column",
+        ElementKind::Beam(_) => "beam",
+        ElementKind::Roof(_) => "roof",
+        ElementKind::Stair(_) => "stair",
+        ElementKind::Railing(_) => "railing",
     }
 }
 

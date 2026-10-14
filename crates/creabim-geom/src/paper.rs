@@ -108,6 +108,12 @@ pub const GRID: Stroke = Stroke {
     gray: 0.5,
     dash: Some([4.0, 1.0]),
 };
+/// Lines above the cut plane.
+pub const HIDDEN: Stroke = Stroke {
+    width: 0.18,
+    gray: 0.25,
+    dash: Some([2.0, 1.0]),
+};
 const HATCH: Stroke = Stroke::solid(0.1, 0.2);
 /// Dimension and leader lines.
 pub const DIMENSION: Stroke = Stroke::solid(0.13, 0.0);
@@ -121,6 +127,7 @@ pub fn pen_stroke(pen: Pen) -> Stroke {
         Pen::Projection => PROJECTION,
         Pen::Symbol => SYMBOL,
         Pen::Grid | Pen::Guide => GRID,
+        Pen::Hidden => HIDDEN,
     }
 }
 

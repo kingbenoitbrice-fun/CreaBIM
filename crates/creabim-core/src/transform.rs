@@ -81,7 +81,7 @@ impl Xform {
     }
 
     /// Does it keep upright things upright?
-    fn keeps_upright(&self) -> bool {
+    pub(crate) fn keeps_upright(&self) -> bool {
         !matches!(self, Xform::Tilt { .. })
     }
 
@@ -277,6 +277,11 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
             g.a = origin(g.a, g.level);
             g.b = origin(g.b, g.level);
         }
+        ElementKind::Column(_)
+        | ElementKind::Beam(_)
+        | ElementKind::Roof(_)
+        | ElementKind::Stair(_)
+        | ElementKind::Railing(_) => crate::members::transform(model, &mut out.kind, t)?,
         ElementKind::Sheet(_)
         | ElementKind::Viewport(_)
         | ElementKind::Material(_)
@@ -322,7 +327,7 @@ pub fn pivot(model: &Model, id: ElementId) -> Option<DVec3> {
             _ => return None,
         },
         ElementKind::Guide(g) => (g.a + g.b) / 2.0 + DVec3::Z * elevation(g.level),
-        _ => return None,
+        _ => return crate::members::pivot(model, e),
     })
 }
 
@@ -341,7 +346,8 @@ pub fn duplicate(model: &Model, id: ElementId) -> Vec<Element> {
             | ElementKind::Sketch(_)
             | ElementKind::Grid(_)
             | ElementKind::Guide(_)
-    ) {
+    ) && !crate::members::is_member(&e.kind)
+    {
         return vec![];
     }
     let mut copy = Element::new(format!("{} copy", e.name), e.kind.clone());
@@ -475,7 +481,11 @@ pub fn fresh_copies(model: &Model, elements: &[Element]) -> (Vec<Element>, usize
                 ElementKind::FreeMesh(m) => m.level.iter_mut().for_each(fix),
                 ElementKind::Sketch(s) => s.level.iter_mut().for_each(fix),
                 ElementKind::Guide(g) => g.level.iter_mut().for_each(fix),
-                _ => {}
+                k => {
+                    if let Some(l) = crate::members::level_mut(k) {
+                        fix(l);
+                    }
+                }
             }
         }
     }

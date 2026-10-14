@@ -160,6 +160,13 @@ pub fn export_ifcx(model: &Model) -> String {
                 nodes.push(node(&path, Names::default(), Map::new(), attrs));
                 continue; // materials are roots, inherited by what is made of them
             }
+            k if creabim_core::members::is_member(k) => {
+                let level = creabim_core::members::level_of(k);
+                (
+                    level.map_or(Parent::Building, Parent::Level),
+                    Some(elevation(level)),
+                )
+            }
             _ => continue, // views, sheets and annotations are not building data
         };
         if let Some(z) = frame_z {
@@ -919,7 +926,9 @@ impl Builder {
                     source: None,
                 };
                 match &e.kind {
+                    // hosted elements go after their hosts
                     ElementKind::Opening(_) => self.openings.push(e),
+                    ElementKind::Railing(r) if r.stair.is_some() => self.openings.push(e),
                     // groups first, so their lines find them
                     ElementKind::GridGroup(_) => self.grids.insert(0, e),
                     ElementKind::Grid(_) => self.grids.push(e),
