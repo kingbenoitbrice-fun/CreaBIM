@@ -846,6 +846,8 @@ impl<'a> Importer<'a> {
                 boundary: p.footprint,
                 thickness: p.z1 - p.z0,
                 material,
+                top_offset: 0.0,
+                bulges: vec![],
             }),
         });
     }

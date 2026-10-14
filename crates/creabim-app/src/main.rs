@@ -3,6 +3,7 @@
 mod app;
 mod boxsel;
 mod camera;
+mod commands;
 mod files;
 mod handles;
 mod icons;
@@ -14,6 +15,7 @@ mod schedulepane;
 mod selection;
 mod sheetview;
 mod sketch;
+mod slabtool;
 mod snaps;
 mod textures;
 

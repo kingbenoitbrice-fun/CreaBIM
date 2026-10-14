@@ -5,7 +5,7 @@
 use crate::plan::PlanItem;
 use crate::section::{AxoFrame, SectionFrame};
 use creabim_core::{ElementId, ElementKind, HostPoint, Model, OpeningKind, View, ViewKind, Wall};
-use glam::{DVec2, DVec3};
+use glam::{DAffine3, DMat3, DVec2, DVec3};
 
 /// Maps world points into a view's drawing coordinates.
 pub enum Projector {
@@ -71,8 +71,82 @@ pub fn resolve(model: &Model, view: &View, p: &HostPoint) -> Option<DVec2> {
             };
             Some(on_wall(w, u, p.local.y))
         }
-        _ => None,
+        _ => {
+            let body = p.body?;
+            Some(
+                Projector::of(model, view)?
+                    .project(host_frame(model, host)?.transform_point3(body)),
+            )
+        }
     }
+}
+
+/// An element's own 3D axes in the model, for dimension points kept on it:
+/// a mass's origin, turn and size; a slab's first corner and edge; a grid,
+/// wall or guide's start and direction; a sketch's plane.
+pub fn host_frame(model: &Model, id: ElementId) -> Option<DAffine3> {
+    let elevation = |level: Option<ElementId>| {
+        level
+            .and_then(|l| model.level(l))
+            .map_or(0.0, |l| l.elevation)
+    };
+    // axes along `x` (made level), across it and up, at `o`
+    let along = |o: DVec3, x: DVec3| {
+        let x = DVec3::new(x.x, x.y, 0.0)
+            .try_normalize()
+            .unwrap_or(DVec3::X);
+        DAffine3::from_mat3_translation(DMat3::from_cols(x, DVec3::Z.cross(x), DVec3::Z), o)
+    };
+    Some(match &model.get(id)?.kind {
+        ElementKind::Wall(w) => along(
+            w.start.extend(elevation(Some(w.level)) + w.base_offset),
+            (w.end - w.start).extend(0.0),
+        ),
+        ElementKind::Opening(o) => {
+            let ElementKind::Wall(w) = &model.get(o.host)?.kind else {
+                return None;
+            };
+            let z = elevation(Some(w.level)) + w.base_offset + o.sill;
+            along(
+                on_wall(w, o.offset, 0.0).extend(z),
+                (w.end - w.start).extend(0.0),
+            )
+        }
+        ElementKind::Slab(s) => {
+            let a = *s.boundary.first()?;
+            let b = s.boundary.get(1).copied().unwrap_or(a + DVec2::X);
+            along(a.extend(elevation(Some(s.level))), (b - a).extend(0.0))
+        }
+        ElementKind::Grid(g) => along(g.start.extend(0.0), (g.end - g.start).extend(0.0)),
+        ElementKind::Guide(g) => along(g.a + DVec3::Z * elevation(g.level), g.b - g.a),
+        ElementKind::FreeMesh(m) => DAffine3::from_mat3_translation(
+            DMat3::from_rotation_z(m.rotation.to_radians()) * m.scale,
+            m.origin + DVec3::Z * elevation(m.level),
+        ),
+        ElementKind::Sketch(sk) => {
+            let p = &sk.plane;
+            DAffine3::from_mat3_translation(
+                DMat3::from_cols(p.x, p.y, p.x.cross(p.y)),
+                p.origin + DVec3::Z * elevation(sk.level),
+            )
+        }
+        _ => return None,
+    })
+}
+
+/// A drawing point of `view` back in the model: on the level in a plan, on
+/// the cut plane in a section.
+fn unproject(model: &Model, view: &View, at: DVec2) -> Option<DVec3> {
+    Some(match view.kind {
+        ViewKind::Plan { level, .. } => at.extend(model.level(level).map_or(0.0, |l| l.elevation)),
+        ViewKind::Section {
+            start, end, depth, ..
+        } => {
+            let f = SectionFrame::new(start, end, depth);
+            (f.origin + f.along * at.x).extend(at.y)
+        }
+        _ => return None,
+    })
 }
 
 /// A dimension point attached to `host`, expressed in the host's frame so
@@ -83,6 +157,7 @@ pub fn attach(model: &Model, view: &View, host: Option<ElementId>, at: DVec2) ->
             host: Some(h),
             local: DVec2::new(at.x, at.y - l.elevation),
             from_end: false,
+            body: None,
         }),
         (ElementKind::Wall(_) | ElementKind::Opening(_), ViewKind::Plan { .. }) => {
             let (w, base) = host_wall(model, h)?;
@@ -97,9 +172,20 @@ pub fn attach(model: &Model, view: &View, host: Option<ElementId>, at: DVec2) ->
                 host: Some(h),
                 local: DVec2::new(if from_end { u - w.length() } else { u - base }, s),
                 from_end,
+                body: None,
             })
         }
-        _ => None,
+        (ElementKind::Level(_), _) => None,
+        _ => {
+            let frame = host_frame(model, h)?;
+            let world = unproject(model, view, at)?;
+            Some(HostPoint {
+                host: Some(h),
+                local: at,
+                from_end: false,
+                body: Some(frame.inverse().transform_point3(world)),
+            })
+        }
     });
     attached.unwrap_or(HostPoint::free(at))
 }
@@ -120,7 +206,7 @@ pub fn centre(model: &Model, id: ElementId) -> Option<DVec3> {
         }
         ElementKind::Slab(s) => {
             let c = s.boundary.iter().copied().sum::<DVec2>() / s.boundary.len().max(1) as f64;
-            c.extend(elevation(s.level) - s.thickness / 2.0)
+            c.extend(s.top(elevation(s.level)) - s.thickness / 2.0)
         }
         ElementKind::FreeMesh(m) => {
             let mesh = m.evaluated().mesh;
@@ -326,6 +412,66 @@ mod tests {
             .unwrap();
         }
         assert_eq!(overall(doc.model()), 11300.0);
+    }
+
+    #[test]
+    fn dimension_points_follow_the_masses_they_sit_on() {
+        use creabim_core::transform::transformed;
+        use creabim_core::{EditMesh, Element, FreeMesh, Transaction, Xform};
+        let mut model = sample_house();
+        let level = model.levels().next().unwrap().0.id;
+        let mass = Element::new(
+            "Mass",
+            ElementKind::FreeMesh(FreeMesh::new(
+                Some(level),
+                DVec3::new(20.0, 5.0, 0.0),
+                EditMesh::cuboid(DVec3::new(2.0, 4.0, 3.0)),
+            )),
+        );
+        let id = mass.id;
+        Transaction::new("Add mass")
+            .insert(mass)
+            .apply(&mut model)
+            .unwrap();
+        let plan = View::plan(level);
+        let section = View::section(DVec2::new(15.0, 0.0), DVec2::new(25.0, 0.0), 20.0, true);
+        // a plan corner and a section corner (top of the near face)
+        let corner = DVec2::new(21.0, 7.0);
+        let top = DVec2::new(6.0, 3.0);
+        let in_plan = attach(&model, &plan, Some(id), corner);
+        let in_section = attach(&model, &section, Some(id), top);
+        assert_eq!(in_plan.host, Some(id));
+        assert!(in_plan.body.is_some() && in_section.body.is_some());
+        assert!(resolve(&model, &plan, &in_plan).unwrap().distance(corner) < 1e-9);
+        assert!(
+            resolve(&model, &section, &in_section)
+                .unwrap()
+                .distance(top)
+                < 1e-9
+        );
+        // move the mass, then turn it a quarter about a point
+        let moves = [
+            Xform::Move(DVec3::new(1.0, -2.0, 0.5)),
+            Xform::Rotate {
+                center: DVec2::new(22.0, 5.0),
+                degrees: 90.0,
+            },
+        ];
+        let mut e = model.get(id).unwrap().clone();
+        for t in &moves {
+            e = transformed(&model, &e, t).unwrap();
+        }
+        let before = model.get(id).unwrap().clone();
+        Transaction::new("Move mass")
+            .replace(before, e)
+            .apply(&mut model)
+            .unwrap();
+        let expect = moves.iter().fold(corner, |p, t| t.point2(p));
+        let now = resolve(&model, &plan, &in_plan).unwrap();
+        assert!(now.distance(expect) < 1e-9, "{now} vs {expect}");
+        // the section point rose with the mass
+        let now = resolve(&model, &section, &in_section).unwrap();
+        assert!((now.y - 3.5).abs() < 1e-9, "{now}");
     }
 
     #[test]

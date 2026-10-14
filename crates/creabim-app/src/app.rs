@@ -1,4 +1,5 @@
 use crate::camera::OrbitCamera;
+use crate::commands::Command;
 use crate::handles::{self, PaneInput, Ray};
 use crate::icons::{self, Icon};
 use crate::modal::{Outcome, PaneMap, Space};
@@ -25,6 +26,15 @@ use std::collections::HashMap;
 /// What the 3D geometry was last built from; rebuild when any of it changes.
 /// ((model revision, hidden revision), selection, selected face, drawing
 /// shown in 3D, active view)
+/// How a workplane is being picked in the 3D view.
+#[derive(Clone, Debug, PartialEq)]
+enum PlanePick {
+    /// Click a face.
+    Face,
+    /// Click three points; these are the ones so far.
+    Points(Vec<DVec3>),
+}
+
 type GeometryKey = (
     (u64, u64),
     Selection,
@@ -97,6 +107,17 @@ pub struct CreaBimApp {
     snaps_3d: Option<(u64, Vec<ElementId>, Snapper)>,
     /// First click of a two-click tool in the 3D view, on a level.
     pending_3d: Option<(DVec2, ElementId)>,
+    /// Where the 3D right-click menu was opened, and the face there.
+    menu_at_3d: Option<DVec3>,
+    menu_plane_3d: Option<Workplane>,
+    /// A workplane set on a face, through three points or off a level, with
+    /// its name. The 3D sketch and guide tools draw on it instead of the
+    /// level, and the grid lies on it.
+    workplane: Option<(Workplane, String)>,
+    /// Picking a workplane in the 3D view.
+    plane_pick: Option<PlanePick>,
+    /// First point of a guide being drawn on the workplane.
+    guide_from: Option<DVec3>,
     extrude_distance: f64,
     path: String,
     status: String,
@@ -141,6 +162,11 @@ impl CreaBimApp {
             box_3d: None,
             snaps_3d: None,
             pending_3d: None,
+            menu_at_3d: None,
+            menu_plane_3d: None,
+            guide_from: None,
+            workplane: None,
+            plane_pick: None,
             extrude_distance: 1.0,
             path: "project.creabim".into(),
             watch: Default::default(),
@@ -470,6 +496,89 @@ impl CreaBimApp {
         };
     }
 
+    /// Run an edit picked from a key, a button or a menu. `at` is where a
+    /// right-click menu was opened.
+    fn run_command(&mut self, ctx: &egui::Context, c: Command, at: Option<DVec3>) {
+        if let Some(m) = c.modal() {
+            if self.selection.is_some() {
+                self.plan.cancel();
+                self.plan.armed = Some(m);
+                self.status = format!(
+                    "{}: point at a view and move the pointer, then click to finish. Right-click cancels.",
+                    c.label()
+                );
+            } else {
+                self.status = "Select something first.".into();
+            }
+            return;
+        }
+        match c {
+            Command::Copy | Command::Cut => {
+                if self.copy_selected() {
+                    let n = self.clipboard.len();
+                    ctx.copy_text(self.clipboard_text());
+                    if c == Command::Cut {
+                        self.delete_selected();
+                        self.status = format!("Cut {n} elements. Ctrl+V pastes them back.");
+                    } else {
+                        self.status = format!("Copied {n} elements. Ctrl+V pastes them.");
+                    }
+                }
+            }
+            Command::Paste => {
+                if self.clipboard.is_empty() {
+                    self.status = "Nothing copied yet.".into();
+                } else {
+                    self.paste(self.clipboard.clone());
+                }
+            }
+            Command::Delete => self.delete_selected(),
+            Command::Hide => self.hide_selected(),
+            Command::Isolate => self.isolate_selected(),
+            Command::ShowAll => self.show_all(),
+            Command::SelectAll => self.select_all(),
+            Command::SelectNone => {
+                self.selection.clear();
+                self.face = None;
+            }
+            Command::Undo => {
+                let label = self.doc.undo_label().map(str::to_owned);
+                if self.doc.undo() {
+                    self.status = format!("Undid: {}", label.unwrap_or_default());
+                    self.drop_stale_selection();
+                }
+            }
+            Command::Redo => {
+                let label = self.doc.redo_label().map(str::to_owned);
+                if self.doc.redo() {
+                    self.status = format!("Redid: {}", label.unwrap_or_default());
+                    self.drop_stale_selection();
+                }
+            }
+            Command::CursorHere => {
+                if let Some(p) = at {
+                    self.plan.cursor = Some(p);
+                    self.plan.pivot = crate::modal::Pivot::Cursor;
+                    self.status = format!(
+                        "Pivot cursor at {:.2}, {:.2}, {:.2}. Rotate and scale now turn about it.",
+                        p.x, p.y, p.z
+                    );
+                }
+            }
+            Command::WorkplaneHere => {
+                // from a plan: a level plane through the point
+                if let Some(p) = at {
+                    let plane = Workplane {
+                        origin: p,
+                        ..Workplane::ground(p.z)
+                    };
+                    self.set_workplane(plane, format!("level at {:+.2} m", p.z));
+                }
+            }
+            Command::Move | Command::Rotate | Command::Scale | Command::Duplicate => {}
+        }
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context) {
         if ctx.egui_wants_keyboard_input() {
             return;
@@ -484,6 +593,14 @@ impl CreaBimApp {
                 !cmd && i.key_pressed(egui::Key::E),
             )
         });
+        if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
+            self.plan.snap.on = !self.plan.snap.on;
+            self.status = format!(
+                "Snaps {}. F3 turns them {}.",
+                if self.plan.snap.on { "on" } else { "off" },
+                if self.plan.snap.on { "off" } else { "on" },
+            );
+        }
         let (all, none, hide, isolate, show, events) = ctx.input(|i| {
             let (cmd, alt, shift) = (i.modifiers.command, i.modifiers.alt, i.modifiers.shift);
             let h = i.key_pressed(egui::Key::H);
@@ -527,33 +644,17 @@ impl CreaBimApp {
         }
         for e in &events {
             match e {
-                egui::Event::Copy | egui::Event::Cut => {
-                    if self.copy_selected() {
-                        let n = self.clipboard.len();
-                        ctx.copy_text(self.clipboard_text());
-                        if matches!(e, egui::Event::Cut) {
-                            self.delete_selected();
-                            self.status = format!("Cut {n} elements. Ctrl+V pastes them back.");
-                        } else {
-                            self.status = format!("Copied {n} elements. Ctrl+V pastes them.");
-                        }
-                    }
-                }
+                egui::Event::Copy => self.run_command(ctx, Command::Copy, None),
+                egui::Event::Cut => self.run_command(ctx, Command::Cut, None),
                 egui::Event::Paste(text) => self.paste_text(text),
                 _ => {}
             }
         }
         if undo {
-            let label = self.doc.undo_label().map(str::to_owned);
-            if self.doc.undo() {
-                self.status = format!("Undid: {}", label.unwrap_or_default());
-            }
+            self.run_command(ctx, Command::Undo, None);
         }
         if redo {
-            let label = self.doc.redo_label().map(str::to_owned);
-            if self.doc.redo() {
-                self.status = format!("Redid: {}", label.unwrap_or_default());
-            }
+            self.run_command(ctx, Command::Redo, None);
         }
         if delete {
             self.delete_selected();
@@ -864,26 +965,34 @@ impl CreaBimApp {
             indices.extend(item.mesh.indices.iter().map(|i| i + base));
         }
 
-        // ground grid, 1 m spacing
-        let lo = self
-            .scene
-            .iter()
-            .filter_map(|s| s.mesh.bounds())
-            .map(|b| b.0.z)
-            .fold(0.0f32, f32::min)
-            - 0.01;
+        // the working grid, 1 m spacing, just under the workplane or the level
+        // the 3D tools draw on, so it stays put whatever the model's lowest
+        // point is
+        let level_plane = Workplane::ground(self.work_level().map_or(0.0, |(_, z)| z));
+        let grid_lines = |plane: Workplane, lo: f64, hi: f64, color: [f32; 3]| {
+            let on = |u: f64, v: f64| -> [f32; 3] {
+                (plane.to_model(DVec2::new(u, v)) - plane.normal() * 0.002)
+                    .as_vec3()
+                    .to_array()
+            };
+            let mut out = Vec::new();
+            for i in lo as i32..=hi as i32 {
+                let v = i as f64;
+                for (a, b) in [((v, lo), (v, hi)), ((lo, v), (hi, v))] {
+                    out.push(line_vertex(on(a.0, a.1), color));
+                    out.push(line_vertex(on(b.0, b.1), color));
+                }
+            }
+            out
+        };
         let mut lines = Vec::new();
         for (a, b, c) in &ghost_lines {
             lines.push(line_vertex(a.as_vec3().to_array(), *c));
             lines.push(line_vertex(b.as_vec3().to_array(), *c));
         }
-        let grid = [0.80, 0.80, 0.82];
-        for i in -20..=30 {
-            let v = i as f32;
-            for (a, b) in [([v, -20.0], [v, 30.0]), ([-20.0, v], [30.0, v])] {
-                lines.push(line_vertex([a[0], a[1], lo], grid));
-                lines.push(line_vertex([b[0], b[1], lo], grid));
-            }
+        lines.extend(grid_lines(level_plane, -20.0, 30.0, [0.80, 0.80, 0.82]));
+        if let Some((plane, _)) = self.workplane {
+            lines.extend(grid_lines(plane, -8.0, 8.0, [0.92, 0.55, 0.30]));
         }
 
         // 2D drawing shown in 3D space, on its level
@@ -1078,6 +1187,7 @@ impl CreaBimApp {
             };
             let ctx = ui.ctx().clone();
             if let Some(m) = self.plan.modal.as_mut() {
+                m.panel(&ctx, rect);
                 match m.update(&mut self.doc, &ctx, &painter, hover, &map) {
                     Outcome::Running(s) => self.status = s,
                     Outcome::Done(s) | Outcome::Cancelled(s) => {
@@ -1092,11 +1202,12 @@ impl CreaBimApp {
         if response.hovered() && self.plan.modal.is_none() && !ui.ctx().egui_wants_keyboard_input()
         {
             if let (Some(keys), true, Some(grab)) = (
-                planview::start_keys(ui.ctx()),
+                planview::start_keys(ui.ctx()).or(self.plan.armed),
                 self.selection.is_some(),
                 hover,
             ) {
                 self.plan.cancel();
+                self.plan.armed = None;
                 let ids = self.selection.all();
                 match planview::start_modal(
                     &mut self.doc,
@@ -1123,6 +1234,56 @@ impl CreaBimApp {
                     Err(e) => self.status = e,
                 }
                 return;
+            }
+        }
+
+        if self.pick_plane_3d(ui, &response, &painter, &project, &ray) {
+            return;
+        }
+
+        // Esc or right-click steps back: drop the tool's clicks, then the
+        // tool; in Select, right-click opens the menu
+        if self.plan.sketch.is_none() && self.plan.outline.is_none() {
+            let (esc, shift) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.modifiers.shift));
+            let esc = esc && response.hovered() && !ui.ctx().egui_wants_keyboard_input();
+            let right = response.secondary_clicked() && !shift;
+            if esc || right {
+                if self.pending_3d.take().is_some() || self.guide_from.take().is_some() {
+                    self.plan.cancel();
+                    self.status = "Cancelled. Right-click or Esc again to leave the tool.".into();
+                } else if !self.plan.step_back() && right && self.plan.tool == Tool::Select {
+                    if let Some(p) = response.interact_pointer_pos() {
+                        let (o, d) = ray(p);
+                        let hit = pick::pick(&self.scene, o.as_vec3(), d.as_vec3());
+                        if let Some(h) = hit.as_ref().filter(|h| !self.selection.contains(h.id)) {
+                            self.selection.only(h.id);
+                            self.face = None;
+                        }
+                        self.menu_at_3d = hit
+                            .map(|h| o + d * h.t as f64)
+                            .or_else(|| Workplane::ground(0.0).intersect(o, d));
+                        self.menu_plane_3d = face_plane(&self.scene, o, d);
+                    }
+                }
+            }
+            if self.plan.tool == Tool::Select {
+                let n = self.selection.len();
+                let at = self.menu_at_3d;
+                let mut picked = None;
+                response.context_menu(|ui| picked = crate::commands::context_menu(ui, n));
+                match picked {
+                    Some(Command::WorkplaneHere) => match self.menu_plane_3d {
+                        Some(plane) => self.set_workplane(plane, "on a face".into()),
+                        None => {
+                            self.status = "Right-click a face to put the workplane on it.".into()
+                        }
+                    },
+                    Some(c) => match c.modal() {
+                        Some(m) => self.plan.armed = Some(m),
+                        None => self.plan.commands.push((c, at)),
+                    },
+                    None => {}
+                }
             }
         }
 
@@ -1221,6 +1382,7 @@ impl CreaBimApp {
             .map(|id| planview::joined_with(&self.doc, id))
             .unwrap_or_default();
         self.refresh_snaps_3d(&exclude);
+        let snap_cfg = self.plan.snap.live(ui.input(|i| i.modifiers.alt));
         let dragging = {
             let snapper = &self.snaps_3d.as_ref().expect("just built").2;
             let scene = &self.scene;
@@ -1231,7 +1393,7 @@ impl CreaBimApp {
             let snap = |p: egui::Pos2, from: Option<DVec3>| {
                 let (o, d) = ray(p);
                 let free = Workplane::ground(from.map_or(0.0, |f| f.z)).intersect(o, d);
-                let s = snapper.snap(p, &project, from, free)?;
+                let s = snapper.snap(&snap_cfg, p, &project, from, free)?;
                 Some((s.p, s))
             };
             let grab_body = |p: egui::Pos2, id: ElementId| {
@@ -1273,6 +1435,14 @@ impl CreaBimApp {
             self.camera.orbit(GVec2::new(d.x, d.y));
         }
 
+        let slab_outline = self.plan.outline.as_ref().is_some_and(|o| !o.is_wall());
+        if self.plan.tool == Tool::Slab || slab_outline {
+            let modes = self.plan.tool == Tool::Slab;
+            let (doc, plan, sel) = (&mut self.doc, &mut self.plan, &mut self.selection);
+            if let Some(msg) = crate::slabtool::controls(ui, rect, None, modes, doc, plan, sel) {
+                self.status = msg;
+            }
+        }
         if self.plan.outline.is_some() {
             self.outline_3d(ui, &response, &painter, &project, &ray);
             return;
@@ -1350,8 +1520,176 @@ impl CreaBimApp {
         if !fresh {
             let mut snapper = Snapper::from_scene(&self.scene, exclude);
             snapper.add_guides(self.doc.model(), GUIDE_REACH_3D);
+            snapper.add_grids(self.doc.model());
             snapper.add_sketches(self.doc.model(), exclude);
             self.snaps_3d = Some((rev, exclude.to_vec(), snapper));
+        }
+    }
+
+    fn set_workplane(&mut self, plane: Workplane, name: String) {
+        self.status = format!(
+            "Workplane: {name}. Sketches and guides drawn in 3D go on it. Pick Level in the Workplane list to go back."
+        );
+        self.workplane = Some((plane, name));
+        self.geometry_key = None;
+    }
+
+    /// Picking a workplane: a face, or three points. Returns true while it
+    /// takes the view's input.
+    fn pick_plane_3d(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        painter: &egui::Painter,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        ray: &dyn Fn(egui::Pos2) -> (DVec3, DVec3),
+    ) -> bool {
+        let Some(mode) = self.plane_pick.clone() else {
+            return false;
+        };
+        let accent = Color32::from_rgb(230, 120, 30);
+        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if esc || response.secondary_clicked() {
+            self.plane_pick = None;
+            self.status = "Workplane unchanged.".into();
+            return true;
+        }
+        let Some(hover) = response.hover_pos() else {
+            return true;
+        };
+        let (o, d) = ray(hover);
+        match mode {
+            PlanePick::Face => {
+                let plane = face_plane(&self.scene, o, d);
+                if let Some(plane) = plane {
+                    crate::sketch::draw_plane(painter, project, &plane, accent);
+                }
+                self.status = "Click the face the workplane lies on. Right-click cancels.".into();
+                if response.clicked() {
+                    match plane {
+                        Some(plane) => {
+                            self.plane_pick = None;
+                            self.set_workplane(plane, "on a face".into());
+                        }
+                        None => {
+                            self.status = "That isn't a face. Click a wall, slab or mass.".into()
+                        }
+                    }
+                }
+            }
+            PlanePick::Points(mut pts) => {
+                self.refresh_snaps_3d(&[]);
+                let free = pick::pick(&self.scene, o.as_vec3(), d.as_vec3())
+                    .map(|h| o + d * h.t as f64)
+                    .or_else(|| Workplane::ground(0.0).intersect(o, d));
+                let snapper = &self.snaps_3d.as_ref().expect("just built").2;
+                let snap_cfg = self.plan.snap.live(ui.input(|i| i.modifiers.alt));
+                let snap = snapper.snap(&snap_cfg, hover, project, pts.last().copied(), free);
+                let at = snap.map(|s| s.p);
+                if let (Some(s), Some(c)) = (snap, at.and_then(project)) {
+                    snaps::draw(painter, s, c, None);
+                }
+                let mut shown = pts.clone();
+                shown.extend(at);
+                let scr: Vec<egui::Pos2> = shown.iter().filter_map(|p| project(*p)).collect();
+                for c in &scr {
+                    painter.circle_filled(*c, 3.5, accent);
+                }
+                if scr.len() > 1 {
+                    painter.add(egui::Shape::closed_line(
+                        scr,
+                        egui::Stroke::new(1.5, accent),
+                    ));
+                }
+                self.status = format!(
+                    "Click point {} of 3 for the workplane: the first two set its x axis. Right-click cancels.",
+                    pts.len() + 1
+                );
+                if response.clicked() {
+                    if let Some(p) = at {
+                        pts.push(p);
+                    }
+                    if pts.len() == 3 {
+                        self.plane_pick = None;
+                        let x = (pts[1] - pts[0]).normalize_or_zero();
+                        let n = x.cross(pts[2] - pts[0]).normalize_or_zero();
+                        if x == DVec3::ZERO || n == DVec3::ZERO {
+                            self.status =
+                                "Those points are in a line. Pick the workplane again.".into();
+                        } else {
+                            let plane = Workplane {
+                                origin: pts[0],
+                                x,
+                                y: n.cross(x),
+                            };
+                            self.set_workplane(plane, "through three points".into());
+                        }
+                    } else {
+                        self.plane_pick = Some(PlanePick::Points(pts));
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// A guide drawn on the workplane in 3D: two points, snapped and laid
+    /// onto the plane.
+    fn guide_on_plane(
+        &mut self,
+        response: &egui::Response,
+        painter: &egui::Painter,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        ray: &dyn Fn(egui::Pos2) -> (DVec3, DVec3),
+        plane: Workplane,
+    ) {
+        let accent = Color32::from_rgb(230, 120, 30);
+        let Some(hover) = response.hover_pos() else {
+            return;
+        };
+        let (o, d) = ray(hover);
+        let n = plane.normal();
+        let onto = |p: DVec3| p - n * (p - plane.origin).dot(n);
+        let from = self.guide_from;
+        self.refresh_snaps_3d(&[]);
+        let snapper = &self.snaps_3d.as_ref().expect("just built").2;
+        let snap_cfg = self.plan.snap.live(response.ctx.input(|i| i.modifiers.alt));
+        let Some(snap) = snapper.snap(&snap_cfg, hover, project, from, plane.intersect(o, d))
+        else {
+            return;
+        };
+        let at = onto(snap.p);
+        if let Some(c) = project(at) {
+            snaps::draw(painter, snap, c, from.and_then(project));
+        }
+        if let Some(a) = from {
+            draw_guide_3d(painter, project, a, at, egui::Stroke::new(2.0, accent));
+        }
+        self.status = match from {
+            None => "Guide on the workplane: click a point it runs through.".into(),
+            Some(a) => format!("{:.2} m. Click a second point.", a.distance(at)),
+        };
+        if !response.clicked() {
+            return;
+        }
+        match from {
+            None => self.guide_from = Some(at),
+            Some(a) if a.distance(at) > 0.01 => {
+                self.guide_from = None;
+                let e = creabim_core::Element::new(
+                    "Guide",
+                    ElementKind::Guide(creabim_core::Guide {
+                        level: None,
+                        a,
+                        b: at,
+                    }),
+                );
+                let r = self
+                    .doc
+                    .commit(creabim_core::Transaction::new("Add guide").insert(e));
+                self.report(r, "Guide added on the workplane.");
+            }
+            Some(_) => {}
         }
     }
 
@@ -1403,11 +1741,21 @@ impl CreaBimApp {
             }
             return;
         }
+        if let (Tool::Guide, Some(plane)) = (tool, self.workplane.as_ref().map(|w| w.0)) {
+            self.guide_on_plane(response, painter, project, ray, plane);
+            return;
+        }
         let Some((level, z)) = self.work_level() else {
             return;
         };
         let accent = Color32::from_rgb(230, 120, 30);
         let stroke = egui::Stroke::new(2.0, accent);
+        // a right-click with nothing drawn leaves the Slab tool
+        if tool == Tool::Slab && response.secondary_clicked() && self.pending_3d.is_none() {
+            self.plan.tool = Tool::Select;
+            self.status = "Left the Slab tool.".into();
+            return;
+        }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) || response.secondary_clicked() {
             self.pending_3d = None;
         }
@@ -1478,7 +1826,8 @@ impl CreaBimApp {
         let exclude: Vec<ElementId> = vec![];
         self.refresh_snaps_3d(&exclude);
         let snapper = &self.snaps_3d.as_ref().expect("just built").2;
-        let Some(snap) = snapper.snap(hover, project, from, free) else {
+        let snap_cfg = self.plan.snap.live(ui.input(|i| i.modifiers.alt));
+        let Some(snap) = snapper.snap(&snap_cfg, hover, project, from, free) else {
             return;
         };
         let p = snap.p.truncate();
@@ -1569,13 +1918,14 @@ impl CreaBimApp {
             } else {
                 self.status = match (tool, self.pending_3d) {
                     (Tool::Wall, Some(_)) => format!("Drawing walls on {level_name}. Click the next corner; Esc or right-click ends."),
-                    (Tool::Slab | Tool::Section | Tool::Elevation, Some(_)) => "Click the second corner.".into(),
+                    (Tool::Slab, _) => self.plan.status.take().unwrap_or_default(),
+                    (Tool::Section | Tool::Elevation, Some(_)) => "Click the second corner.".into(),
                     (Tool::Guide, Some(_)) if self.plan.guide_edge.is_some() => "Click where the parallel guide goes.".into(),
                     (Tool::Guide, Some(_)) => "Click a second point the guide runs through.".into(),
                     _ => format!("Added on {level_name}."),
                 };
             }
-        } else if from.is_none() && response.hovered() {
+        } else if from.is_none() && response.hovered() && tool != Tool::Slab {
             self.status = format!(
                 "{} on {level_name} (the open plan's level). {}",
                 tool.label(),
@@ -1584,7 +1934,8 @@ impl CreaBimApp {
         }
     }
 
-    /// Redrawing a slab or wall in the 3D view, on its level, with snaps.
+    /// Drawing a slab, or redrawing a slab or wall, in the 3D view, on its
+    /// level, with snaps.
     fn outline_3d(
         &mut self,
         ui: &egui::Ui,
@@ -1596,25 +1947,23 @@ impl CreaBimApp {
         let Some(outline) = self.plan.outline.clone() else {
             return;
         };
-        let (enter, escape) = ui.input(|i| {
+        let here = response.hovered();
+        let (enter, escape, shift) = ui.input(|i| {
             (
-                i.key_pressed(egui::Key::Enter),
-                i.key_pressed(egui::Key::Escape),
+                here && i.key_pressed(egui::Key::Enter),
+                here && i.key_pressed(egui::Key::Escape),
+                i.modifiers.shift,
             )
         });
-        if escape {
-            self.plan.outline = None;
-            self.status = "Redraw cancelled.".into();
-            return;
-        }
-        let exclude = [outline.target];
+        let exclude: Vec<ElementId> = outline.target.into_iter().collect();
         self.refresh_snaps_3d(&exclude);
+        let snap_cfg = self.plan.snap.live(ui.input(|i| i.modifiers.alt));
         let hover = response.hover_pos().and_then(|h| {
             let (o, d) = ray(h);
             let free = Workplane::ground(outline.z).intersect(o, d);
             let from = outline.points.last().map(|p| p.extend(outline.z));
             let snapper = &self.snaps_3d.as_ref()?.2;
-            let s = snapper.snap(h, project, from, free)?;
+            let s = snapper.snap(&snap_cfg, h, project, from, free)?;
             if let Some(c) = project(s.p.truncate().extend(outline.z)) {
                 if s.kind != SnapKind::Grid {
                     snaps::draw(painter, s, c, from.and_then(project));
@@ -1623,25 +1972,35 @@ impl CreaBimApp {
             Some((h, s.p.truncate()))
         });
         outline.draw(painter, project, hover.map(|h| h.1));
-        let finish = enter || (response.secondary_clicked() && !outline.points.is_empty());
-        let mut closed = false;
-        if response.clicked() {
-            if let Some((h, p)) = hover {
-                let near = outline.near_first(h, project);
-                let o = self.plan.outline.as_mut().expect("checked");
-                closed = o.click(p, near);
+        let click = match (response.clicked(), hover) {
+            (true, Some((h, p))) => Some((p, outline.near_first(h, project))),
+            _ => None,
+        };
+        let right = response.secondary_clicked() && !shift;
+        let arc = self.plan.slab_arc;
+        let Some(o) = self.plan.outline.as_mut() else {
+            return;
+        };
+        match o.input(enter, escape, right, click, arc) {
+            crate::outline::Next::Drawing(hint) => self.status = hint,
+            crate::outline::Next::Cancel(msg) => {
+                self.plan.outline = None;
+                self.status = msg.into();
             }
-        }
-        if finish || closed {
-            if let Some(o) = self.plan.outline.take() {
-                let r = o.finish(&mut self.doc, closed);
-                match r {
-                    Ok(msg) => self.status = msg,
-                    Err(e) => self.status = format!("Couldn't redraw: {e}"),
+            crate::outline::Next::Finish(closed) => {
+                if let Some(o) = self.plan.outline.take() {
+                    match o.finish(&mut self.doc, closed) {
+                        Ok((msg, made)) => {
+                            if let Some(id) = made {
+                                self.selection.only(id);
+                                self.face = None;
+                            }
+                            self.status = msg;
+                        }
+                        Err(e) => self.status = format!("Couldn't draw that: {e}"),
+                    }
                 }
             }
-        } else {
-            self.status = outline.hint().into();
         }
     }
 
@@ -1740,42 +2099,57 @@ impl CreaBimApp {
         if let Some(hint) = crate::sketch::shape_controls(ui, response.rect, None, draft) {
             self.status = hint;
         }
-        let (enter, escape, shift) = ui.input(|i| {
+        let (enter, escape, shift, alt) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Enter),
                 i.key_pressed(egui::Key::Escape),
                 i.modifiers.shift,
+                i.modifiers.alt,
             )
         });
         let hover = response.hover_pos();
+        // corners, edges and centres of what is modelled; Shift keeps lines square instead
+        self.refresh_snaps_3d(&[]);
+        let snap_cfg = self.plan.snap.live(alt || shift);
+        let last = self
+            .plan
+            .sketch
+            .as_ref()
+            .filter(|_| mine)
+            .and_then(|d| Some(d.plane.to_model(*d.points.last()?)));
+        let snapped = hover.and_then(|h| {
+            let snapper = &self.snaps_3d.as_ref()?.2;
+            snapper.snap(&snap_cfg, h, project, last, None)
+        });
+        if let Some(s) = snapped {
+            if let Some(c) = project(s.p) {
+                snaps::draw(painter, s, c, last.and_then(project));
+            }
+        }
         // the plane a first click would start on
+        let (scene, custom) = (&self.scene, self.workplane.as_ref().map(|w| w.0));
         let candidate = |p: egui::Pos2| -> Option<Workplane> {
             let (o, d) = ray(p);
-            match pick::pick(&self.scene, o.as_vec3(), d.as_vec3()) {
-                Some(h) => {
-                    let item = self.scene.iter().find(|s| s.id == h.id)?;
-                    let idx = &item.mesh.indices[h.triangle * 3..h.triangle * 3 + 3];
-                    let v = |k: usize| glam::Vec3::from(item.mesh.positions[idx[k] as usize]);
-                    let mut n = (v(1) - v(0))
-                        .cross(v(2) - v(0))
-                        .normalize_or_zero()
-                        .as_dvec3();
-                    if n.dot(d) > 0.0 {
-                        n = -n;
-                    }
-                    let at = o + d * h.t as f64;
-                    Some(Workplane::facing(at, n))
-                }
-                None => {
-                    let at = Workplane::ground(0.0).intersect(o, d)?;
-                    Some(Workplane {
-                        origin: at,
-                        ..Workplane::ground(0.0)
-                    })
-                }
+            if let Some(plane) = custom {
+                // the first corner is where the pointer meets it
+                let at = plane.intersect(o, d)?;
+                return Some(Workplane {
+                    origin: at,
+                    ..plane
+                });
             }
+            face_plane(scene, o, d).or_else(|| {
+                let at = Workplane::ground(0.0).intersect(o, d)?;
+                Some(Workplane {
+                    origin: at,
+                    ..Workplane::ground(0.0)
+                })
+            })
         };
         let on_plane = match (&self.plan.sketch, hover) {
+            (Some(d), Some(_)) if mine && snapped.is_some() => {
+                snapped.map(|s| d.snap(d.plane.to_plane(s.p), 1e-6, false, false))
+            }
             (Some(d), Some(p)) if mine => {
                 let (o, dir) = ray(p);
                 d.plane.intersect(o, dir).map(|m| {
@@ -1783,7 +2157,12 @@ impl CreaBimApp {
                     let dist = m.distance(cam.eye().as_dvec3());
                     let tol = dist * 2.0 * (cam.fov_y as f64 / 2.0).tan() * 10.0
                         / response.rect.height() as f64;
-                    d.snap(d.plane.to_plane(m), tol, shift)
+                    d.snap(
+                        d.plane.to_plane(m),
+                        tol,
+                        shift,
+                        self.plan.snap.live(alt).allows(SnapKind::Grid),
+                    )
                 })
             }
             _ => None,
@@ -1828,7 +2207,11 @@ impl CreaBimApp {
         }
         match &mut self.plan.sketch {
             None => {
-                if let Some(plane) = hover.and_then(candidate) {
+                if let Some(mut plane) = hover.and_then(candidate) {
+                    // start on the snapped point, kept on the face's plane
+                    if let Some(s) = snapped {
+                        plane.origin = plane.to_model(plane.to_plane(s.p));
+                    }
                     let draft = SketchDraft::new(plane, None);
                     let shape = crate::sketch::shape(ui.ctx());
                     self.status = format!(
@@ -2261,6 +2644,59 @@ impl CreaBimApp {
         });
     }
 
+    /// Where 3D sketches and guides go: the level, a face, three points,
+    /// with an offset along the plane's normal.
+    fn workplane_bar(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.label("Workplane:").on_hover_text(
+            "Where sketches and guides drawn in 3D go. Plans draw on their level and sections on the section plane.",
+        );
+        let text = match &self.workplane {
+            Some((_, name)) => name.clone(),
+            None => "Level".into(),
+        };
+        egui::ComboBox::from_id_salt("workplane")
+            .selected_text(text)
+            .width(150.0)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(self.workplane.is_none(), "Level (follows the plan)")
+                    .clicked()
+                {
+                    self.workplane = None;
+                    self.geometry_key = None;
+                    self.status = "Workplane: the working level.".into();
+                }
+                if ui.button("Pick a face…").clicked() {
+                    self.plane_pick = Some(PlanePick::Face);
+                }
+                if ui.button("Through three points…").clicked() {
+                    self.plane_pick = Some(PlanePick::Points(vec![]));
+                }
+                let level = self.work_level();
+                if let Some((_, z)) = level {
+                    if ui.button("Level plane you can offset").clicked() {
+                        self.set_workplane(Workplane::ground(z), format!("level at {z:+.2} m"));
+                    }
+                }
+            });
+        if let Some((plane, _)) = self.workplane.as_mut() {
+            let mut d = 0.0;
+            let r = ui
+                .add(
+                    egui::DragValue::new(&mut d)
+                        .speed(0.05)
+                        .prefix("Offset ± ")
+                        .suffix(" m"),
+                )
+                .on_hover_text("Drag to slide the workplane along its normal");
+            if r.changed() && d != 0.0 {
+                plane.origin += plane.normal() * d;
+                self.geometry_key = None;
+            }
+        }
+    }
+
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             for t in Tool::ALL {
@@ -2285,6 +2721,8 @@ impl CreaBimApp {
                         ui.selectable_value(&mut self.plan.pivot, p, p.label());
                     }
                 });
+            self.workplane_bar(ui);
+            snaps::snap_bar(ui, &mut self.plan.snap);
             ui.separator();
             ui.label("View:");
             let current = self
@@ -2767,13 +3205,44 @@ impl CreaBimApp {
                 }
             }
             ElementKind::Slab(s) => {
-                if num(ui, "Thickness", &mut s.thickness, 0.02, 3.0) {
+                let mut thickness = s.thickness;
+                if num(ui, "Thickness", &mut thickness, 0.02, 3.0) {
+                    s.set_thickness(thickness, self.plan.slab_keep_bottom);
                     label = "Slab thickness"
                 }
+                let keep = &mut self.plan.slab_keep_bottom;
+                ui.horizontal(|ui| {
+                    ui.label("Keep");
+                    ui.selectable_value(keep, false, "Top")
+                        .on_hover_text("A new thickness moves the underside; the top stays put.");
+                    ui.selectable_value(keep, true, "Bottom")
+                        .on_hover_text("A new thickness moves the top; the underside stays put.");
+                });
+                if num(ui, "Top offset", &mut s.top_offset, -100.0, 100.0) {
+                    label = "Slab top offset"
+                }
+                let level = self.doc.model().level(s.level).map_or(0.0, |l| l.elevation);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Top at {:.3} m, underside at {:.3} m. The top handle moves the top, the underside handle the underside.",
+                        s.top(level),
+                        s.top(level) - s.thickness
+                    ))
+                    .weak(),
+                );
                 if self.material_combo(ui, &mut s.material) {
                     label = "Slab material"
                 }
-                ui.label(format!("{} boundary points", s.boundary.len()));
+                let arcs = s.bulges.iter().filter(|b| b.abs() > 1e-9).count();
+                ui.label(match arcs {
+                    0 => format!("{} corners, {:.2} m²", s.boundary.len(), s.area()),
+                    n => format!(
+                        "{} corners, {n} arc{}, {:.2} m²",
+                        s.boundary.len(),
+                        if n == 1 { "" } else { "s" },
+                        s.area()
+                    ),
+                });
                 if ui
                     .button("Redraw outline")
                     .on_hover_text("Click a new outline for this slab, in a plan or the 3D view.")
@@ -3376,7 +3845,7 @@ impl CreaBimApp {
             self.plan.tool = Tool::Select;
             self.plan.outline = crate::outline::Outline::start(self.doc.model(), id);
             if let Some(o) = &self.plan.outline {
-                self.status = o.hint().into();
+                self.status = o.hint();
             }
         }
 
@@ -3424,6 +3893,12 @@ impl eframe::App for CreaBimApp {
         egui::Panel::top("menu").show(ui, |ui| {
             self.menu(ui);
             self.toolbar(ui);
+            ui.horizontal(|ui| {
+                let some = self.selection.is_some();
+                if let Some(c) = crate::commands::modify_bar(ui, some) {
+                    self.run_command(&ctx, c, None);
+                }
+            });
         });
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -3479,6 +3954,9 @@ impl eframe::App for CreaBimApp {
 
         if let Some(s) = self.plan.status.take() {
             self.status = s;
+        }
+        for (c, at) in std::mem::take(&mut self.plan.commands) {
+            self.run_command(&ctx, c, at);
         }
 
         if self.placement == PlanPlacement::Window {
@@ -3697,6 +4175,22 @@ const GUIDE_REACH_3D: f64 = 60.0;
 
 /// A guide through `a` and `b`, dashed across the 3D view. It is sampled
 /// along its length so the parts behind the camera drop out cleanly.
+/// The plane of the face a ray hits, facing back along the ray.
+fn face_plane(scene: &[creabim_geom::SceneItem], o: DVec3, d: DVec3) -> Option<Workplane> {
+    let h = pick::pick(scene, o.as_vec3(), d.as_vec3())?;
+    let item = scene.iter().find(|s| s.id == h.id)?;
+    let idx = &item.mesh.indices[h.triangle * 3..h.triangle * 3 + 3];
+    let v = |k: usize| glam::Vec3::from(item.mesh.positions[idx[k] as usize]);
+    let mut n = (v(1) - v(0))
+        .cross(v(2) - v(0))
+        .normalize_or_zero()
+        .as_dvec3();
+    if n.dot(d) > 0.0 {
+        n = -n;
+    }
+    Some(Workplane::facing(o + d * h.t as f64, n))
+}
+
 fn draw_guide_3d(
     painter: &egui::Painter,
     project: &dyn Fn(DVec3) -> Option<egui::Pos2>,

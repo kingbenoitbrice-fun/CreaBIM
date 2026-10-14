@@ -112,6 +112,25 @@ pub fn section_view(
         }
     }
 
+    // Guides drawn on the section plane
+    for e in model.iter() {
+        let ElementKind::Guide(g) = &e.kind else {
+            continue;
+        };
+        let (a, b) = (frame.project(g.a), frame.project(g.b));
+        if a.z.abs() > 0.01 || b.z.abs() > 0.01 {
+            continue;
+        }
+        if let Some((a, b)) = crate::plan::guide_span(a.truncate(), b.truncate()) {
+            items.push(PlanItem::Line {
+                id: e.id,
+                pen: Pen::Guide,
+                a,
+                b,
+            });
+        }
+    }
+
     // Level datums across what the drawing shows, a metre past each side.
     let span = PlanView {
         items: items.clone(),
@@ -701,6 +720,36 @@ mod tests {
             (min_z - 2.2).abs() < 1e-6,
             "lintel starts at the door head, got {min_z}"
         );
+    }
+
+    #[test]
+    fn a_guide_on_the_section_plane_shows_there_but_not_in_plans() {
+        let mut m = sample();
+        let guide = creabim_core::Element::new(
+            "Guide",
+            ElementKind::Guide(creabim_core::Guide {
+                level: None,
+                a: DVec3::new(2.1, 0.0, 0.5),
+                b: DVec3::new(2.1, 4.0, 2.5),
+            }),
+        );
+        let id = guide.id;
+        creabim_core::Transaction::new("t")
+            .insert(guide)
+            .apply(&mut m)
+            .unwrap();
+        let d = section_view(
+            &m,
+            DVec2::new(2.1, -3.0),
+            DVec2::new(2.1, 9.0),
+            20.0,
+            true,
+            false,
+        );
+        assert!(d.items.iter().any(|i| i.id() == id));
+        let level = m.levels().next().unwrap().0.id;
+        let plan = crate::plan_view(&m, level, 1.2);
+        assert!(!plan.items.iter().any(|i| i.id() == id));
     }
 
     #[test]

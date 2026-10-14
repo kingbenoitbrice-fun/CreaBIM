@@ -728,19 +728,25 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                 }
             }
             ElementKind::Slab(s) if s.level == level => {
+                // cut when the plan plane passes through it, else seen below
+                let bottom = s.top_offset - s.thickness;
+                let cut = bottom < cut_height && cut_height < s.top_offset;
                 items.insert(
                     0,
                     PlanItem::Polygon {
                         id: e.id,
-                        pen: Pen::Projection,
-                        points: s.boundary.clone(),
+                        pen: if cut { Pen::Cut } else { Pen::Projection },
+                        points: s.outline(),
                     },
                 );
             }
             ElementKind::Sketch(sk) if sk.level == Some(level) => {
                 items.extend(sketch_items(e.id, sk, &|p| p));
             }
-            ElementKind::Guide(g) if g.level.is_none_or(|l| l == level) => {
+            // guides lying flat; one standing on a wall face shows in sections
+            ElementKind::Guide(g)
+                if g.level.is_none_or(|l| l == level) && (g.a.z - g.b.z).abs() < 1e-3 =>
+            {
                 if let Some((a, b)) = guide_span(g.a.truncate(), g.b.truncate()) {
                     items.push(PlanItem::Line {
                         id: e.id,

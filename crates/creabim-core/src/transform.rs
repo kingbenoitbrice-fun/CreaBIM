@@ -168,19 +168,27 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
             for p in &mut s.boundary {
                 *p = t.point2(*p);
             }
-            let flips = match t {
-                Xform::Scale { factor, .. } => *factor < 0.0,
-                Xform::Stretch { factor, .. } => factor.x * factor.y < 0.0,
-                _ => false,
-            };
-            if flips {
-                s.boundary.reverse();
-            }
+            // a mirror in plan turns arcs the other way
             if let Xform::Stretch { factor, .. } = t {
-                if factor.z <= 0.0 {
-                    return None;
+                if factor.x * factor.y < 0.0 {
+                    for b in &mut s.bulges {
+                        *b = -*b;
+                    }
                 }
-                s.thickness *= factor.z;
+            }
+            s.make_ccw();
+            match t {
+                Xform::Move(d) => s.top_offset += d.z,
+                Xform::Stretch { center, factor } => {
+                    if factor.z <= 0.0 {
+                        return None;
+                    }
+                    let level = elevation(Some(s.level));
+                    let top = s.top(level);
+                    s.top_offset = center.z + (top - center.z) * factor.z - level;
+                    s.thickness *= factor.z;
+                }
+                _ => {}
             }
         }
         ElementKind::Opening(o) => {
@@ -294,7 +302,7 @@ pub fn pivot(model: &Model, id: ElementId) -> Option<DVec3> {
         ElementKind::Wall(w) => {
             ((w.start + w.end) / 2.0).extend(elevation(Some(w.level)) + w.base_offset)
         }
-        ElementKind::Slab(s) => mean(&s.boundary).extend(elevation(Some(s.level))),
+        ElementKind::Slab(s) => mean(&s.boundary).extend(s.top(elevation(Some(s.level)))),
         ElementKind::Opening(o) => {
             let ElementKind::Wall(w) = &model.get(o.host)?.kind else {
                 return None;
