@@ -1,5 +1,6 @@
 //! CreaBIM desktop app.
 
+mod annotate;
 mod app;
 mod boxsel;
 mod camera;

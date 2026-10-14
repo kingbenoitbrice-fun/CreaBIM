@@ -2,9 +2,11 @@
 //! SVG, PDF and the app's sheet view all implement it, so a sheet looks the
 //! same on screen as in its exports.
 
-use crate::annotate::{dimension_geometry, tag_geometry, TEXT};
+use crate::annotate::{dimension_geometry, tag_geometry};
+use crate::annotation::{Marks, TextLook};
 use crate::plan::{hatch_lines, Hatch, Pen, PlanItem, PlanView};
 use crate::raster::Raster;
+use creabim_core::Font;
 use glam::DVec2;
 use std::fmt::Write;
 use std::sync::Arc;
@@ -46,6 +48,23 @@ pub trait Canvas {
     fn text_angle(&mut self, at: DVec2, size: f64, text: &str, anchor: Anchor, angle: f64);
     /// An image spanning `lo`..`hi`, shown only inside `clip`.
     fn image(&mut self, lo: DVec2, hi: DVec2, clip: Option<(DVec2, DVec2)>, raster: &Arc<Raster>);
+
+    /// An open polyline in a colour (sRGB, 0..1). Canvases without colour
+    /// draw it as `line` would.
+    fn line_rgb(&mut self, pts: &[DVec2], stroke: Stroke, _rgb: [f32; 3]) {
+        self.line(pts, stroke);
+    }
+
+    /// A filled polygon in a colour (sRGB, 0..1); black without colour.
+    fn fill_rgb(&mut self, pts: &[DVec2], _rgb: [f32; 3]) {
+        self.fill(pts, 0.0);
+    }
+
+    /// Text in a typeface, weight and colour. Canvases that only have one
+    /// font draw it as `text_angle` would, at the look's size.
+    fn styled_text(&mut self, at: DVec2, text: &str, anchor: Anchor, angle: f64, look: &TextLook) {
+        self.text_angle(at, look.size, text, anchor, angle);
+    }
 
     /// Horizontal text centred vertically on `at`.
     fn text(&mut self, at: DVec2, size: f64, text: &str, anchor: Anchor) {
@@ -190,32 +209,42 @@ pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
                 ..
             } => canvas.text(to(*at), *size, text, *align),
             PlanItem::Dimension {
-                a, b, offset, text, ..
+                a,
+                b,
+                offset,
+                text,
+                look,
+                ..
             } => {
-                let g = dimension_geometry(*a, *b, *offset, 1.0 / map.k());
+                let g = dimension_geometry(*a, *b, *offset, look, 1.0 / map.k());
                 for (p, q) in g.lines {
-                    canvas.line(&[to(p), to(q)], DIMENSION);
+                    ink_line(canvas, &[to(p), to(q)], DIMENSION, look);
                 }
                 for (p, q) in g.ticks {
-                    canvas.line(&[to(p), to(q)], TICK);
+                    ink_line(canvas, &[to(p), to(q)], TICK, look);
                 }
-                canvas.text_angle(to(g.text_at), TEXT, text, Anchor::Middle, g.angle);
+                canvas.styled_text(to(g.text_at), text, Anchor::Middle, g.angle, look);
             }
             PlanItem::Tag {
                 anchor,
                 at,
                 text,
                 round,
+                look,
                 ..
             } => {
-                let g = tag_geometry(*anchor, *at, text, *round, 1.0 / map.k());
-                let pts: Vec<DVec2> = g.outline.iter().map(|p| to(*p)).collect();
+                let g = tag_geometry(*anchor, *at, text, *round, look, 1.0 / map.k());
+                let mut pts: Vec<DVec2> = g.outline.iter().map(|p| to(*p)).collect();
                 canvas.fill(&pts, 1.0);
-                canvas.polygon(&pts, SYMBOL);
+                pts.push(pts[0]);
+                ink_line(canvas, &pts, SYMBOL, look);
                 if let Some((p, q)) = g.leader {
-                    canvas.line(&[to(p), to(q)], DIMENSION);
+                    ink_line(canvas, &[to(p), to(q)], DIMENSION, look);
                 }
-                canvas.text(to(*at), TEXT, text, Anchor::Middle);
+                canvas.styled_text(to(*at), text, Anchor::Middle, 0.0, look);
+            }
+            PlanItem::Annotation { item, .. } => {
+                draw_marks(canvas, &item.marks(1.0 / map.k()), &item.look, &to);
             }
             PlanItem::Image {
                 raster,
@@ -226,6 +255,40 @@ pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
             } => canvas.image(to(*lo), to(*hi), clip.map(|(a, b)| (to(a), to(b))), raster),
         }
     }
+}
+
+/// A line in an annotation's colour, or black without one.
+fn ink_line(canvas: &mut dyn Canvas, pts: &[DVec2], stroke: Stroke, look: &TextLook) {
+    match look.rgb {
+        Some(rgb) => canvas.line_rgb(pts, stroke, rgb),
+        None => canvas.line(pts, stroke),
+    }
+}
+
+/// Draw an annotation's linework; `to` takes drawing units to paper mm.
+pub fn draw_marks(
+    canvas: &mut dyn Canvas,
+    marks: &Marks,
+    look: &TextLook,
+    to: &dyn Fn(DVec2) -> DVec2,
+) {
+    for l in &marks.lines {
+        let pts: Vec<DVec2> = l.iter().map(|p| to(*p)).collect();
+        ink_line(canvas, &pts, DIMENSION, look);
+    }
+    for a in &marks.arrows {
+        let pts: Vec<DVec2> = a.iter().map(|p| to(*p)).collect();
+        canvas.fill_rgb(&pts, look.rgb.unwrap_or([0.0; 3]));
+    }
+    for t in &marks.texts {
+        canvas.styled_text(to(t.at), &t.text, t.anchor, t.angle, look);
+    }
+}
+
+/// An sRGB colour, 0..1, as `#rrggbb`.
+pub fn hex(rgb: [f32; 3]) -> String {
+    let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", c(rgb[0]), c(rgb[1]), c(rgb[2]))
 }
 
 /// Rough width of Helvetica text, mm.
@@ -287,8 +350,8 @@ fn points(pts: &[DVec2]) -> String {
         .join(" ")
 }
 
-impl Canvas for SvgCanvas {
-    fn line(&mut self, pts: &[DVec2], s: Stroke) {
+impl SvgCanvas {
+    fn polyline(&mut self, pts: &[DVec2], s: Stroke, color: &str) {
         let pts: Vec<DVec2> = pts.iter().map(|p| self.y(*p)).collect();
         let dash = s
             .dash
@@ -296,24 +359,38 @@ impl Canvas for SvgCanvas {
             .unwrap_or_default();
         let _ = writeln!(
             self.body,
-            "<polyline points=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"{dash}/>",
+            "<polyline points=\"{}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{}\"{dash}/>",
             points(&pts),
-            svg_gray(s.gray),
             s.width
         );
     }
 
-    fn fill(&mut self, pts: &[DVec2], gray: f64) {
+    fn polygon_fill(&mut self, pts: &[DVec2], color: &str) {
         let pts: Vec<DVec2> = pts.iter().map(|p| self.y(*p)).collect();
         let _ = writeln!(
             self.body,
-            "<polygon points=\"{}\" fill=\"{}\" stroke=\"none\"/>",
+            "<polygon points=\"{}\" fill=\"{color}\" stroke=\"none\"/>",
             points(&pts),
-            svg_gray(gray)
         );
     }
 
-    fn text_angle(&mut self, at: DVec2, size: f64, text: &str, anchor: Anchor, angle: f64) {
+    fn svg_text(&mut self, at: DVec2, text: &str, anchor: Anchor, angle: f64, look: &TextLook) {
+        let size = look.size;
+        let family = match look.font {
+            Font::Sans => "Helvetica, Arial, sans-serif",
+            Font::Serif => "Times, 'Times New Roman', serif",
+            Font::Mono => "Courier, 'Courier New', monospace",
+        };
+        let mut extra = String::new();
+        if look.bold {
+            extra.push_str(" font-weight=\"bold\"");
+        }
+        if look.italic {
+            extra.push_str(" font-style=\"italic\"");
+        }
+        if let Some(rgb) = look.rgb {
+            let _ = write!(extra, " fill=\"{}\"", hex(rgb));
+        }
         let p = self.y(at);
         let anchor = match anchor {
             Anchor::Start => "start",
@@ -332,11 +409,41 @@ impl Canvas for SvgCanvas {
         };
         let _ = writeln!(
             self.body,
-            "<text x=\"{:.3}\" y=\"{:.3}\"{rotate} font-family=\"Helvetica, Arial, sans-serif\" font-size=\"{size}\" text-anchor=\"{anchor}\" dominant-baseline=\"middle\">{}</text>",
+            "<text x=\"{:.3}\" y=\"{:.3}\"{rotate} font-family=\"{family}\" font-size=\"{size}\"{extra} text-anchor=\"{anchor}\" dominant-baseline=\"middle\">{}</text>",
             p.x,
             p.y,
             xml_escape(text)
         );
+    }
+}
+
+impl Canvas for SvgCanvas {
+    fn line(&mut self, pts: &[DVec2], s: Stroke) {
+        self.polyline(pts, s, &svg_gray(s.gray));
+    }
+
+    fn line_rgb(&mut self, pts: &[DVec2], s: Stroke, rgb: [f32; 3]) {
+        self.polyline(pts, s, &hex(rgb));
+    }
+
+    fn fill(&mut self, pts: &[DVec2], gray: f64) {
+        self.polygon_fill(pts, &svg_gray(gray));
+    }
+
+    fn fill_rgb(&mut self, pts: &[DVec2], rgb: [f32; 3]) {
+        self.polygon_fill(pts, &hex(rgb));
+    }
+
+    fn text_angle(&mut self, at: DVec2, size: f64, text: &str, anchor: Anchor, angle: f64) {
+        let look = TextLook {
+            size,
+            ..TextLook::default()
+        };
+        self.svg_text(at, text, anchor, angle, &look);
+    }
+
+    fn styled_text(&mut self, at: DVec2, text: &str, anchor: Anchor, angle: f64, look: &TextLook) {
+        self.svg_text(at, text, anchor, angle, look);
     }
 
     fn image(&mut self, lo: DVec2, hi: DVec2, clip: Option<(DVec2, DVec2)>, raster: &Arc<Raster>) {
@@ -394,6 +501,33 @@ pub struct PdfPage<'a> {
 
 const PT: f64 = 72.0 / 25.4;
 
+/// The standard PDF fonts, /F1 to /F12: each family plain, bold, italic,
+/// bold italic.
+const PDF_FONTS: [&str; 12] = [
+    "Helvetica",
+    "Helvetica-Bold",
+    "Helvetica-Oblique",
+    "Helvetica-BoldOblique",
+    "Times-Roman",
+    "Times-Bold",
+    "Times-Italic",
+    "Times-BoldItalic",
+    "Courier",
+    "Courier-Bold",
+    "Courier-Oblique",
+    "Courier-BoldOblique",
+];
+
+/// The /F number of a look's font.
+fn pdf_font(look: &TextLook) -> usize {
+    let family = match look.font {
+        Font::Sans => 0,
+        Font::Serif => 4,
+        Font::Mono => 8,
+    };
+    family + usize::from(look.bold) + 2 * usize::from(look.italic) + 1
+}
+
 impl PdfWriter {
     pub fn new() -> Self {
         Self::default()
@@ -415,9 +549,9 @@ impl PdfWriter {
     pub fn finish(self) -> Vec<u8> {
         let mut out: Vec<u8> = b"%PDF-1.4\n".to_vec();
         let mut offsets: Vec<usize> = Vec::new();
-        // objects: 1 catalog, 2 pages, 3 font, then per page: the page, its
-        // content and an (image, alpha mask) pair per image
-        let mut next = 4;
+        // objects: 1 catalog, 2 pages, 3.. the fonts, then per page: the
+        // page, its content and an (image, alpha mask) pair per image
+        let mut next = 3 + PDF_FONTS.len();
         let ids: Vec<(usize, Vec<usize>)> = self
             .pages
             .iter()
@@ -459,10 +593,18 @@ impl PdfWriter {
             )
             .as_bytes(),
         );
-        obj(
-            &mut out,
-            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
-        );
+        for font in PDF_FONTS {
+            obj(
+                &mut out,
+                format!(
+                    "<< /Type /Font /Subtype /Type1 /BaseFont /{font} /Encoding /WinAnsiEncoding >>"
+                )
+                .as_bytes(),
+            );
+        }
+        let fonts: String = (0..PDF_FONTS.len())
+            .map(|i| format!("/F{} {} 0 R ", i + 1, i + 3))
+            .collect();
         for (page, (id, images)) in self.pages.iter().zip(&ids) {
             let xobjects: String = images
                 .iter()
@@ -472,7 +614,7 @@ impl PdfWriter {
             obj(
                 &mut out,
                 format!(
-                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.2} {:.2}] /Resources << /Font << /F1 3 0 R >> /XObject << {xobjects}>> >> /Contents {} 0 R >>",
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.2} {:.2}] /Resources << /Font << {fonts}>> /XObject << {xobjects}>> >> /Contents {} 0 R >>",
                     page.size.x * PT,
                     page.size.y * PT,
                     id + 1
@@ -537,13 +679,14 @@ fn pdf_string(s: &str) -> String {
     out
 }
 
-impl Canvas for PdfPage<'_> {
-    fn line(&mut self, pts: &[DVec2], s: Stroke) {
+impl PdfPage<'_> {
+    /// A stroked polyline; `color` sets the stroke colour (`G` or `RG`).
+    fn stroke(&mut self, pts: &[DVec2], s: Stroke, color: &str) {
         if pts.len() < 2 {
             return;
         }
         let c = &mut self.page.content;
-        let _ = write!(c, "{:.3} G {:.3} w ", s.gray, s.width);
+        let _ = write!(c, "{color} {:.3} w ", s.width);
         match s.dash {
             Some([a, b]) => {
                 let _ = write!(c, "[{a} {b}] 0 d ");
@@ -562,12 +705,13 @@ impl Canvas for PdfPage<'_> {
         c.push_str("S\n");
     }
 
-    fn fill(&mut self, pts: &[DVec2], gray: f64) {
+    /// A filled polygon; `color` sets the fill colour (`g` or `rg`).
+    fn filled(&mut self, pts: &[DVec2], color: &str) {
         if pts.len() < 3 {
             return;
         }
         let c = &mut self.page.content;
-        let _ = write!(c, "{gray:.3} g ");
+        let _ = write!(c, "{color} ");
         for (i, p) in pts.iter().enumerate() {
             let _ = write!(
                 c,
@@ -580,8 +724,9 @@ impl Canvas for PdfPage<'_> {
         c.push_str("h f\n");
     }
 
-    fn text_angle(&mut self, at: DVec2, size: f64, text: &str, anchor: Anchor, angle: f64) {
-        let w = text_width(text, size);
+    fn pdf_text(&mut self, at: DVec2, text: &str, anchor: Anchor, angle: f64, look: &TextLook) {
+        let size = look.size;
+        let w = look.width(text);
         let along = match anchor {
             Anchor::Start => 0.0,
             Anchor::Middle => -w / 2.0,
@@ -590,9 +735,14 @@ impl Canvas for PdfPage<'_> {
         // baseline sits a little below the middle of capital letters
         let (dir, up) = (DVec2::from_angle(angle), DVec2::from_angle(angle).perp());
         let o = at + dir * along - up * size * 0.35;
+        let color = match look.rgb {
+            Some([r, g, b]) => format!("{r:.3} {g:.3} {b:.3} rg"),
+            None => "0 g".into(),
+        };
         let _ = writeln!(
             self.page.content,
-            "0 g BT /F1 {size:.3} Tf {:.5} {:.5} {:.5} {:.5} {:.3} {:.3} Tm {} Tj ET",
+            "{color} BT /F{} {size:.3} Tf {:.5} {:.5} {:.5} {:.5} {:.3} {:.3} Tm {} Tj ET",
+            pdf_font(look),
             dir.x,
             dir.y,
             up.x,
@@ -601,6 +751,36 @@ impl Canvas for PdfPage<'_> {
             o.y,
             pdf_string(text)
         );
+    }
+}
+
+impl Canvas for PdfPage<'_> {
+    fn line(&mut self, pts: &[DVec2], s: Stroke) {
+        self.stroke(pts, s, &format!("{:.3} G", s.gray));
+    }
+
+    fn line_rgb(&mut self, pts: &[DVec2], s: Stroke, [r, g, b]: [f32; 3]) {
+        self.stroke(pts, s, &format!("{r:.3} {g:.3} {b:.3} RG"));
+    }
+
+    fn fill(&mut self, pts: &[DVec2], gray: f64) {
+        self.filled(pts, &format!("{gray:.3} g"));
+    }
+
+    fn fill_rgb(&mut self, pts: &[DVec2], [r, g, b]: [f32; 3]) {
+        self.filled(pts, &format!("{r:.3} {g:.3} {b:.3} rg"));
+    }
+
+    fn text_angle(&mut self, at: DVec2, size: f64, text: &str, anchor: Anchor, angle: f64) {
+        let look = TextLook {
+            size,
+            ..TextLook::default()
+        };
+        self.pdf_text(at, text, anchor, angle, &look);
+    }
+
+    fn styled_text(&mut self, at: DVec2, text: &str, anchor: Anchor, angle: f64, look: &TextLook) {
+        self.pdf_text(at, text, anchor, angle, look);
     }
 
     fn image(&mut self, lo: DVec2, hi: DVec2, clip: Option<(DVec2, DVec2)>, raster: &Arc<Raster>) {

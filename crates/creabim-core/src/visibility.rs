@@ -25,6 +25,8 @@ pub enum Category {
     SectionMarks,
     Dimensions,
     Tags,
+    /// Text notes and their leaders.
+    Notes,
     Sketches,
     Guides,
     /// A category from a newer CreaBIM, kept so older versions still read
@@ -34,7 +36,7 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 13] = [
+    pub const ALL: [Category; 14] = [
         Category::Walls,
         Category::Slabs,
         Category::Doors,
@@ -46,6 +48,7 @@ impl Category {
         Category::SectionMarks,
         Category::Dimensions,
         Category::Tags,
+        Category::Notes,
         Category::Sketches,
         Category::Guides,
     ];
@@ -63,6 +66,7 @@ impl Category {
             Category::SectionMarks => "Section marks",
             Category::Dimensions => "Dimensions",
             Category::Tags => "Tags",
+            Category::Notes => "Notes",
             Category::Sketches => "Sketches",
             Category::Guides => "Guides",
             Category::Other => "Other",
@@ -88,6 +92,7 @@ impl Category {
             }
             ElementKind::Dimension(_) => Category::Dimensions,
             ElementKind::Tag(_) => Category::Tags,
+            ElementKind::Note(_) => Category::Notes,
             ElementKind::Sketch(_) => Category::Sketches,
             ElementKind::Guide(_) => Category::Guides,
             _ => return None,

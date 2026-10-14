@@ -73,6 +73,11 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Elevation => "building-2",
         Tool::Dimension => "ruler",
         Tool::Tag => "tag",
+        Tool::Angle => "drafting-compass",
+        Tool::Radius => "radius",
+        Tool::Diameter => "diameter",
+        Tool::ArcLength => "spline",
+        Tool::Note => "message-square-text",
         Tool::Sketch => "pen-tool",
         Tool::Guide => "slash",
         Tool::Grid => "grid-3x3",
@@ -84,7 +89,13 @@ fn tool_group(t: Tool) -> u8 {
         Tool::Select => 0,
         Tool::Wall | Tool::Door | Tool::Window | Tool::Slab | Tool::Mass => 1,
         Tool::Section | Tool::Elevation => 2,
-        Tool::Dimension | Tool::Tag => 3,
+        Tool::Dimension
+        | Tool::Tag
+        | Tool::Angle
+        | Tool::Radius
+        | Tool::Diameter
+        | Tool::ArcLength
+        | Tool::Note => 3,
         Tool::Sketch | Tool::Guide | Tool::Grid => 4,
     }
 }
@@ -126,6 +137,7 @@ fn group_title(class: &str) -> String {
         "IfcBuildingElementProxy" => "Masses".into(),
         "Sketch" => "Sketches".into(),
         "IfcMaterial" => "Materials".into(),
+        "TextStyle" => "Text styles".into(),
         c => {
             let c = c.strip_prefix("Ifc").unwrap_or(c);
             if c.ends_with('s') {
@@ -830,6 +842,7 @@ impl CreaBimApp {
                 }
             }
             "view.shaded" | "view.tag" => self.view_action(head),
+            "note.leader" => self.plan.anno.leader = !self.plan.anno.leader,
             _ => {
                 self.grid_vis_action(head, arg);
             }
@@ -1048,6 +1061,14 @@ impl CreaBimApp {
                 "kind": "number", "key": "wall.thickness", "label": "Thickness",
                 "value": self.plan.wall_thickness, "unit": "m", "step": 0.01, "min": 0.05, "max": 1.0,
                 "hint": "Thickness of new walls. Drag the label or type a value.",
+            }));
+            options.push(json!({"kind": "sep"}));
+        }
+        if self.plan.tool == Tool::Note {
+            options.push(json!({
+                "kind": "toggle", "id": "note.leader", "label": "Leader",
+                "on": self.plan.anno.leader, "icon": "arrow-up-right",
+                "hint": "Draw an arrow to what the note is about: click its point first, then the text",
             }));
             options.push(json!({"kind": "sep"}));
         }

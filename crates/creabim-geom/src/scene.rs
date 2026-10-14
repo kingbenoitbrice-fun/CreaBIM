@@ -90,6 +90,8 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             | ElementKind::Material(_)
             | ElementKind::Dimension(_)
             | ElementKind::Tag(_)
+            | ElementKind::Note(_)
+            | ElementKind::TextStyle(_)
             | ElementKind::Sketch(_)
             | ElementKind::Cut(_)
             | ElementKind::Guide(_)

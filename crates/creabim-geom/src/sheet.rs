@@ -312,6 +312,22 @@ pub fn draw_sheet(
         paper::draw(c, &v.drawing, &v.map);
         draw_view_title(c, v);
     }
+    draw_sheet_notes(c, model, sheet);
+}
+
+/// Paper millimetres as drawing units, for what is drawn on a sheet itself.
+pub const PAPER: PaperMap = PaperMap {
+    model: DVec2::ZERO,
+    paper: DVec2::ZERO,
+    scale: 1000.0,
+};
+
+/// The notes written on the sheet itself, outside any view.
+pub fn draw_sheet_notes(c: &mut dyn Canvas, model: &Model, sheet: ElementId) {
+    let notes = crate::PlanView {
+        items: crate::annotate::sheet_notes(model, sheet),
+    };
+    paper::draw(c, &notes, &PAPER);
 }
 
 pub fn sheet_svg(model: &Model, sheet: ElementId, info: &SheetInfo) -> Option<String> {
@@ -388,6 +404,56 @@ mod tests {
             at.x - half > hi.x || at.x + half < lo.x || at.y + 70.0 < lo.y || at.y - 70.0 > hi.y,
             "{at} overlaps the plan at {lo} {hi}"
         );
+    }
+
+    #[test]
+    fn styled_annotations_reach_svg_and_pdf() {
+        use creabim_core::{
+            Dimension, DimensionKind, Element, Font, HostPoint, Note, TextStyle, Transaction,
+        };
+        let mut doc = creabim_core::Document::from_model(sample_house());
+        let m = doc.model();
+        let (sheet, _) = sheets(m)[1];
+        let plan = m.iter().find(|e| e.name == "Ground Floor plan").unwrap().id;
+        let style = Element::new(
+            "Callouts",
+            ElementKind::TextStyle(TextStyle {
+                font: Font::Serif,
+                size: 3.5,
+                color: Some([0.8, 0.0, 0.0]),
+                bold: true,
+                italic: false,
+            }),
+        );
+        let mut on_sheet = Note::new(sheet, DVec2::new(60.0, 60.0), "General note\nSecond line");
+        on_sheet.style = Some(style.id);
+        on_sheet.leader = Some(HostPoint::free(DVec2::new(40.0, 40.0)));
+        let free = |x: f64, y: f64| HostPoint::free(DVec2::new(x, y));
+        let angle = Dimension::about(
+            DimensionKind::Angular,
+            plan,
+            free(0.0, 0.0),
+            free(3.0, 0.0),
+            free(0.0, 3.0),
+            1.5,
+        );
+        let tx = Transaction::new("Annotate")
+            .insert(Element::new("Note", ElementKind::Note(on_sheet)))
+            .insert(Element::new("Angle", ElementKind::Dimension(angle)))
+            .insert(style);
+        doc.commit(tx).unwrap();
+        let m = doc.model();
+        let info = SheetInfo::default();
+        let svg = sheet_svg(m, sheet, &info).unwrap();
+        assert!(svg.contains(">General note</text>") && svg.contains(">Second line</text>"));
+        assert!(svg.contains("font-weight=\"bold\"") && svg.contains("fill=\"#cc0000\""));
+        assert!(svg.contains("Times"));
+        // the angle in the plan, which sits on this sheet
+        assert!(svg.contains(">90°</text>"), "angle missing");
+        let pdf = String::from_utf8_lossy(&sheets_pdf(m, &info)).into_owned();
+        assert!(pdf.contains("/BaseFont /Times-Bold"));
+        assert!(pdf.contains("0.800 0.000 0.000 rg BT /F6"));
+        assert!(pdf.contains("(General note) Tj"));
     }
 
     #[test]
