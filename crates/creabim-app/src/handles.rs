@@ -5,8 +5,9 @@
 //! the handle's constraint picks the point on it.
 //!
 //! Walls stretch by their ends (joined walls follow), grow taller by their
-//! top and thicker by their face. Slabs move corners and edges and get
-//! thicker by their underside. Doors and windows widen from either jamb and
+//! top and thicker by their face. Slabs move corners and edges, and get
+//! thicker by their underside (the top stays) or by their top (the
+//! underside stays). Doors and windows widen from either jamb and
 //! change height and sill. A selected face of a mass pushes and pulls along
 //! its normal.
 
@@ -80,6 +81,7 @@ pub enum HandleKind {
     SlabCorner(usize),
     SlabEdge(usize),
     SlabUnderside,
+    SlabTop,
     OpeningJamb {
         right: bool,
     },
@@ -104,7 +106,9 @@ impl HandleKind {
     pub fn verb(self) -> &'static str {
         match self {
             HandleKind::WallTop | HandleKind::OpeningHead => "Change height of",
-            HandleKind::WallFace | HandleKind::SlabUnderside => "Change thickness of",
+            HandleKind::WallFace | HandleKind::SlabUnderside | HandleKind::SlabTop => {
+                "Change thickness of"
+            }
             HandleKind::OpeningJamb { .. } => "Change width of",
             HandleKind::OpeningSill => "Change sill of",
             HandleKind::Face(_) => "Push/pull",
@@ -164,9 +168,9 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
             ]
         }
         ElementKind::Slab(s) => {
-            let z = elevation(model, Some(s.level));
+            let z = s.top(elevation(model, Some(s.level)));
             let n = s.boundary.len();
-            let ccw = creabim_core::polygon::signed_area2(&s.boundary) > 0.0;
+            let ccw = creabim_core::polygon::signed_area2(&s.outline()) > 0.0;
             let mut out: Vec<Handle> = (0..n)
                 .map(|i| flat(HandleKind::SlabCorner(i), s.boundary[i].extend(z)))
                 .collect();
@@ -176,11 +180,13 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
                 let out_dir = if ccw { -d.perp() } else { d.perp() };
                 out.push(line(
                     HandleKind::SlabEdge(i),
-                    ((a + b) / 2.0).extend(z),
+                    s.edge(i).at(0.5).extend(z),
                     out_dir.extend(0.0),
                 ));
             }
+            // the face a thickness handle sits on is the one that moves
             let c = s.boundary.iter().copied().sum::<DVec2>() / n.max(1) as f64;
+            out.push(line(HandleKind::SlabTop, c.extend(z), DVec3::Z));
             out.push(line(
                 HandleKind::SlabUnderside,
                 c.extend(z - s.thickness),
@@ -327,7 +333,7 @@ pub fn apply(
         }
         (ElementKind::Slab(s), HandleKind::SlabEdge(i)) => {
             let n = s.boundary.len();
-            let ccw = creabim_core::polygon::signed_area2(&s.boundary) > 0.0;
+            let ccw = creabim_core::polygon::signed_area2(&s.outline()) > 0.0;
             let (a, b) = (s.boundary[i], s.boundary[(i + 1) % n]);
             let e = (b - a).normalize_or_zero();
             let out_dir = if ccw { -e.perp() } else { e.perp() };
@@ -336,7 +342,13 @@ pub fn apply(
             s.boundary[(i + 1) % n] += off;
         }
         (ElementKind::Slab(s), HandleKind::SlabUnderside) => {
-            s.thickness = round(s.thickness - d.z, step / 5.0);
+            s.set_thickness(round(s.thickness - d.z, step / 5.0), false);
+            if s.thickness < 0.02 {
+                return Err("too thin".into());
+            }
+        }
+        (ElementKind::Slab(s), HandleKind::SlabTop) => {
+            s.set_thickness(round(s.thickness + d.z, step / 5.0), true);
             if s.thickness < 0.02 {
                 return Err("too thin".into());
             }
@@ -422,9 +434,11 @@ pub fn readout(changed: &[Element]) -> String {
             o.width, o.height, o.sill
         ),
         Some(ElementKind::Slab(s)) => format!(
-            "area {:.2} m², thickness {:.0} mm",
-            creabim_core::polygon::signed_area2(&s.boundary).abs() / 2.0,
-            s.thickness * 1000.0
+            "area {:.2} m², thickness {:.0} mm, top {:+.3} m, underside {:+.3} m from its level",
+            s.area(),
+            s.thickness * 1000.0,
+            s.top_offset,
+            s.top_offset - s.thickness
         ),
         _ => String::new(),
     }
@@ -489,13 +503,8 @@ pub fn edit_corners(doc: &mut Document, id: ElementId, kind: HandleKind) -> Resu
     doc.edit(id, label, |e| {
         if let ElementKind::Slab(s) = &mut e.kind {
             match kind {
-                HandleKind::SlabEdge(i) => {
-                    let (a, b) = (s.boundary[i], s.boundary[(i + 1) % n]);
-                    s.boundary.insert(i + 1, (a + b) / 2.0);
-                }
-                HandleKind::SlabCorner(i) => {
-                    s.boundary.remove(i);
-                }
+                HandleKind::SlabEdge(i) => s.split_edge(i),
+                HandleKind::SlabCorner(i) => s.remove_corner(i),
                 _ => {}
             }
         }
@@ -862,6 +871,44 @@ mod tests {
             panic!()
         };
         assert!((s.thickness - (t + 0.05)).abs() < 1e-9);
+        // the top stayed at the level
+        assert!(s.top_offset.abs() < 1e-12);
+    }
+
+    #[test]
+    fn pulling_a_slab_top_moves_the_top_and_keeps_the_underside() {
+        let m = sample_house();
+        let (id, t) = m
+            .iter()
+            .find_map(|e| match &e.kind {
+                ElementKind::Slab(s) => Some((e.id, s.thickness)),
+                _ => None,
+            })
+            .unwrap();
+        let hs = handles(&m, id, None);
+        let top = hs.iter().find(|h| h.kind == HandleKind::SlabTop).unwrap();
+        let under = hs
+            .iter()
+            .find(|h| h.kind == HandleKind::SlabUnderside)
+            .unwrap();
+        assert!((top.at.z - under.at.z - t).abs() < 1e-9);
+        let (orig, _) = originals(&m, id, top.kind);
+        let out = apply(
+            &m,
+            &orig,
+            &[],
+            top.kind,
+            top.at,
+            top.at + DVec3::Z * 0.1,
+            0.05,
+        )
+        .unwrap();
+        let ElementKind::Slab(s) = &out[0].kind else {
+            panic!()
+        };
+        assert!((s.thickness - (t + 0.1)).abs() < 1e-9);
+        assert!((s.top_offset - 0.1).abs() < 1e-9);
+        assert!((s.top_offset - s.thickness + t).abs() < 1e-9);
     }
 
     #[test]

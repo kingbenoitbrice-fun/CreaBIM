@@ -280,8 +280,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     continue;
                 };
                 let pl = c.local_placement(Some(spl), DVec3::ZERO, None);
+                // arcs go out in short straight pieces
                 let mut pts: Vec<Ref> = slab
-                    .boundary
+                    .outline()
                     .iter()
                     .map(|p| c.w.add("IFCCARTESIANPOINT", point2(p.x, p.y)))
                     .collect();
@@ -289,7 +290,11 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let poly = c.w.add("IFCPOLYLINE", list(&pts));
                 let prof =
                     c.w.add("IFCARBITRARYCLOSEDPROFILEDEF", format!(".AREA.,$,{poly}"));
-                let pos = c.placement3d(DVec3::new(0.0, 0.0, -slab.thickness), None, None);
+                let pos = c.placement3d(
+                    DVec3::new(0.0, 0.0, slab.top_offset - slab.thickness),
+                    None,
+                    None,
+                );
                 let solid = c.w.add(
                     "IFCEXTRUDEDAREASOLID",
                     format!("{prof},{pos},{},{}", c.z_axis, real(slab.thickness)),

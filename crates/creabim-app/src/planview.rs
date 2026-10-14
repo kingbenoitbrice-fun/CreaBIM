@@ -5,6 +5,7 @@
 use crate::boxsel;
 use crate::handles::{self, PaneInput};
 use crate::modal::{self, Modal, Mode, Outcome, PaneMap, Space};
+use crate::outline::Next;
 use crate::selection::Selection;
 use crate::sketch::{level_below, Click, SketchDraft};
 use crate::snaps::{self, Snapper};
@@ -74,7 +75,7 @@ impl Tool {
             Tool::Wall => "Click to start, click again to place each wall. Esc or right-click ends the chain. Shift keeps it orthogonal.",
             Tool::Door => "Click on a wall to place a door.",
             Tool::Window => "Click on a wall to place a window.",
-            Tool::Slab => "Click two opposite corners.",
+            Tool::Slab => "Click the slab's corners, then the first again or Enter. A draws arcs, L lines; Esc or right-click takes back a point, right-click again leaves. 1–4: Polygon, Rectangle, Fill room, From sketch.",
             Tool::Mass => "Click to place a freeform mass you can then edit like a mesh.",
             Tool::Section => "Click two points for the section line. It looks to the left of the direction you draw.",
             Tool::Elevation => "Click two points for the elevation line, outside the building. It looks to the left of the direction you draw.",
@@ -178,8 +179,16 @@ pub struct PlanState {
     pub status: Option<String>,
     /// The edge a guide is drawn parallel to, picked by its first click.
     pub guide_edge: Option<(DVec2, DVec2)>,
-    /// A slab outline or wall path being redrawn.
+    /// A slab outline being drawn, or a slab outline or wall path being
+    /// redrawn.
     pub outline: Option<crate::outline::Outline>,
+    /// How the Slab tool draws.
+    pub slab_mode: crate::slabtool::SlabMode,
+    /// The next side of a slab outline is an arc.
+    pub slab_arc: bool,
+    /// A new slab thickness keeps the underside where it is (the top
+    /// moves) instead of the top.
+    pub slab_keep_bottom: bool,
     /// Where a box selection began, on screen.
     pub boxsel: Option<Pos2>,
     /// What rotate and scale turn about.
@@ -206,6 +215,9 @@ impl Default for PlanState {
             status: None,
             guide_edge: None,
             outline: None,
+            slab_mode: Default::default(),
+            slab_arc: false,
+            slab_keep_bottom: false,
             boxsel: None,
             pivot: modal::Pivot::default(),
             cursor: None,
@@ -360,7 +372,11 @@ pub fn show(
     let pane_project = |p: DVec3| Some(xf.to_screen(p.truncate()));
     let tool_snap = response.hover_pos().and_then(|p| {
         let snapper = &state.snaps.get(&view)?.2;
-        let from = state.pending.map(|a| a.extend(0.0));
+        let last = state
+            .outline
+            .as_ref()
+            .and_then(|o| o.points.last().copied());
+        let from = state.pending.or(last).map(|a| a.extend(0.0));
         let s = snapper.snap(p, &pane_project, from, Some(xf.to_world(p).extend(0.0)))?;
         Some(s)
     });
@@ -384,7 +400,23 @@ pub fn show(
         }
     });
 
-    // redrawing a slab or wall on this plan's level
+    // the Slab tool's modes, and Line / Arc while clicking a slab outline
+    if let PaneKind::Plan { level } = kind {
+        let slab_outline = state
+            .outline
+            .as_ref()
+            .is_some_and(|o| o.level == level && !o.is_wall());
+        if tool == Tool::Slab || slab_outline {
+            let modes = tool == Tool::Slab;
+            if let Some(msg) =
+                crate::slabtool::controls(ui, rect, Some(view), modes, doc, state, selection)
+            {
+                state.status = Some(msg);
+            }
+        }
+    }
+
+    // drawing a slab, or redrawing a slab or wall, on this plan's level
     if let (Some(o), PaneKind::Plan { level }) = (&state.outline, kind) {
         if o.level == level {
             let o = o.clone();
@@ -394,36 +426,45 @@ pub fn show(
                 snaps::draw(&painter, s, xf.to_screen(s.p.truncate()), from);
             }
             o.draw(&painter, &project, hover_world);
+            // keys go to the pane under the pointer, as another pane may
+            // show the same outline
+            let here = response.hovered();
             let (enter, escape) = ui.input(|i| {
                 (
-                    i.key_pressed(egui::Key::Enter),
-                    i.key_pressed(egui::Key::Escape),
+                    here && i.key_pressed(egui::Key::Enter),
+                    here && i.key_pressed(egui::Key::Escape),
                 )
             });
-            if escape {
-                state.outline = None;
-                state.status = Some("Redraw cancelled.".into());
-                return None;
-            }
-            let mut closed = false;
-            if response.clicked() {
-                if let (Some(p), Some(h)) = (hover_world, response.hover_pos()) {
-                    let near = o.near_first(h, &project);
-                    closed = state.outline.as_mut().is_some_and(|o| o.click(p, near));
+            let click = match (response.clicked(), hover_world, response.hover_pos()) {
+                (true, Some(p), Some(h)) => Some((p, o.near_first(h, &project))),
+                _ => None,
+            };
+            let right = response.secondary_clicked() && !shift;
+            let arc = state.slab_arc;
+            let next = state
+                .outline
+                .as_mut()?
+                .input(enter, escape, right, click, arc);
+            match next {
+                Next::Drawing(hint) => state.status = Some(hint),
+                Next::Cancel(msg) => {
+                    state.outline = None;
+                    state.status = Some(msg.into());
+                }
+                Next::Finish(closed) => {
+                    let o = state.outline.take()?;
+                    return match o.finish(doc, closed) {
+                        Ok((msg, made)) => {
+                            if let Some(id) = made {
+                                selection.only(id);
+                            }
+                            state.status = Some(msg);
+                            None
+                        }
+                        Err(e) => Some(e.to_string()),
+                    };
                 }
             }
-            let finish = enter || (response.secondary_clicked() && !o.points.is_empty());
-            if finish || closed {
-                let o = state.outline.take()?;
-                return match o.finish(doc, closed) {
-                    Ok(msg) => {
-                        state.status = Some(msg);
-                        None
-                    }
-                    Err(e) => Some(e.to_string()),
-                };
-            }
-            state.status = Some(o.hint().into());
             return None;
         }
     }
@@ -719,6 +760,16 @@ pub fn show(
     if let (Some(space), Some(c)) = (space, state.cursor) {
         draw_cursor(&painter, xf.to_screen(model_to_pane(space, c)));
     }
+    // a right-click with nothing drawn leaves the Slab tool
+    if tool == Tool::Slab
+        && response.secondary_clicked()
+        && !state.busy()
+        && state.outline.is_none()
+    {
+        state.tool = Tool::Select;
+        state.status = Some("Left the Slab tool.".into());
+        return None;
+    }
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) || response.secondary_clicked() {
         state.cancel();
     }
@@ -880,26 +931,7 @@ pub fn plan_tool(
         },
         Tool::Door | Tool::Window => place_opening(doc, level, p, tool, selection),
         Tool::Dimension | Tool::Tag | Tool::Sketch => Ok(()),
-        Tool::Slab => match state.pending.take() {
-            None => {
-                state.pending = Some(p);
-                Ok(())
-            }
-            Some(a) => {
-                let (lo, hi) = (a.min(p), a.max(p));
-                let e = Element::new(
-                    "Slab",
-                    ElementKind::Slab(Slab {
-                        level,
-                        boundary: vec![lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)],
-                        thickness: 0.25,
-                        material: None,
-                    }),
-                );
-                selection.only(e.id);
-                doc.commit(Transaction::new("Draw slab").insert(e))
-            }
-        },
+        Tool::Slab => crate::slabtool::click(doc, level, p, state, selection),
         Tool::Guide => match state.pending.take() {
             None => {
                 state.pending = Some(p);
@@ -1124,6 +1156,8 @@ fn section_tool(
                         boundary,
                         thickness,
                         material: None,
+                        top_offset: 0.0,
+                        bulges: vec![],
                     }),
                 );
                 selection.only(e.id);

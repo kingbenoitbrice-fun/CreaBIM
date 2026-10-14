@@ -72,15 +72,6 @@ fn area(v: f64) -> String {
     format!("{v:.2} m²")
 }
 
-fn polygon_area(pts: &[DVec2]) -> f64 {
-    let n = pts.len();
-    ((0..n)
-        .map(|i| pts[i].perp_dot(pts[(i + 1) % n]))
-        .sum::<f64>()
-        / 2.0)
-        .abs()
-}
-
 /// The current value of a numeric field, metres.
 pub fn value(e: &Element, field: Field) -> Option<f64> {
     Some(match (&e.kind, field) {
@@ -257,7 +248,7 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                 let ElementKind::Slab(s) = &e.kind else {
                     continue;
                 };
-                let a = polygon_area(&s.boundary);
+                let a = s.area();
                 total += a;
                 rows.push((
                     elevation(e),

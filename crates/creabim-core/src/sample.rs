@@ -69,6 +69,8 @@ pub fn sample_house() -> Model {
                 boundary: corners.to_vec(),
                 thickness: 0.25,
                 material: Some(concrete_id),
+                top_offset: 0.0,
+                bulges: vec![],
             }),
         ));
         for i in 0..4 {

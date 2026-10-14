@@ -139,7 +139,8 @@ pub fn fit(
             }))
         }
         Assign::Slab => {
-            let (level, _) = shape::nearest_level(model, hi.z).ok_or("Add a level first.")?;
+            let (level, elevation) =
+                shape::nearest_level(model, hi.z).ok_or("Add a level first.")?;
             let mid = (lo.z + hi.z) / 2.0;
             let mut boundary = creabim_geom::slice::slice(shape, mid)
                 .into_iter()
@@ -162,6 +163,8 @@ pub fn fit(
                 boundary,
                 thickness: hi.z - lo.z,
                 material,
+                top_offset: hi.z - elevation,
+                bulges: vec![],
             }))
         }
         Assign::Door | Assign::Window => {
