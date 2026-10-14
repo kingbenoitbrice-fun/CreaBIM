@@ -18,10 +18,15 @@ pub enum Pane {
     Left,
     Status,
     Popup,
+    /// The 3D view's navigation buttons, over its top-right corner.
+    Nav,
 }
 
+const PANES: usize = 5;
+
 impl Pane {
-    const ALL: [Pane; 4] = [Pane::Top, Pane::Left, Pane::Status, Pane::Popup];
+    /// In the order they are made, which stacks the popup on top.
+    const ALL: [Pane; PANES] = [Pane::Top, Pane::Left, Pane::Status, Pane::Nav, Pane::Popup];
 
     fn name(self) -> &'static str {
         match self {
@@ -29,6 +34,7 @@ impl Pane {
             Pane::Left => "left",
             Pane::Status => "status",
             Pane::Popup => "popup",
+            Pane::Nav => "nav",
         }
     }
 }
@@ -43,9 +49,9 @@ pub struct WebUi {
     views: Vec<(Pane, WebView)>,
     inbox: Arc<Mutex<Vec<Msg>>>,
     /// The last state sent to each pane, so unchanged state isn't re-sent.
-    sent: [String; 4],
+    sent: [String; PANES],
     /// Where each pane is, in points.
-    pub rects: [egui::Rect; 4],
+    pub rects: [egui::Rect; PANES],
     popup_shown: bool,
     #[cfg(target_os = "linux")]
     x11: Option<X11Focus>,
@@ -92,7 +98,7 @@ impl WebUi {
             views,
             inbox,
             sent: Default::default(),
-            rects: [egui::Rect::NOTHING; 4],
+            rects: [egui::Rect::NOTHING; PANES],
             popup_shown: false,
             #[cfg(target_os = "linux")]
             x11: X11Focus::new(frame),
@@ -149,6 +155,11 @@ impl WebUi {
         self.sent[i] = text;
     }
 
+    /// Run a script in a pane's page.
+    pub fn run(&self, pane: Pane, script: &str) {
+        let _ = self.view(pane).evaluate_script(script);
+    }
+
     /// Re-send every state next frame (after a page reloads).
     pub fn resend(&mut self, pane: Pane) {
         self.sent[pane as usize].clear();
@@ -184,6 +195,16 @@ impl WebUi {
             }
         }
         self.popup_shown = false;
+    }
+
+    /// Park a pane off the window, as for the popup.
+    pub fn park(&mut self, pane: Pane) {
+        self.place(pane, PARKED, 1.0);
+    }
+
+    /// Give a pane the keyboard, for typing in it straight away.
+    pub fn focus(&mut self, pane: Pane) {
+        let _ = self.view(pane).focus();
     }
 
     /// Hand the keyboard back to the views after a click on a page.

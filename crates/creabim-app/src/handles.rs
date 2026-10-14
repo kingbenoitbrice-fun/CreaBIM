@@ -14,7 +14,7 @@
 use crate::modal::LiveEdit;
 use crate::snaps::{Snap, SnapKind};
 use creabim_core::{
-    transform, Document, Element, ElementId, ElementKind, Model, OpeningKind, Xform,
+    transform, Document, Element, ElementId, ElementKind, Model, OpeningKind, ViewKind, Xform,
 };
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, Vec2};
 use glam::{DVec2, DVec3};
@@ -92,6 +92,12 @@ pub enum HandleKind {
     },
     /// Push or pull a face of a mass along its normal.
     Face(usize),
+    /// An end of a section or elevation line.
+    ViewEnd {
+        end: bool,
+    },
+    /// How far a section or elevation sees, from its line.
+    ViewDepth,
 }
 
 impl HandleKind {
@@ -99,7 +105,10 @@ impl HandleKind {
     pub fn round(self) -> bool {
         !matches!(
             self,
-            HandleKind::WallEnd { .. } | HandleKind::SlabCorner(_) | HandleKind::GridEnd { .. }
+            HandleKind::WallEnd { .. }
+                | HandleKind::SlabCorner(_)
+                | HandleKind::GridEnd { .. }
+                | HandleKind::ViewEnd { .. }
         )
     }
 
@@ -112,6 +121,7 @@ impl HandleKind {
             HandleKind::OpeningJamb { .. } => "Change width of",
             HandleKind::OpeningSill => "Change sill of",
             HandleKind::Face(_) => "Push/pull",
+            HandleKind::ViewDepth => "Change depth of",
             _ => "Stretch",
         }
     }
@@ -225,6 +235,23 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
             }
             out
         }
+        ElementKind::View(v) => match v.kind {
+            ViewKind::Section {
+                start, end, depth, ..
+            } => {
+                let look = (end - start).normalize_or_zero().perp();
+                vec![
+                    flat(HandleKind::ViewEnd { end: false }, start.extend(0.0)),
+                    flat(HandleKind::ViewEnd { end: true }, end.extend(0.0)),
+                    line(
+                        HandleKind::ViewDepth,
+                        ((start + end) / 2.0 + look * depth).extend(0.0),
+                        look.extend(0.0),
+                    ),
+                ]
+            }
+            _ => vec![],
+        },
         ElementKind::Grid(g) => vec![
             flat(HandleKind::GridEnd { end: false }, g.start.extend(0.0)),
             flat(HandleKind::GridEnd { end: true }, g.end.extend(0.0)),
@@ -384,6 +411,29 @@ pub fn apply(
                 g.start = now.truncate();
             }
         }
+        (ElementKind::View(v), HandleKind::ViewEnd { end: which }) => {
+            if let ViewKind::Section { start, end, .. } = &mut v.kind {
+                let p = now.truncate();
+                if which {
+                    *end = p;
+                } else {
+                    *start = p;
+                }
+                if start.distance(*end) < 0.2 {
+                    return Err("a view line needs some length".into());
+                }
+            }
+        }
+        (ElementKind::View(v), HandleKind::ViewDepth) => {
+            if let ViewKind::Section {
+                start, end, depth, ..
+            } = &mut v.kind
+            {
+                let look = (*end - *start).normalize_or_zero().perp();
+                let mid = (*start + *end) / 2.0;
+                *depth = round((now.truncate() - mid).dot(look), step).max(0.5);
+            }
+        }
         (ElementKind::FreeMesh(m), HandleKind::Face(f)) => {
             let n = m.to_model(m.mesh.face_normal(f)).normalize_or_zero();
             let dist = round(d.dot(n), step / 5.0);
@@ -433,6 +483,15 @@ pub fn readout(changed: &[Element]) -> String {
             "width {:.2} m, height {:.2} m, sill {:.2} m",
             o.width, o.height, o.sill
         ),
+        Some(ElementKind::View(v)) => match v.kind {
+            ViewKind::Section {
+                start, end, depth, ..
+            } => format!(
+                "line {:.2} m long, sees {depth:.2} m deep",
+                start.distance(end)
+            ),
+            _ => String::new(),
+        },
         Some(ElementKind::Slab(s)) => format!(
             "area {:.2} m², thickness {:.0} mm, top {:+.3} m, underside {:+.3} m from its level",
             s.area(),
@@ -513,6 +572,34 @@ pub fn edit_corners(doc: &mut Document, id: ElementId, kind: HandleKind) -> Resu
     Ok(format!("{done} Ctrl+Z to undo."))
 }
 
+/// What a selected section or elevation sees: its line, and the band
+/// as deep as it looks, so it can be found and its depth dragged.
+fn draw_view_range(painter: &Painter, input: &PaneInput, a: DVec2, b: DVec2, depth: f64) {
+    let look = (b - a).normalize_or_zero().perp();
+    let corners = [a, b, b + look * depth, a + look * depth];
+    let pts: Option<Vec<Pos2>> = corners
+        .iter()
+        .map(|p| (input.project)(p.extend(0.0)))
+        .collect();
+    let Some(pts) = pts else {
+        return;
+    };
+    painter.add(egui::Shape::convex_polygon(
+        pts.clone(),
+        ACCENT.gamma_multiply(0.08),
+        Stroke::NONE,
+    ));
+    painter.line_segment([pts[0], pts[1]], Stroke::new(2.5, ACCENT));
+    for (p, q) in [(pts[1], pts[2]), (pts[2], pts[3]), (pts[3], pts[0])] {
+        painter.add(egui::Shape::dashed_line(
+            &[p, q],
+            Stroke::new(1.2, ACCENT.gamma_multiply(0.8)),
+            6.0,
+            4.0,
+        ));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn interact(
     doc: &mut Document,
@@ -532,6 +619,14 @@ pub fn interact(
         .into_iter()
         .filter(|h| h.constraint.usable(input.look))
         .collect();
+    if let Some(ElementKind::View(v)) = doc.model().get(id).map(|e| &e.kind) {
+        if let ViewKind::Section {
+            start, end, depth, ..
+        } = v.kind
+        {
+            draw_view_range(painter, input, start, end, depth);
+        }
+    }
     for h in &shown {
         let Some(c) = (input.project)(h.at) else {
             continue;
@@ -621,6 +716,8 @@ pub fn interact(
                         ElementKind::View(_)
                             | ElementKind::Dimension(_)
                             | ElementKind::Tag(_)
+                            | ElementKind::Note(_)
+                            | ElementKind::TextStyle(_)
                             | ElementKind::Level(_)
                             | ElementKind::Sheet(_)
                             | ElementKind::Viewport(_)

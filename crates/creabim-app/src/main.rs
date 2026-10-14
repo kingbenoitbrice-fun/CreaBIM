@@ -1,5 +1,6 @@
 //! CreaBIM desktop app.
 
+mod annotate;
 mod app;
 mod boxsel;
 mod camera;
@@ -18,6 +19,7 @@ mod sketch;
 mod slabtool;
 mod snaps;
 mod textures;
+mod theme;
 mod ui_model;
 mod webui;
 

@@ -1,3 +1,4 @@
+pub use crate::annotation::{DimensionKind, Note, TextStyle};
 pub use crate::grids::GridGroup;
 pub use crate::sketch::Sketch;
 use crate::visibility::ViewHidden;
@@ -79,8 +80,14 @@ impl Element {
             ElementKind::Dimension(d) => std::iter::once(d.view)
                 .chain(d.a.host)
                 .chain(d.b.host)
+                .chain(d.center.and_then(|c| c.host))
                 .collect(),
             ElementKind::Tag(t) => vec![t.view, t.host],
+            ElementKind::Note(n) => std::iter::once(n.view)
+                .chain(n.leader.and_then(|p| p.host))
+                .collect(),
+            // a missing style falls back to the default look, like materials
+            ElementKind::TextStyle(_) => vec![],
             ElementKind::Sketch(s) => s.level.into_iter().collect(),
             ElementKind::Cut(c) => vec![c.target, c.cutter],
             ElementKind::Guide(g) => g.level.into_iter().collect(),
@@ -106,6 +113,8 @@ impl Element {
             ElementKind::Material(_) => "IfcMaterial",
             ElementKind::Dimension(_) => "Dimension",
             ElementKind::Tag(_) => "Tag",
+            ElementKind::Note(_) => "Note",
+            ElementKind::TextStyle(_) => "TextStyle",
             ElementKind::Sketch(_) => "Sketch",
             ElementKind::Cut(_) => "Cut",
             ElementKind::Guide(_) => "Guide",
@@ -219,8 +228,9 @@ impl Element {
             }
             ElementKind::Dimension(d) => {
                 if d.offset.is_finite()
-                    && [d.a, d.b]
+                    && [Some(d.a), Some(d.b), d.center]
                         .iter()
+                        .flatten()
                         .all(|p| p.local.is_finite() && p.body.is_none_or(|b| b.is_finite()))
                 {
                     Ok(())
@@ -235,6 +245,8 @@ impl Element {
                     Err("tag position must be finite".into())
                 }
             }
+            ElementKind::Note(n) => n.validate(),
+            ElementKind::TextStyle(s) => s.validate(),
             ElementKind::Sketch(s) => s.check(),
             ElementKind::Cut(c) => {
                 if c.target == c.cutter {
@@ -269,6 +281,8 @@ pub enum ElementKind {
     Dimension(Dimension),
     Tag(Tag),
     Sketch(Sketch),
+    Note(Note),
+    TextStyle(TextStyle),
     Cut(Cut),
     Guide(Guide),
     GridGroup(GridGroup),
@@ -293,6 +307,8 @@ impl ElementKind {
             ElementKind::Sketch(_) => "Sketch",
             ElementKind::Cut(_) => "Cut",
             ElementKind::Guide(_) => "Guide",
+            ElementKind::Note(_) => "Note",
+            ElementKind::TextStyle(_) => "TextStyle",
             ElementKind::GridGroup(_) => "GridGroup",
         }
     }
@@ -486,14 +502,58 @@ pub struct Guide {
     pub b: DVec3,
 }
 
-/// An aligned dimension in one view, measuring from `a` to `b`. Its line
-/// sits `offset` drawing units to the left of a → b.
+/// A dimension in one view. A linear one (the default, and the only kind
+/// older files have) measures from `a` to `b`, its line `offset` drawing
+/// units to the left of a → b. The other kinds measure about `center`; see
+/// [`DimensionKind`] for what `a`, `b` and `offset` mean for each.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Dimension {
     pub view: ElementId,
     pub a: HostPoint,
     pub b: HostPoint,
     pub offset: f64,
+    #[serde(default, skip_serializing_if = "DimensionKind::is_linear")]
+    pub kind: DimensionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center: Option<HostPoint>,
+    /// A [`TextStyle`] element; none is the default look.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<ElementId>,
+    /// Overrides the style's colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[f32; 3]>,
+}
+
+impl Dimension {
+    /// A linear dimension in the default style.
+    pub fn linear(view: ElementId, a: HostPoint, b: HostPoint, offset: f64) -> Self {
+        Self {
+            view,
+            a,
+            b,
+            offset,
+            kind: DimensionKind::Linear,
+            center: None,
+            style: None,
+            color: None,
+        }
+    }
+
+    /// A dimension of `kind` about `center`, in the default style.
+    pub fn about(
+        kind: DimensionKind,
+        view: ElementId,
+        center: HostPoint,
+        a: HostPoint,
+        b: HostPoint,
+        offset: f64,
+    ) -> Self {
+        Self {
+            kind,
+            center: Some(center),
+            ..Self::linear(view, a, b, offset)
+        }
+    }
 }
 
 /// A label in one view showing a property of `host`, such as a door's mark.
@@ -503,6 +563,22 @@ pub struct Tag {
     pub view: ElementId,
     pub host: ElementId,
     pub offset: DVec2,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<ElementId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[f32; 3]>,
+}
+
+impl Tag {
+    pub fn new(view: ElementId, host: ElementId, offset: DVec2) -> Self {
+        Self {
+            view,
+            host,
+            offset,
+            style: None,
+            color: None,
+        }
+    }
 }
 
 /// A storey. Walls and slabs hang off a level, so moving the level moves them.

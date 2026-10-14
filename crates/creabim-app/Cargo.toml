@@ -16,6 +16,7 @@ glam.workspace = true
 eframe = "0.36"
 bytemuck = { version = "1", features = ["derive"] }
 rfd = "0.15"
+serde.workspace = true
 serde_json.workspace = true
 wry = "0.57"
 raw-window-handle = "0.6"

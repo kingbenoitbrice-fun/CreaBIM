@@ -2,9 +2,13 @@
 //! read, and the linework they are drawn with. Both follow their hosts,
 //! because their positions are worked out from the model every time.
 
+use crate::annotation::{measure, Annotation, Shape, TextLook};
 use crate::plan::PlanItem;
 use crate::section::{AxoFrame, SectionFrame};
-use creabim_core::{ElementId, ElementKind, HostPoint, Model, OpeningKind, View, ViewKind, Wall};
+use creabim_core::{
+    DimensionKind, ElementId, ElementKind, HostPoint, Model, Note, OpeningKind, View, ViewKind,
+    Wall,
+};
 use glam::{DAffine3, DMat3, DVec2, DVec3};
 
 /// Maps world points into a view's drawing coordinates.
@@ -246,7 +250,95 @@ pub fn dimension_text(a: DVec2, b: DVec2) -> String {
     format!("{:.0}", a.distance(b) * 1000.0)
 }
 
-/// The dimensions and tags placed in a view, as drawing items.
+/// How an annotation with `style` and its own `color` looks.
+pub fn look_of(model: &Model, style: Option<ElementId>, color: Option<[f32; 3]>) -> TextLook {
+    creabim_core::text_style(model, style, color).into()
+}
+
+/// A dimension about a centre (angle, radius, diameter, arc length) as a
+/// drawing item, if its points can be drawn in the view.
+fn measured(
+    model: &Model,
+    view: &View,
+    id: ElementId,
+    d: &creabim_core::Dimension,
+) -> Option<PlanItem> {
+    let c = resolve(model, view, d.center.as_ref()?)?;
+    let a = resolve(model, view, &d.a)?;
+    let b = resolve(model, view, &d.b)?;
+    if c.distance(a) < 1e-6 {
+        return None;
+    }
+    let shape = match d.kind {
+        DimensionKind::Linear => return None,
+        DimensionKind::Angular => {
+            if c.distance(b) < 1e-6 {
+                return None;
+            }
+            Shape::Angle {
+                vertex: c,
+                a,
+                b,
+                radius: d.offset,
+            }
+        }
+        DimensionKind::Radius | DimensionKind::Diameter => Shape::Radius {
+            center: c,
+            at: a,
+            extra: d.offset,
+            diameter: d.kind == DimensionKind::Diameter,
+        },
+        DimensionKind::ArcLength => Shape::ArcLength {
+            center: c,
+            a,
+            b,
+            offset: d.offset,
+        },
+    };
+    Some(PlanItem::Annotation {
+        id,
+        item: Box::new(Annotation {
+            shape,
+            text: measure(d.kind, c, a, b),
+            look: look_of(model, d.style, d.color),
+            mm: view.scale / 1000.0,
+        }),
+    })
+}
+
+/// A note as a drawing item; `leader` resolves its leader point.
+pub fn note_item(
+    model: &Model,
+    id: ElementId,
+    n: &Note,
+    leader: Option<DVec2>,
+    mm: f64,
+) -> PlanItem {
+    PlanItem::Annotation {
+        id,
+        item: Box::new(Annotation {
+            shape: Shape::Note { at: n.at, leader },
+            text: n.text.clone(),
+            look: look_of(model, n.style, n.color),
+            mm,
+        }),
+    }
+}
+
+/// The notes written straight on a sheet, in paper millimetres.
+pub fn sheet_notes(model: &Model, sheet: ElementId) -> Vec<PlanItem> {
+    model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Note(n) if n.view == sheet => {
+                Some(note_item(model, e.id, n, n.leader.map(|p| p.local), 1.0))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The dimensions, tags and notes placed in a view, as drawing items.
 pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanItem> {
     let Some(project) = Projector::of(model, view) else {
         return vec![];
@@ -254,6 +346,13 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
     let mut out = Vec::new();
     for e in model.iter() {
         match &e.kind {
+            ElementKind::Dimension(d) if d.view == view_id && !d.kind.is_linear() => {
+                out.extend(measured(model, view, e.id, d));
+            }
+            ElementKind::Note(n) if n.view == view_id => {
+                let leader = n.leader.and_then(|p| resolve(model, view, &p));
+                out.push(note_item(model, e.id, n, leader, view.scale / 1000.0));
+            }
             ElementKind::Dimension(d) if d.view == view_id => {
                 let (Some(a), Some(b)) = (resolve(model, view, &d.a), resolve(model, view, &d.b))
                 else {
@@ -268,6 +367,7 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
                     b,
                     offset: d.offset,
                     text: dimension_text(a, b),
+                    look: look_of(model, d.style, d.color),
                 });
             }
             ElementKind::Tag(t) if t.view == view_id => {
@@ -282,6 +382,7 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
                     at: anchor + t.offset,
                     text,
                     round,
+                    look: look_of(model, t.style, t.color),
                 });
             }
             _ => {}
@@ -301,7 +402,13 @@ pub struct DimensionGeometry {
     pub angle: f64,
 }
 
-pub fn dimension_geometry(a: DVec2, b: DVec2, offset: f64, mm: f64) -> DimensionGeometry {
+pub fn dimension_geometry(
+    a: DVec2,
+    b: DVec2,
+    offset: f64,
+    look: &TextLook,
+    mm: f64,
+) -> DimensionGeometry {
     let u = (b - a).normalize_or_zero();
     let n = u.perp();
     let off = n * offset;
@@ -327,7 +434,8 @@ pub fn dimension_geometry(a: DVec2, b: DVec2, offset: f64, mm: f64) -> Dimension
     DimensionGeometry {
         lines,
         ticks,
-        text_at: (pa + pb) / 2.0 + up * 1.8 * mm,
+        // 1.8 mm off the line for the default 2.5 mm text
+        text_at: (pa + pb) / 2.0 + up * (0.55 + look.size / 2.0) * mm,
         angle,
     }
 }
@@ -341,11 +449,17 @@ pub struct TagGeometry {
 /// Text height of tags and dimensions, paper mm.
 pub const TEXT: f64 = 2.5;
 
-pub fn tag_geometry(anchor: DVec2, at: DVec2, text: &str, round: bool, mm: f64) -> TagGeometry {
-    let half = DVec2::new(
-        (crate::paper::text_width(text, TEXT) / 2.0 + 1.2).max(2.2),
-        2.2,
-    ) * mm;
+pub fn tag_geometry(
+    anchor: DVec2,
+    at: DVec2,
+    text: &str,
+    round: bool,
+    look: &TextLook,
+    mm: f64,
+) -> TagGeometry {
+    // the default 2.5 mm text sits in a bubble 4.4 mm tall
+    let k = look.size / TEXT;
+    let half = DVec2::new((look.width(text) / 2.0 + 1.2 * k).max(2.2 * k), 2.2 * k) * mm;
     let outline: Vec<DVec2> = if round {
         let r = half.x.max(half.y);
         (0..24)
@@ -503,7 +617,13 @@ mod tests {
 
     #[test]
     fn dimension_text_reads_upright() {
-        let g = dimension_geometry(DVec2::new(0.0, 5.0), DVec2::ZERO, 1.0, 0.1);
+        let g = dimension_geometry(
+            DVec2::new(0.0, 5.0),
+            DVec2::ZERO,
+            1.0,
+            &TextLook::default(),
+            0.1,
+        );
         assert!(g.angle.abs() <= std::f64::consts::FRAC_PI_2 + 1e-9);
     }
 }

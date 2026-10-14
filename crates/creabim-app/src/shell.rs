@@ -3,15 +3,17 @@
 //! the classic egui menu bar draws the same items.
 
 use super::*;
+use crate::theme::Theme;
 use crate::ui_model::{self, Item};
 use crate::webui::{Msg, Pane, WebUi};
 use serde_json::{json, Value};
 
-/// Height of the top bar (menus and tools), the status bar and the width
-/// of the project browser, in points.
-const TOP_H: f32 = 103.0;
+/// Height of the top bar (menus and tools) and the status bar, in points.
+const TOP_H: f32 = 81.0;
 const STATUS_H: f32 = 30.0;
-const LEFT_W: f32 = 264.0;
+/// Size of the 3D view's navigation buttons.
+const NAV_W: f32 = 262.0;
+const NAV_H: f32 = 34.0;
 
 pub(super) struct Shell {
     pub web: Option<WebUi>,
@@ -19,7 +21,9 @@ pub(super) struct Shell {
     pub failed: Option<String>,
     /// The classic egui panels, by choice.
     pub classic: bool,
-    pub dark: bool,
+    pub theme: Theme,
+    /// The theme and panel widths, kept between sessions.
+    pub settings: crate::files::Settings,
     popup: Option<Popup>,
     /// Keys pressed while a page had the keyboard, for the views.
     pub keys: Vec<egui::Event>,
@@ -27,6 +31,8 @@ pub(super) struct Shell {
     pub menu_3d: bool,
     /// The open right-click menu came from the 3D view (else a 2D pane).
     context_3d: bool,
+    /// Give the popup the keyboard once it is shown (the palette).
+    focus_popup: bool,
 }
 
 impl Default for Shell {
@@ -35,11 +41,13 @@ impl Default for Shell {
             web: None,
             failed: None,
             classic: std::env::var_os("CREABIM_CLASSIC_UI").is_some(),
-            dark: true,
+            theme: Theme::default(),
+            settings: Default::default(),
             popup: None,
             keys: vec![],
             menu_3d: false,
             context_3d: false,
+            focus_popup: false,
         }
     }
 }
@@ -65,6 +73,11 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Elevation => "building-2",
         Tool::Dimension => "ruler",
         Tool::Tag => "tag",
+        Tool::Angle => "drafting-compass",
+        Tool::Radius => "radius",
+        Tool::Diameter => "diameter",
+        Tool::ArcLength => "spline",
+        Tool::Note => "message-square-text",
         Tool::Sketch => "pen-tool",
         Tool::Guide => "slash",
         Tool::Grid => "grid-3x3",
@@ -76,7 +89,13 @@ fn tool_group(t: Tool) -> u8 {
         Tool::Select => 0,
         Tool::Wall | Tool::Door | Tool::Window | Tool::Slab | Tool::Mass => 1,
         Tool::Section | Tool::Elevation => 2,
-        Tool::Dimension | Tool::Tag => 3,
+        Tool::Dimension
+        | Tool::Tag
+        | Tool::Angle
+        | Tool::Radius
+        | Tool::Diameter
+        | Tool::ArcLength
+        | Tool::Note => 3,
         Tool::Sketch | Tool::Guide | Tool::Grid => 4,
     }
 }
@@ -118,6 +137,7 @@ fn group_title(class: &str) -> String {
         "IfcBuildingElementProxy" => "Masses".into(),
         "Sketch" => "Sketches".into(),
         "IfcMaterial" => "Materials".into(),
+        "TextStyle" => "Text styles".into(),
         c => {
             let c = c.strip_prefix("Ifc").unwrap_or(c);
             if c.ends_with('s') {
@@ -187,6 +207,13 @@ impl CreaBimApp {
             "menu:Edit" => self.edit_menu(),
             "menu:View" => self.view_menu(),
             "menu:Materials" => self.materials_menu(),
+            "menu:Create" => self.create_menu(),
+            "palette" => self.palette_items(),
+            "look" => crate::camera::Look::ALL
+                .iter()
+                .enumerate()
+                .map(|(i, l)| Item::new(format!("nav.look:{i}"), l.label()))
+                .collect(),
             "views" => {
                 let mut items = vec![Item::Header("Views".into())];
                 for (id, name, _) in self.views() {
@@ -328,10 +355,24 @@ impl CreaBimApp {
                     Item::new("snap.none", "Turn all off").keep_open(),
                     Item::Separator,
                 ];
+                const ICONS: [&str; 11] = [
+                    "snap-endpoint",
+                    "snap-midpoint",
+                    "snap-intersection",
+                    "snap-perpendicular",
+                    "snap-nearest",
+                    "snap-centre",
+                    "snap-quadrant",
+                    "hash",
+                    "slash",
+                    "snap-axis",
+                    "ruler",
+                ];
                 for (i, (label, v)) in s.switches().into_iter().enumerate() {
                     items.push(
                         Item::new(format!("snap:{i}"), label)
                             .checked(*v)
+                            .icon(ICONS.get(i).copied().unwrap_or(""))
                             .keep_open()
                             .enabled(self.plan.snap.on),
                     );
@@ -442,6 +483,107 @@ impl CreaBimApp {
         items
     }
 
+    /// Everything that can be placed or made, by kind, as in the tool
+    /// palette, with the views and sheets the File menu can also make.
+    fn create_menu(&self) -> Vec<Item> {
+        let mut items = vec![];
+        for (group, title) in [
+            (1, "Building elements"),
+            (2, "Views"),
+            (3, "Annotation"),
+            (4, "Sketching"),
+        ] {
+            items.push(Item::Header(title.into()));
+            for (i, t) in Tool::ALL.iter().enumerate() {
+                if tool_group(*t) == group {
+                    items.push(
+                        Item::new(format!("tool:{i}"), t.label())
+                            .icon(tool_icon(*t))
+                            .hint(t.hint()),
+                    );
+                }
+            }
+            if group == 2 {
+                items.push(Item::new("new.sheet", "Sheet").icon("file-text"));
+                items.push(Item::sub(
+                    "Schedule",
+                    ScheduleCategory::ALL
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| Item::new(format!("new.schedule:{i}"), c.label()))
+                        .collect(),
+                ));
+            }
+        }
+        items
+    }
+
+    /// Every action of the menus in one list, with its menu path, for the
+    /// command palette.
+    fn palette_items(&self) -> Vec<Item> {
+        fn flatten(items: Vec<Item>, path: &str, out: &mut Vec<Item>) {
+            for item in items {
+                match item {
+                    Item::Action {
+                        id,
+                        label,
+                        shortcut,
+                        hint,
+                        enabled,
+                        icon,
+                        ..
+                    } if enabled
+                        && !out
+                            .iter()
+                            .any(|o| matches!(o, Item::Action { id: i, .. } if *i == id)) =>
+                    {
+                        out.push(
+                            Item::new(id, format!("{path}{label}"))
+                                .key(shortcut)
+                                .hint(hint)
+                                .icon(icon),
+                        )
+                    }
+                    Item::Sub { label, items, .. } => {
+                        flatten(items, &format!("{path}{label} › "), out)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut out = vec![];
+        flatten(self.create_menu(), "Create › ", &mut out);
+        flatten(self.edit_menu(), "", &mut out);
+        flatten(self.view_menu(), "View › ", &mut out);
+        flatten(self.file_menu(), "File › ", &mut out);
+        flatten(self.materials_menu(), "Materials › ", &mut out);
+        flatten(self.menu_items("views"), "Open › ", &mut out);
+        out
+    }
+
+    /// The 3D view's navigation buttons.
+    fn nav_state(&self) -> Value {
+        let b = |id: &str, icon: &str, hint: &str, on: bool| json!({"id": id, "icon": icon, "hint": hint, "on": on});
+        let sel = self.selection.is_some();
+        let mut fitsel = b("nav.fitsel", "scan", "Frame the selection (.)", false);
+        fitsel["off"] = json!(!sel);
+        json!({
+            "theme": self.theme(),
+            "popup": self.popup_key(),
+            "buttons": [
+                b("frame", "maximize-2", "Frame all (Home)", false),
+                fitsel,
+                b("nav.orbitsel", "rotate-3d", "Orbit around the selection", self.orbit_selection),
+                b("nav.zoomin", "zoom-in", "Zoom in", false),
+                b("nav.zoomout", "zoom-out", "Zoom out", false),
+                b("nav.ortho", if self.camera.ortho { "box" } else { "cuboid" },
+                  if self.camera.ortho { "Orthographic: click for perspective" } else { "Perspective: click for orthographic" },
+                  self.camera.ortho),
+            ],
+            "look": {"key": "look", "hint": "Look from the top, a side or the corner"},
+        })
+    }
+
     fn view_menu(&self) -> Vec<Item> {
         let place = |p: PlanPlacement, i: u8, label: &str| {
             Item::new(format!("placement:{i}"), label).checked(self.placement == p)
@@ -459,19 +601,47 @@ impl CreaBimApp {
             Item::new("layout.swap", "2D view first").checked(self.layout.swapped),
             Item::Separator,
             Item::new("plan3d", "Show the 2D view in 3D space").checked(self.plan_in_3d),
+            Item::Separator,
+            Item::Header("3D view".into()),
             Item::sub(
                 "3D view shows",
                 self.visibility_items(super::gridvis::VisTarget::Window3d),
             ),
-            Item::new("frame", "Frame all").icon("maximize-2"),
+            Item::new("frame", "Frame all")
+                .key("Home")
+                .icon("maximize-2"),
+            Item::new("nav.fitsel", "Frame the selection")
+                .key(".")
+                .icon("scan")
+                .enabled(self.selection.is_some()),
+            Item::new("nav.orbitsel", "Orbit around the selection")
+                .checked(self.orbit_selection)
+                .hint(
+                    "Orbiting swings round the selected elements instead of the middle of the view",
+                ),
+            Item::new("nav.ortho", "Orthographic")
+                .checked(self.camera.ortho)
+                .hint("Parallel projection, without perspective"),
+            Item::sub("Look from", self.menu_items("look")),
             Item::Separator,
             Item::Header("Interface".into()),
-            Item::new("theme.dark", "Dark")
-                .checked(self.shell.dark)
-                .icon("moon"),
-            Item::new("theme.light", "Light")
-                .checked(!self.shell.dark)
-                .icon("sun"),
+            Item::sub(
+                "Theme",
+                Theme::ALL
+                    .into_iter()
+                    .map(|t| {
+                        Item::new(format!("theme:{}", t.id()), t.label())
+                            .checked(self.shell.theme == t)
+                            .keep_open()
+                    })
+                    .collect(),
+            ),
+            Item::new("theme.next", "Next theme")
+                .key("Ctrl+Shift+T")
+                .icon("palette"),
+            Item::new("palette", "Command palette")
+                .key("Ctrl+K")
+                .icon("search"),
             Item::new("ui.classic", "Classic panels")
                 .checked(self.shell.classic)
                 .hint("The plain built-in panels instead of the new interface"),
@@ -649,9 +819,23 @@ impl CreaBimApp {
             "layout.swap" => self.layout.swapped = !self.layout.swapped,
             "plan3d" => self.plan_in_3d = !self.plan_in_3d,
             "frame" => self.frame_all(),
-            "theme.dark" | "theme.light" => {
-                self.shell.dark = head == "theme.dark";
-                style(ctx, self.shell.dark);
+            "nav.fitsel" => self.frame_selection(),
+            "nav.orbitsel" => self.orbit_selection = !self.orbit_selection,
+            "nav.ortho" => self.camera.ortho = !self.camera.ortho,
+            "nav.zoomin" => self.camera.zoom(2.0),
+            "nav.zoomout" => self.camera.zoom(-2.0),
+            "nav.look" => {
+                if let Some(l) = index.and_then(|i| crate::camera::Look::ALL.get(i)) {
+                    self.camera.look(*l);
+                }
+            }
+            "palette" => self.open_palette(ctx),
+            "theme" | "theme.next" => {
+                let t = match Theme::from_id(arg) {
+                    Some(t) => t,
+                    None => self.shell.theme.next(),
+                };
+                self.set_theme(ctx, t);
             }
             "ui.classic" => {
                 self.shell.classic = !self.shell.classic;
@@ -660,6 +844,7 @@ impl CreaBimApp {
                 }
             }
             "view.shaded" | "view.tag" => self.view_action(head),
+            "note.leader" => self.plan.anno.leader = !self.plan.anno.leader,
             _ => {
                 if !self.materials_action(head, arg) {
                     self.grid_vis_action(head, arg);
@@ -883,6 +1068,14 @@ impl CreaBimApp {
             }));
             options.push(json!({"kind": "sep"}));
         }
+        if self.plan.tool == Tool::Note {
+            options.push(json!({
+                "kind": "toggle", "id": "note.leader", "label": "Leader",
+                "on": self.plan.anno.leader, "icon": "arrow-up-right",
+                "hint": "Draw an arrow to what the note is about: click its point first, then the text",
+            }));
+            options.push(json!({"kind": "sep"}));
+        }
         if let Some((label, value, unit, _)) = self.view_number() {
             let (step, min, max) = if unit == "°" {
                 (1.0, -89.0, 89.0)
@@ -921,7 +1114,7 @@ impl CreaBimApp {
         json!({
             "theme": self.theme(),
             "popup": self.popup_key(),
-            "menus": (["File", "Edit", "View", "Materials"].map(|m| json!({"name": m, "key": format!("menu:{m}")}))),
+            "menus": (["File", "Edit", "View", "Create", "Materials"].map(|m| json!({"name": m, "key": format!("menu:{m}")}))),
             "quick": quick,
             "doc": {
                 "name": file_label(&self.path),
@@ -1019,15 +1212,71 @@ impl CreaBimApp {
     }
 
     fn theme(&self) -> &'static str {
-        if self.shell.dark {
-            "dark"
-        } else {
-            "light"
-        }
+        self.shell.theme.id()
+    }
+
+    /// Switch theme everywhere and remember it for next time.
+    pub(super) fn set_theme(&mut self, ctx: &egui::Context, t: Theme) {
+        self.shell.theme = t;
+        style(ctx, t);
+        self.shell.settings.theme = t.id().into();
+        self.shell.settings.store();
+        self.status = format!("Theme: {}.", t.label());
     }
 
     fn popup_key(&self) -> Option<String> {
         self.shell.popup.as_ref().map(|p| p.key.clone())
+    }
+
+    /// While the palette is open, the keys typed in the views go to it: its
+    /// page doesn't always get the keyboard when opened from a shortcut.
+    pub(super) fn palette_keys(&mut self, raw: &mut egui::RawInput) {
+        if self.popup_key().as_deref() != Some("palette") {
+            return;
+        }
+        let Some(web) = &self.shell.web else { return };
+        let mut text = String::new();
+        let mut keys = vec![];
+        raw.events.retain(|e| match e {
+            egui::Event::Text(t) => {
+                text.push_str(t);
+                false
+            }
+            egui::Event::Key { key, pressed, .. } => {
+                if *pressed {
+                    // the page's names, as a browser gives them
+                    keys.push(match key {
+                        egui::Key::ArrowDown => "ArrowDown",
+                        egui::Key::ArrowUp => "ArrowUp",
+                        k => k.name(),
+                    });
+                }
+                false
+            }
+            _ => true,
+        });
+        if !text.is_empty() || !keys.is_empty() {
+            web.run(
+                Pane::Popup,
+                &format!(
+                    "window.CB && CB.feed({})",
+                    json!({"text": text, "keys": keys})
+                ),
+            );
+        }
+    }
+
+    /// The command palette: every action, found by typing.
+    pub(super) fn open_palette(&mut self, ctx: &egui::Context) {
+        let screen = ctx.content_rect();
+        let w = 560.0f32.min(screen.width() - 32.0);
+        self.shell.popup = Some(Popup {
+            key: "palette".into(),
+            at: egui::pos2(screen.center().x - w / 2.0, screen.top() + 90.0),
+            up: None,
+            size: egui::vec2(w, 380.0),
+        });
+        self.shell.focus_popup = true;
     }
 
     fn close_popup(&mut self) {
@@ -1079,10 +1328,13 @@ impl CreaBimApp {
             }
             "size" => {
                 if let Some(p) = &mut self.shell.popup {
-                    p.size = egui::vec2(
-                        b["w"].as_f64().unwrap_or(200.0) as f32,
-                        b["h"].as_f64().unwrap_or(100.0) as f32,
-                    );
+                    let h = b["h"].as_f64().unwrap_or(100.0) as f32;
+                    // the palette keeps the width it was opened with
+                    let w = match p.key.as_str() {
+                        "palette" => p.size.x,
+                        _ => b["w"].as_f64().unwrap_or(200.0) as f32,
+                    };
+                    p.size = egui::vec2(w, h);
                 }
             }
             "set" => {
@@ -1207,20 +1459,46 @@ impl CreaBimApp {
             .show(ui, |_| ())
             .response
             .rect;
+        // drag the browser's right edge to widen it
         let left = egui::Panel::left("web_left")
-            .exact_size(LEFT_W)
-            .resizable(false)
-            .show_separator_line(false)
-            .frame(none)
-            .show(ui, |_| ())
+            .default_size(self.shell.settings.left_width)
+            .size_range(180.0..=520.0)
+            .resizable(true)
+            .show_separator_line(true)
+            .frame(egui::Frame::NONE.fill(ui.visuals().panel_fill))
+            .show(ui, |ui| ui.allocate_space(ui.available_size()))
             .response
             .rect;
+        // the page sits just inside the edge so the edge stays grabbable
+        let left = left.with_max_x(left.max.x - 3.0);
+        let width = (left.width() + 3.0).round();
+        if (width - self.shell.settings.left_width).abs() >= 1.0
+            && !ctx.input(|i| i.pointer.any_down())
+        {
+            self.shell.settings.left_width = width;
+            self.shell.settings.store();
+        }
 
+        // the 3D view's buttons, over its top-right corner (where it was
+        // drawn last frame)
+        let nav = self
+            .rect_3d
+            .filter(|r| r.width() > 260.0 && r.height() > 120.0)
+            .map(|r| {
+                // the overlaid 2D view takes the top-right corner
+                let x = if self.placement == PlanPlacement::Overlay {
+                    r.left() + 36.0
+                } else {
+                    r.right() - NAV_W - 8.0
+                };
+                egui::Rect::from_min_size(egui::pos2(x, r.top() + 8.0), egui::vec2(NAV_W, NAV_H))
+            });
         let states = [
             (Pane::Top, top, self.top_state()),
             (Pane::Left, left, self.left_state()),
             (Pane::Status, status, self.status_state()),
         ];
+        let nav_state = self.nav_state();
         let screen = ctx.content_rect();
         let popup = self.shell.popup.as_ref().map(|p| {
             let mut at = p.at;
@@ -1247,11 +1525,21 @@ impl CreaBimApp {
             web.place(pane, rect, ppp);
             web.send(pane, &state);
         }
+        match nav {
+            Some(rect) => {
+                web.place(Pane::Nav, rect, ppp);
+                web.send(Pane::Nav, &nav_state);
+            }
+            None => web.park(Pane::Nav),
+        }
         match popup {
             Some((_, _, true)) => self.close_popup(),
             Some((rect, state, false)) => {
                 web.send(Pane::Popup, &state);
                 web.show_popup(rect, ppp);
+                if std::mem::take(&mut self.shell.focus_popup) {
+                    web.focus(Pane::Popup);
+                }
             }
             None => web.hide_popup(),
         }
@@ -1302,14 +1590,15 @@ impl CreaBimApp {
 }
 
 /// egui's spacing and type, roomier than its defaults.
-pub(super) fn style(ctx: &egui::Context, dark: bool) {
-    let theme = if dark {
+pub(super) fn style(ctx: &egui::Context, theme: Theme) {
+    let p = theme.palette();
+    let mode = if p.dark {
         egui::Theme::Dark
     } else {
         egui::Theme::Light
     };
-    ctx.set_theme(theme);
-    ctx.set_visuals_of(theme, visuals(dark));
+    ctx.set_theme(mode);
+    ctx.set_visuals_of(mode, visuals(theme));
     ctx.all_styles_mut(|s| {
         use egui::{FontId, TextStyle};
         s.spacing.item_spacing = egui::vec2(8.0, 6.0);
@@ -1326,55 +1615,36 @@ pub(super) fn style(ctx: &egui::Context, dark: bool) {
 
 /// egui's look, matched to the web interface so the properties panel and
 /// the views' own controls sit with it.
-pub(super) fn visuals(dark: bool) -> egui::Visuals {
-    use egui::{Color32 as C, CornerRadius, Stroke};
-    let rgb = C::from_rgb;
-    let mut v = if dark {
+pub(super) fn visuals(theme: Theme) -> egui::Visuals {
+    use egui::{CornerRadius, Stroke};
+    let p = theme.palette();
+    let mut v = if p.dark {
         egui::Visuals::dark()
     } else {
         egui::Visuals::light()
     };
-    let (panel, panel2, raise, raise2, border, text, accent) = if dark {
-        (
-            rgb(23, 25, 31),
-            rgb(28, 31, 38),
-            rgb(37, 42, 51),
-            rgb(45, 50, 61),
-            rgb(39, 43, 52),
-            rgb(195, 200, 210),
-            rgb(91, 140, 255),
-        )
-    } else {
-        (
-            rgb(255, 255, 255),
-            rgb(246, 247, 249),
-            rgb(236, 238, 242),
-            rgb(226, 229, 234),
-            rgb(227, 230, 235),
-            rgb(58, 64, 76),
-            rgb(61, 111, 245),
-        )
-    };
-    v.panel_fill = panel;
-    v.window_fill = panel2;
-    v.faint_bg_color = panel2;
-    v.extreme_bg_color = if dark { rgb(18, 20, 25) } else { panel2 };
-    v.window_stroke = Stroke::new(1.0, border);
+    v.panel_fill = p.panel;
+    v.window_fill = p.panel2;
+    v.faint_bg_color = p.panel2;
+    v.extreme_bg_color = if p.dark { p.bg } else { p.panel2 };
+    v.window_stroke = Stroke::new(1.0, p.border);
     v.window_corner_radius = CornerRadius::same(8);
     v.menu_corner_radius = CornerRadius::same(8);
-    v.selection.bg_fill = accent.gamma_multiply(if dark { 0.45 } else { 0.25 });
-    v.selection.stroke = Stroke::new(1.0, accent);
-    v.hyperlink_color = accent;
+    v.selection.bg_fill = p.accent.gamma_multiply(if p.dark { 0.45 } else { 0.25 });
+    v.selection.stroke = Stroke::new(1.0, p.accent);
+    v.hyperlink_color = p.accent;
+    v.weak_text_color = Some(p.muted);
     v.override_text_color = None;
     let w = &mut v.widgets;
-    w.noninteractive.bg_stroke = Stroke::new(1.0, border);
-    w.noninteractive.fg_stroke.color = text;
-    w.noninteractive.bg_fill = panel;
+    w.noninteractive.bg_stroke = Stroke::new(1.0, p.border);
+    w.noninteractive.fg_stroke.color = p.text;
+    w.noninteractive.bg_fill = p.panel;
+    w.inactive.fg_stroke.color = p.text;
     for (state, fill) in [
-        (&mut w.inactive, raise),
-        (&mut w.hovered, raise2),
-        (&mut w.active, raise2),
-        (&mut w.open, raise),
+        (&mut w.inactive, p.raise),
+        (&mut w.hovered, p.raise2),
+        (&mut w.active, p.raise2),
+        (&mut w.open, p.raise),
     ] {
         state.bg_fill = fill;
         state.weak_bg_fill = fill;
@@ -1382,7 +1652,7 @@ pub(super) fn visuals(dark: bool) -> egui::Visuals {
         state.bg_stroke = Stroke::NONE;
     }
     w.noninteractive.corner_radius = CornerRadius::same(6);
-    w.hovered.bg_stroke = Stroke::new(1.0, border);
-    w.active.bg_stroke = Stroke::new(1.0, accent);
+    w.hovered.bg_stroke = Stroke::new(1.0, p.border);
+    w.active.bg_stroke = Stroke::new(1.0, p.accent);
     v
 }

@@ -20,6 +20,7 @@
   --accent-ring: rgba(91, 140, 255, 0.45);
   --good: #3ecf8e;
   --warn: #f5b84a;
+  --on-accent: #ffffff;
   --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
 }
 
@@ -41,6 +42,124 @@ html[data-theme="light"] {
   --accent-soft: rgba(61, 111, 245, 0.11);
   --accent-ring: rgba(61, 111, 245, 0.4);
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+
+/* Themes from the CreaBIM UI template: warm graphite, paper, blueprint,
+   sage and ink. Gilt marks the selection, the accent marks actions. */
+
+html[data-theme="graphite"] {
+  --bg: #15181C;
+  --panel: #1C2127;
+  --panel-2: #232930;
+  --raise: #2E353D;
+  --raise-2: #3A434C;
+  --border: #2E353D;
+  --border-2: #3A434C;
+  --text: #ECE8DF;
+  --text-2: #B9B5AB;
+  --muted: #8A8F93;
+  --faint: rgba(138, 143, 147, 0.75);
+  --accent: #7FA6BD;
+  --accent-2: #D8AE62;
+  --accent-text: #7FA6BD;
+  --accent-soft: #22313B;
+  --accent-ring: rgba(127, 166, 189, 0.5);
+  --on-accent: #15181C;
+  --good: #7DB08A;
+  --warn: #E0B060;
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+}
+
+html[data-theme="paper"] {
+  --bg: #F3F1EC;
+  --panel: #FBFAF7;
+  --panel-2: #EEEBE4;
+  --raise: #EEEBE4;
+  --raise-2: #D9D4C9;
+  --border: #D9D4C9;
+  --border-2: #C9C2B4;
+  --text: #1F252B;
+  --text-2: #4A5259;
+  --muted: #7C7F80;
+  --faint: rgba(124, 127, 128, 0.75);
+  --accent: #3B6177;
+  --accent-2: #B58A3A;
+  --accent-text: #3B6177;
+  --accent-soft: #DCE7EE;
+  --accent-ring: rgba(59, 97, 119, 0.5);
+  --on-accent: #ffffff;
+  --good: #4D7A5A;
+  --warn: #9A6A1E;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+
+html[data-theme="blueprint"] {
+  --bg: #0F1E29;
+  --panel: #14283A;
+  --panel-2: #1B3349;
+  --raise: #24405A;
+  --raise-2: #2F5070;
+  --border: #24405A;
+  --border-2: #2F5070;
+  --text: #E4EEF5;
+  --text-2: #A9C0D2;
+  --muted: #7893A8;
+  --faint: rgba(120, 147, 168, 0.75);
+  --accent: #8CC4E6;
+  --accent-2: #E0B56A;
+  --accent-text: #8CC4E6;
+  --accent-soft: #1E3F57;
+  --accent-ring: rgba(140, 196, 230, 0.5);
+  --on-accent: #0F1E29;
+  --good: #7FC19A;
+  --warn: #E6B35E;
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+}
+
+html[data-theme="sage"] {
+  --bg: #EEF1EA;
+  --panel: #F7F9F3;
+  --panel-2: #E3E8DC;
+  --raise: #E3E8DC;
+  --raise-2: #CBD3C2;
+  --border: #CBD3C2;
+  --border-2: #B5C0AA;
+  --text: #1E2A22;
+  --text-2: #4B5A4F;
+  --muted: #7A877C;
+  --faint: rgba(122, 135, 124, 0.75);
+  --accent: #4F6E58;
+  --accent-2: #A8843A;
+  --accent-text: #4F6E58;
+  --accent-soft: #DDE8DA;
+  --accent-ring: rgba(79, 110, 88, 0.5);
+  --on-accent: #ffffff;
+  --good: #3F7A4F;
+  --warn: #9A6A1E;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+
+html[data-theme="ink"] {
+  --bg: #0B0C0E;
+  --panel: #141518;
+  --panel-2: #1D1F23;
+  --raise: #2A2D33;
+  --raise-2: #3A3E46;
+  --border: #2A2D33;
+  --border-2: #3A3E46;
+  --text: #F5F3EE;
+  --text-2: #C9C6BE;
+  --muted: #8F9096;
+  --faint: rgba(143, 144, 150, 0.75);
+  --accent: #F0C36B;
+  --accent-2: #F0C36B;
+  --accent-text: #F0C36B;
+  --accent-soft: #3A2F16;
+  --accent-ring: rgba(240, 195, 107, 0.5);
+  --on-accent: #0B0C0E;
+  --good: #8FD19E;
+  --warn: #F0C36B;
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
 }
 
 * { box-sizing: border-box; }
@@ -87,7 +206,7 @@ button:disabled { opacity: 0.35; }
 .vsep {
   width: 1px;
   align-self: stretch;
-  margin: 8px 6px;
+  margin: 9px 6px;
   background: var(--border);
   flex: none;
 }
@@ -100,7 +219,7 @@ html[data-pane="top"] body {
 }
 
 .bar1 {
-  height: 42px;
+  height: 40px;
   display: flex;
   align-items: center;
   padding: 0 10px 0 12px;
@@ -170,7 +289,7 @@ html[data-pane="top"] body {
 .doc b { color: var(--text-2); font-weight: 550; }
 
 .bar2 {
-  height: 60px;
+  height: 40px;
   display: flex;
   align-items: center;
   padding: 0 10px;
@@ -180,21 +299,23 @@ html[data-pane="top"] body {
 
 .tools { display: flex; align-items: center; gap: 2px; }
 
+/* Tools are icons; the one in use also shows its name. */
 .tool {
-  width: 56px;
-  height: 50px;
-  border-radius: 9px;
+  min-width: 32px;
+  height: 30px;
+  padding: 0 7px;
+  border-radius: 7px;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 6px;
   color: var(--text-2);
   position: relative;
 }
 
-.tool svg.i { width: 19px; height: 19px; stroke-width: 1.6; }
-.tool span { font-size: 10.5px; letter-spacing: 0.01em; color: var(--muted); }
+.tool svg.i { width: 17px; height: 17px; stroke-width: 1.7; }
+.tool span { display: none; font-size: 12px; font-weight: 550; color: var(--muted); }
+.tool.on span { display: inline; }
 .tool:hover { background: var(--raise); color: var(--text); }
 .tool:hover span { color: var(--text-2); }
 
@@ -468,8 +589,9 @@ html[data-pane="popup"] body {
   color: var(--text);
 }
 
-.mi:hover:not(:disabled), .mi.hot:not(:disabled) { background: var(--accent); color: white; }
-.mi:hover:not(:disabled) .key, .mi:hover:not(:disabled) .ck, .mi:hover:not(:disabled) svg.i { color: rgba(255, 255, 255, 0.85); }
+.mi:hover:not(:disabled), .mi.hot:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+.mi:hover:not(:disabled) .key, .mi:hover:not(:disabled) .ck, .mi:hover:not(:disabled) svg.i,
+.mi.hot:not(:disabled) .key, .mi.hot:not(:disabled) .ck, .mi.hot:not(:disabled) svg.i { color: var(--on-accent); opacity: 0.85; }
 .mi .ck { width: 16px; display: grid; place-items: center; color: var(--accent-text); flex: none; }
 .mi .ck svg { width: 14px; height: 14px; stroke-width: 2.4; }
 .mi svg.i { color: var(--muted); }
@@ -486,4 +608,27 @@ html[data-pane="popup"] body {
   color: var(--faint);
   padding: 8px 10px 4px 30px;
   font-weight: 600;
+  white-space: nowrap;
 }
+
+.mi .glyph { width: 16px; display: grid; place-items: center; color: var(--muted); flex: none; }
+.mi .glyph svg.i { width: 15px; height: 15px; }
+
+/* ---------- command palette ---------- */
+
+.palette { display: flex; flex-direction: column; width: 100%; }
+.pq { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border-2); color: var(--muted); }
+.pq input { flex: 1; min-width: 0; font: inherit; font-size: 15px; color: var(--text); background: none; border: 0; outline: none; user-select: text; -webkit-user-select: text; }
+.pq input::placeholder { color: var(--faint); }
+.pl { max-height: 300px; overflow-y: auto; padding: 5px; }
+.pl::-webkit-scrollbar { width: 8px; }
+.pl::-webkit-scrollbar-thumb { background: var(--raise-2); border-radius: 8px; }
+.pfoot { display: flex; gap: 16px; padding: 7px 14px; border-top: 1px solid var(--border-2); color: var(--faint); font-size: 11px; }
+
+/* ---------- the 3D view's navigation buttons ---------- */
+
+html[data-pane="nav"] body { background: var(--panel); border: 1px solid var(--border-2); border-radius: 0; }
+.nav { height: 100%; display: flex; align-items: center; gap: 1px; padding: 0 3px; }
+.nav .ibtn { width: 28px; height: 26px; }
+.nav .dd { height: 26px; background: transparent; box-shadow: none; padding: 0 6px; }
+.nav .dd:hover { background: var(--raise); }
