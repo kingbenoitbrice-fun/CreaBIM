@@ -1,5 +1,6 @@
 pub use crate::annotation::{DimensionKind, Note, TextStyle};
 pub use crate::grids::GridGroup;
+pub use crate::members::{Beam, Column, Railing, Roof, Stair};
 pub use crate::sketch::Sketch;
 use crate::visibility::ViewHidden;
 use crate::{
@@ -91,6 +92,10 @@ impl Element {
             ElementKind::Sketch(s) => s.level.into_iter().collect(),
             ElementKind::Cut(c) => vec![c.target, c.cutter],
             ElementKind::Guide(g) => g.level.into_iter().collect(),
+            ElementKind::Railing(r) => std::iter::once(r.level)
+                .chain(r.stair.map(|s| s.stair))
+                .collect(),
+            k => crate::members::level_of(k).into_iter().collect(),
         }
     }
 
@@ -118,6 +123,11 @@ impl Element {
             ElementKind::Sketch(_) => "Sketch",
             ElementKind::Cut(_) => "Cut",
             ElementKind::Guide(_) => "Guide",
+            ElementKind::Column(_) => "IfcColumn",
+            ElementKind::Beam(_) => "IfcBeam",
+            ElementKind::Roof(_) => "IfcRoof",
+            ElementKind::Stair(_) => "IfcStair",
+            ElementKind::Railing(_) => "IfcRailing",
         }
     }
 
@@ -262,6 +272,11 @@ impl Element {
                     Err("a guide needs two different points".into())
                 }
             }
+            k @ (ElementKind::Column(_)
+            | ElementKind::Beam(_)
+            | ElementKind::Roof(_)
+            | ElementKind::Stair(_)
+            | ElementKind::Railing(_)) => crate::members::validate(k),
         }
     }
 }
@@ -285,6 +300,11 @@ pub enum ElementKind {
     TextStyle(TextStyle),
     Cut(Cut),
     Guide(Guide),
+    Column(Column),
+    Beam(Beam),
+    Roof(Roof),
+    Stair(Stair),
+    Railing(Railing),
     GridGroup(GridGroup),
 }
 
@@ -307,6 +327,11 @@ impl ElementKind {
             ElementKind::Sketch(_) => "Sketch",
             ElementKind::Cut(_) => "Cut",
             ElementKind::Guide(_) => "Guide",
+            ElementKind::Column(_) => "Column",
+            ElementKind::Beam(_) => "Beam",
+            ElementKind::Roof(_) => "Roof",
+            ElementKind::Stair(_) => "Stair",
+            ElementKind::Railing(_) => "Railing",
             ElementKind::Note(_) => "Note",
             ElementKind::TextStyle(_) => "TextStyle",
             ElementKind::GridGroup(_) => "GridGroup",
@@ -941,14 +966,17 @@ pub enum ScheduleCategory {
     Windows,
     Walls,
     Slabs,
+    /// Columns and beams.
+    Structure,
 }
 
 impl ScheduleCategory {
-    pub const ALL: [ScheduleCategory; 4] = [
+    pub const ALL: [ScheduleCategory; 5] = [
         ScheduleCategory::Doors,
         ScheduleCategory::Windows,
         ScheduleCategory::Walls,
         ScheduleCategory::Slabs,
+        ScheduleCategory::Structure,
     ];
 
     pub fn label(self) -> &'static str {
@@ -957,6 +985,7 @@ impl ScheduleCategory {
             ScheduleCategory::Windows => "Windows",
             ScheduleCategory::Walls => "Walls",
             ScheduleCategory::Slabs => "Slabs",
+            ScheduleCategory::Structure => "Columns and beams",
         }
     }
 }

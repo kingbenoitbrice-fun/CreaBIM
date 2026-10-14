@@ -35,7 +35,7 @@ pub fn material_of<'a>(model: &'a Model, e: &Element) -> Option<(&'a Element, &'
         ElementKind::Wall(w) => w.material,
         ElementKind::Slab(s) => s.material,
         ElementKind::FreeMesh(m) => m.material,
-        _ => None,
+        k => crate::members::material(k),
     }?;
     let m = model.get(id)?;
     match &m.kind {

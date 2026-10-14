@@ -81,7 +81,12 @@ pub fn show(
         ui.label(
             egui::RichText::new(format!(
                 "{} schedule",
-                category.label().trim_end_matches('s')
+                // "Walls" reads "Wall schedule"; "Columns and beams" stays as is
+                if category.label().contains(' ') {
+                    category.label()
+                } else {
+                    category.label().trim_end_matches('s')
+                }
             ))
             .size(17.0)
             .strong()

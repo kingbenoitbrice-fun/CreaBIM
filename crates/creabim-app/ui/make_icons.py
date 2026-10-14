@@ -6,6 +6,8 @@ names="""mouse-pointer-2 brick-wall door-open app-window layers layers-2 box sci
 names+="""zoom-in zoom-out rotate-3d""".split()
 # for the annotation tools
 names+="""drafting-compass radius diameter message-square-text arrow-up-right""".split()
+# for the building element tools
+names+="""rectangle-vertical rectangle-horizontal tent chart-no-axes-column-increasing fence corner-down-right""".split()
 # snap markers, drawn like the markers in the views (not from Lucide)
 CUSTOM={
  "snap-endpoint": '<rect x="6" y="6" width="12" height="12" />',

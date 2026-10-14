@@ -147,7 +147,9 @@ pub fn controls(
                     doc.model().get(id).map(|e| &e.kind),
                     Some(ElementKind::Sketch(_))
                 ) {
-                    msg = Some(match from_sketch(doc, id, selection) {
+                    let roof = (state.tool == crate::planview::Tool::Roof)
+                        .then_some((state.members.roof_shape, state.members.roof_pitch));
+                    msg = Some(match from_sketch(doc, id, selection, roof) {
                         Ok(m) | Err(m) => m,
                     });
                 }
@@ -162,19 +164,26 @@ pub fn from_sketch(
     doc: &mut Document,
     id: ElementId,
     selection: &mut Selection,
+    roof: Option<(creabim_core::RoofShape, f64)>,
 ) -> Result<String, String> {
     let Some(ElementKind::Sketch(sk)) = doc.model().get(id).map(|e| &e.kind) else {
         return Err("That isn't a sketch.".into());
     };
     let slab = creabim_core::slab_from_sketch(doc.model(), sk, NEW_SLAB_THICKNESS)?;
-    let e = Element::new("Slab", ElementKind::Slab(slab));
+    let e = match roof {
+        Some((shape, pitch)) => crate::memberstool::roof_from_slab(&slab, shape, pitch),
+        None => Element::new("Slab", ElementKind::Slab(slab)),
+    };
+    let what = if roof.is_some() { "roof" } else { "slab" };
     let sid = e.id;
-    let tx = Transaction::new("Slab from sketch")
+    let tx = Transaction::new(format!("{} from sketch", e.name))
         .remove_cascade(doc.model(), id)
         .insert(e);
     doc.commit(tx).map_err(|e| e.to_string())?;
     selection.only(sid);
-    Ok("The sketch is now a slab, its top on the sketch's plane. Ctrl+Z to undo.".into())
+    Ok(format!(
+        "The sketch is now a {what}, on the sketch's plane. Ctrl+Z to undo."
+    ))
 }
 
 /// The closed flat sketch whose outline is around plan point `p`: one on
@@ -230,7 +239,11 @@ pub fn click(
 ) -> Result<(), creabim_core::ModelError> {
     match state.slab_mode {
         SlabMode::Polygon => {
-            state.outline = Some(crate::outline::Outline::new_slab(doc.model(), level, p));
+            let mut o = crate::outline::Outline::new_slab(doc.model(), level, p);
+            if state.tool == crate::planview::Tool::Roof {
+                o.roof = Some((state.members.roof_shape, state.members.roof_pitch));
+            }
+            state.outline = Some(o);
             state.status = state.outline.as_ref().map(|o| o.hint());
             Ok(())
         }
@@ -245,17 +258,17 @@ pub fn click(
                 if (hi - lo).min_element() < 0.01 {
                     return Ok(());
                 }
-                let e = Element::new(
-                    "Slab",
-                    ElementKind::Slab(Slab::new(
+                let (e, label) = crate::memberstool::outline_element(
+                    state,
+                    Slab::new(
                         level,
                         vec![lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)],
                         NEW_SLAB_THICKNESS,
-                    )),
+                    ),
                 );
                 selection.only(e.id);
-                state.status = Some("Slab added.".into());
-                doc.commit(Transaction::new("Draw slab").insert(e))
+                state.status = Some(format!("{} added.", e.name));
+                doc.commit(Transaction::new(label).insert(e))
             }
         },
         SlabMode::FillRoom => {
@@ -265,13 +278,16 @@ pub fn click(
                 );
                 return Ok(());
             };
-            let e = Element::new(
-                "Slab",
-                ElementKind::Slab(Slab::new(level, outline, NEW_SLAB_THICKNESS)),
+            let (e, label) = crate::memberstool::outline_element(
+                state,
+                Slab::new(level, outline, NEW_SLAB_THICKNESS),
             );
             selection.only(e.id);
-            state.status = Some("Slab added, filling the room to the walls' centre lines.".into());
-            doc.commit(Transaction::new("Fill room with slab").insert(e))
+            state.status = Some(format!(
+                "{} added over the room, to the walls' centre lines.",
+                e.name
+            ));
+            doc.commit(Transaction::new(label).insert(e))
         }
         SlabMode::FromSketch => {
             let Some(id) = sketch_around(doc, level, p) else {
@@ -281,7 +297,9 @@ pub fn click(
                 );
                 return Ok(());
             };
-            state.status = Some(match from_sketch(doc, id, selection) {
+            let roof = (state.tool == crate::planview::Tool::Roof)
+                .then_some((state.members.roof_shape, state.members.roof_pitch));
+            state.status = Some(match from_sketch(doc, id, selection, roof) {
                 Ok(m) | Err(m) => m,
             });
             Ok(())

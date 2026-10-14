@@ -28,6 +28,8 @@ pub struct Outline {
     /// The level it is drawn on.
     pub level: ElementId,
     wall: bool,
+    /// Draw a roof of this shape and pitch instead of a slab.
+    pub roof: Option<(creabim_core::RoofShape, f64)>,
 }
 
 /// What a pane does after passing a frame's input to [`Outline::input`].
@@ -57,6 +59,7 @@ impl Outline {
             z,
             level,
             wall,
+            roof: None,
         })
     }
 
@@ -70,6 +73,7 @@ impl Outline {
             z: model.level(level).map_or(0.0, |l| l.elevation),
             level,
             wall: false,
+            roof: None,
         }
     }
 
@@ -83,6 +87,8 @@ impl Outline {
         }
         let what = if self.target.is_some() {
             "Redrawing the slab"
+        } else if self.roof.is_some() {
+            "Drawing a roof"
         } else {
             "Drawing a slab"
         };
@@ -214,6 +220,15 @@ impl Outline {
                 slab.bulges = bulges;
             }
             slab.make_ccw();
+            if let (None, Some((shape, pitch))) = (self.target, self.roof) {
+                let e = crate::memberstool::roof_from_slab(&slab, shape, pitch);
+                let id = e.id;
+                doc.commit(Transaction::new("Draw roof").insert(e))?;
+                return Ok((
+                    "Roof added. Change its shape, pitch and overhang in Properties. Ctrl+Z to undo.".into(),
+                    Some(id),
+                ));
+            }
             let Some(target) = self.target else {
                 let e = Element::new("Slab", ElementKind::Slab(slab));
                 let id = e.id;

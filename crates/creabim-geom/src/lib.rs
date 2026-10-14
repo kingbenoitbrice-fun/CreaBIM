@@ -8,6 +8,7 @@
 pub mod annotate;
 pub mod annotation;
 pub mod crop;
+pub mod members;
 pub mod mesh;
 pub mod paper;
 pub mod pick;
