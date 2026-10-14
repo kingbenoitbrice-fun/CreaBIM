@@ -6,6 +6,7 @@
 //! polygon meshes, which this crate builds exactly.
 
 pub mod annotate;
+pub mod annotation;
 pub mod crop;
 pub mod members;
 pub mod mesh;

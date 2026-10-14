@@ -760,6 +760,8 @@ pub fn interact(
                         ElementKind::View(_)
                             | ElementKind::Dimension(_)
                             | ElementKind::Tag(_)
+                            | ElementKind::Note(_)
+                            | ElementKind::TextStyle(_)
                             | ElementKind::Level(_)
                             | ElementKind::Sheet(_)
                             | ElementKind::Viewport(_)

@@ -4,6 +4,7 @@
 //! the model directly; they are expressed as a [`Transaction`] of [`Op`]s and
 //! committed through a [`Document`], which records them for undo and redo.
 
+pub mod annotation;
 pub mod constraint;
 pub mod csg;
 pub mod document;
@@ -24,6 +25,7 @@ pub mod slab;
 pub mod transform;
 pub mod visibility;
 
+pub use annotation::{text_style, DimensionKind, Font, Note, TextStyle};
 pub use constraint::{Constraint, SolveError};
 pub use csg::BoolOp;
 pub use document::{Document, Step, StepId};

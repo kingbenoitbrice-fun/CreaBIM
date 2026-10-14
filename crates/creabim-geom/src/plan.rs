@@ -406,6 +406,7 @@ pub enum PlanItem {
         b: DVec2,
         offset: f64,
         text: String,
+        look: crate::annotation::TextLook,
     },
     /// A tag: `text` in a bubble at `at`, with a leader back to `anchor`.
     Tag {
@@ -414,6 +415,12 @@ pub enum PlanItem {
         at: DVec2,
         text: String,
         round: bool,
+        look: crate::annotation::TextLook,
+    },
+    /// An angular, radial, diameter or arc-length dimension, or a note.
+    Annotation {
+        id: ElementId,
+        item: Box<crate::annotation::Annotation>,
     },
     /// Shaded surfaces as an image spanning `lo`..`hi`, drawn only inside `clip`.
     Image {
@@ -448,6 +455,7 @@ impl PlanItem {
             | PlanItem::Text { id, .. }
             | PlanItem::Dimension { id, .. }
             | PlanItem::Tag { id, .. }
+            | PlanItem::Annotation { id, .. }
             | PlanItem::Image { id, .. } => *id,
         }
     }
@@ -499,6 +507,7 @@ impl PlanItem {
             PlanItem::Tag { anchor, at, .. } => {
                 pts.extend([*anchor, *at - DVec2::splat(0.3), *at + DVec2::splat(0.3)])
             }
+            PlanItem::Annotation { item, .. } => pts.extend(item.extent()),
             PlanItem::Image { lo, hi, clip, .. } => match clip {
                 Some((clo, chi)) => pts.extend([lo.max(*clo), hi.min(*chi)]),
                 None => pts.extend([*lo, *hi]),

@@ -25,6 +25,8 @@ pub enum Category {
     SectionMarks,
     Dimensions,
     Tags,
+    /// Text notes and their leaders.
+    Notes,
     Sketches,
     Guides,
     Columns,
@@ -39,7 +41,7 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 18] = [
+    pub const ALL: [Category; 19] = [
         Category::Walls,
         Category::Slabs,
         Category::Doors,
@@ -51,6 +53,7 @@ impl Category {
         Category::SectionMarks,
         Category::Dimensions,
         Category::Tags,
+        Category::Notes,
         Category::Sketches,
         Category::Guides,
         Category::Columns,
@@ -73,6 +76,7 @@ impl Category {
             Category::SectionMarks => "Section marks",
             Category::Dimensions => "Dimensions",
             Category::Tags => "Tags",
+            Category::Notes => "Notes",
             Category::Sketches => "Sketches",
             Category::Guides => "Guides",
             Category::Columns => "Columns",
@@ -103,6 +107,7 @@ impl Category {
             }
             ElementKind::Dimension(_) => Category::Dimensions,
             ElementKind::Tag(_) => Category::Tags,
+            ElementKind::Note(_) => Category::Notes,
             ElementKind::Sketch(_) => Category::Sketches,
             ElementKind::Guide(_) => Category::Guides,
             ElementKind::Column(_) => Category::Columns,

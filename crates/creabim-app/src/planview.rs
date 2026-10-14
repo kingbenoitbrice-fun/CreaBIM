@@ -16,6 +16,7 @@ use creabim_core::{
     OpeningKind, Slab, Tag, Transaction, View, ViewKind, Wall,
 };
 use creabim_geom::annotate::{self, dimension_geometry, tag_geometry};
+use creabim_geom::annotation::TextLook;
 use creabim_geom::{paper, plan::Pen, section::Drawing, triangulate::triangulate, PlanItem};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use glam::{DVec2, DVec3};
@@ -33,6 +34,11 @@ pub enum Tool {
     Elevation,
     Dimension,
     Tag,
+    Angle,
+    Radius,
+    Diameter,
+    ArcLength,
+    Note,
     Sketch,
     Guide,
     Grid,
@@ -44,7 +50,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 18] = [
+    pub const ALL: [Tool; 23] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
@@ -60,10 +66,20 @@ impl Tool {
         Tool::Elevation,
         Tool::Dimension,
         Tool::Tag,
+        Tool::Angle,
+        Tool::Radius,
+        Tool::Diameter,
+        Tool::ArcLength,
+        Tool::Note,
         Tool::Sketch,
         Tool::Guide,
         Tool::Grid,
     ];
+
+    /// Dimensions, tags and notes: tools that annotate a view.
+    pub fn is_annotation(self) -> bool {
+        matches!(self, Tool::Dimension | Tool::Tag) || crate::annotate::is_tool(self)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -77,6 +93,11 @@ impl Tool {
             Tool::Elevation => "Elevation",
             Tool::Dimension => "Dimension",
             Tool::Tag => "Tag",
+            Tool::Angle => "Angle",
+            Tool::Radius => "Radius",
+            Tool::Diameter => "Diameter",
+            Tool::ArcLength => "Arc length",
+            Tool::Note => "Note",
             Tool::Sketch => "Sketch",
             Tool::Guide => "Guide",
             Tool::Grid => "Grid",
@@ -100,6 +121,11 @@ impl Tool {
             Tool::Elevation => "Click two points for the elevation line, outside the building. It looks to the left of the direction you draw.",
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to wall corners, door and window edges and levels, and stay attached to them.",
             Tool::Tag => "Click a door, window, wall or slab, then click where its tag goes.",
+            Tool::Angle => "Click two lines (wall faces, edges) for the angle between them, or click the corner and a point on each arm. Then click where the arc goes.",
+            Tool::Radius => "Click an arc or circle, or three points on one. Then click where the dimension line goes.",
+            Tool::Diameter => "Click an arc or circle, or three points on one. Then click where the dimension line goes.",
+            Tool::ArcLength => "Click an arc, or its start, a point on it and its end. Then click where the dimension line goes.",
+            Tool::Note => "Click what the note points at, then where its text goes (turn Leader off to just click). Type its text in Properties. Works on sheets too.",
             Tool::Sketch => "Click the corners of a sketch on this level. Click the first corner to close it, Enter or right-click to leave it open, Esc to cancel. L, A and C draw lines, arcs and circles. Then E extrudes it.",
             Tool::Guide => "Click two points for a guide through them. Or click an edge, then click where its parallel guide goes. Everything snaps to guides.",
             Tool::Grid => "Click two points for a grid line. It goes in the active grid system (top bar) and takes its next label. Shift keeps it straight.",
@@ -197,6 +223,8 @@ pub struct PlanState {
     tag_host: Option<ElementId>,
     /// Tag or dimension being dragged: where the drag began and its offset then.
     anno_drag: Option<(ElementId, DVec2, DVec2)>,
+    /// Angles, radii, arc lengths and notes being placed or dragged.
+    pub anno: crate::annotate::Draft,
     /// A keyboard move, rotate or scale, in whichever pane started it.
     pub modal: Option<Modal>,
     /// A sketch being drawn, in whichever pane started it.
@@ -258,6 +286,7 @@ impl Default for PlanState {
             dim: vec![],
             tag_host: None,
             anno_drag: None,
+            anno: Default::default(),
             modal: None,
             sketch: None,
             grip: None,
@@ -288,6 +317,7 @@ impl PlanState {
     pub fn cancel(&mut self) {
         self.pending = None;
         self.dim.clear();
+        self.anno.clear();
         self.tag_host = None;
         self.sketch = None;
         self.guide_edge = None;
@@ -299,6 +329,7 @@ impl PlanState {
     pub fn has_input(&self) -> bool {
         self.pending.is_some()
             || !self.dim.is_empty()
+            || self.anno.has_input()
             || self.tag_host.is_some()
             || self.sketch.is_some()
             || self.guide_edge.is_some()
@@ -328,6 +359,7 @@ impl PlanState {
     pub fn busy(&self) -> bool {
         self.pending.is_some()
             || !self.dim.is_empty()
+            || self.anno.has_input()
             || self.tag_host.is_some()
             || self.sketch.is_some()
             || self.modal.is_some()
@@ -377,6 +409,7 @@ pub fn show(
     };
     let tool = match (kind, state.tool) {
         (PaneKind::Axonometric, Tool::Tag) => Tool::Tag,
+        (PaneKind::Axonometric, Tool::Note) => Tool::Note,
         (PaneKind::Axonometric | PaneKind::Schedule, _) => Tool::Select,
         (_, t) => t,
     };
@@ -442,6 +475,7 @@ pub fn show(
     for item in &plan.items {
         draw_item(&painter, &xf, item, selection.contains(item.id()), mm);
     }
+    crate::annotate::draw_grips(&painter, &xf, &plan.items, selection);
     crate::sketch::draw_marks_in_pane(&painter, doc.model(), selection.active, kind, &xf);
 
     let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
@@ -705,9 +739,35 @@ pub fn show(
             return r;
         }
     }
-    // a tag or dimension can be dragged into place
+    // a tag, dimension or note can be dragged into place
     if tool == Tool::Select {
         if let Some(r) = drag_annotation(doc, view, plan, &xf, &response, state, selection, mm) {
+            return r;
+        }
+        let view_def = match doc.model().get(view).map(|e| &e.kind) {
+            Some(ElementKind::View(v)) => Some(v.clone()),
+            _ => None,
+        };
+        let leader_drag = matches!(state.anno.grab, Some(crate::annotate::Grab::Leader(_)));
+        let snapped = match (&view_def, response.interact_pointer_pos(), leader_drag) {
+            (Some(v), Some(p), true) => {
+                let snapper = state.snaps.get(&view).map(|s| &s.2);
+                let (hp, at, _) = dim_snap(doc, v, kind, snapper, &snap_cfg, &xf, p);
+                Some((hp, at))
+            }
+            _ => None,
+        };
+        if let Some(r) = crate::annotate::drag(
+            doc,
+            view_def.as_ref(),
+            &plan.items,
+            &xf,
+            &response,
+            &mut state.anno,
+            selection,
+            mm,
+            snapped,
+        ) {
             return r;
         }
     }
@@ -751,7 +811,7 @@ pub fn show(
     };
     let dim_snapper = state.snaps.get(&view).map(|s| &s.2);
     let dim_hit = match (tool, &view_def, response.hover_pos()) {
-        (Tool::Dimension, Some(v), Some(p)) => {
+        (t, Some(v), Some(p)) if t == Tool::Dimension || crate::annotate::is_tool(t) => {
             Some(dim_snap(doc, v, kind, dim_snapper, &snap_cfg, &xf, p))
         }
         _ => None,
@@ -775,6 +835,20 @@ pub fn show(
         }
     }
     let dim_hover = dim_hit.map(|(h, at, _)| (h, at));
+    if crate::annotate::is_tool(tool) {
+        let raw = response.hover_pos().map(|p| xf.to_world(p));
+        crate::annotate::preview(
+            &painter,
+            &xf,
+            tool,
+            &state.anno,
+            dim_hover.map(|h| h.1),
+            raw,
+            &plan.items,
+            6.0 / scale as f64,
+            mm,
+        );
+    }
     match (state.dim.as_slice(), dim_hover, response.hover_pos()) {
         ([(_, a)], Some((_, b)), _) if a.distance(b) > 1e-6 => {
             preview_dimension(&painter, &xf, *a, b, 0.0, mm, accent);
@@ -796,6 +870,7 @@ pub fn show(
                         at: xf.to_world(h),
                         text,
                         round,
+                        look: annotate::look_of(doc.model(), None, None),
                     };
                     draw_item(&painter, &xf, &item, true, mm);
                 }
@@ -883,7 +958,7 @@ pub fn show(
     if let (Some(s), PaneKind::Plan { .. } | PaneKind::Section { .. }, false) =
         (tool_snap, kind, shift)
     {
-        if !matches!(tool, Tool::Select | Tool::Dimension | Tool::Tag) {
+        if tool != Tool::Select && !tool.is_annotation() {
             let from = state
                 .pending
                 .or(sketch_last.map(from_pane))
@@ -892,7 +967,7 @@ pub fn show(
         }
     }
     if let Some(p) = hover_world {
-        if !matches!(tool, Tool::Select | Tool::Dimension | Tool::Tag) {
+        if tool != Tool::Select && !tool.is_annotation() {
             painter.circle_stroke(
                 xf.to_screen(p),
                 4.0,
@@ -992,6 +1067,26 @@ pub fn show(
                 _ => Ok(()),
             },
             (_, Tool::Tag) => tag_tool(doc, view, &view_def, picked(), raw, state, selection),
+            (_, t) if crate::annotate::is_tool(t) => match &view_def {
+                Some(v) => crate::annotate::click(
+                    doc,
+                    view,
+                    v,
+                    t,
+                    dim_hit,
+                    raw,
+                    &plan.items,
+                    6.0 / scale as f64,
+                    &mut state.anno,
+                    selection,
+                )
+                .map(|msg| {
+                    if !msg.is_empty() {
+                        state.status = Some(msg);
+                    }
+                }),
+                None => Ok(()),
+            },
             (PaneKind::Section { start, end }, _) => {
                 section_tool(doc, start, end, tool, p, picked(), state, selection)
             }
@@ -1030,6 +1125,7 @@ pub fn show(
                 (PaneKind::Plan { .. }, t) => t.hint(),
                 (PaneKind::Section { .. }, t) => t.section_hint(),
                 (PaneKind::Axonometric, Tool::Tag) => Tool::Tag.hint(),
+                (PaneKind::Axonometric, Tool::Note) => Tool::Note.hint(),
                 (PaneKind::Axonometric, _) => {
                     "Drag to orbit, click to select. The Tag tool works here too. Right-drag pans, the wheel zooms."
                 }
@@ -1120,7 +1216,14 @@ pub fn plan_tool(
             Some(_) => Ok(()),
         },
         Tool::Door | Tool::Window => place_opening(doc, level, p, tool, selection),
-        Tool::Dimension | Tool::Tag | Tool::Sketch => Ok(()),
+        Tool::Dimension
+        | Tool::Tag
+        | Tool::Angle
+        | Tool::Radius
+        | Tool::Diameter
+        | Tool::ArcLength
+        | Tool::Note
+        | Tool::Sketch => Ok(()),
         Tool::Slab | Tool::Roof => crate::slabtool::click(doc, level, p, state, selection),
         Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing => {
             crate::memberstool::click(doc, level, tool, p, state, selection)
@@ -2118,29 +2221,31 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
             }
         }
         PlanItem::Dimension {
-            a, b, offset, text, ..
+            a,
+            b,
+            offset,
+            text,
+            look,
+            ..
         } => {
-            let ink = if selected {
-                highlight
-            } else {
-                Color32::from_rgb(30, 60, 120)
-            };
-            draw_dimension(painter, xf, *a, *b, *offset, text, mm, ink);
+            let ink = crate::annotate::ink(look, selected, highlight);
+            draw_dimension(painter, xf, *a, *b, *offset, text, look, mm, ink);
+        }
+        PlanItem::Annotation { item, .. } => {
+            let ink = crate::annotate::ink(&item.look, selected, highlight);
+            crate::annotate::paint(painter, xf, item, ink, mm);
         }
         PlanItem::Tag {
             anchor,
             at,
             text,
             round,
+            look,
             ..
         } => {
-            let g = tag_geometry(*anchor, *at, text, *round, mm);
+            let g = tag_geometry(*anchor, *at, text, *round, look, mm);
             let pts: Vec<Pos2> = g.outline.iter().map(|p| xf.to_screen(*p)).collect();
-            let ink = if selected {
-                highlight
-            } else {
-                Color32::from_rgb(30, 60, 120)
-            };
+            let ink = crate::annotate::ink(look, selected, highlight);
             if let Some((p, q)) = g.leader {
                 painter.line_segment([xf.to_screen(p), xf.to_screen(q)], Stroke::new(1.0, ink));
             }
@@ -2149,13 +2254,16 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
                 Color32::WHITE,
                 Stroke::new(1.2, ink),
             ));
-            let px = text_px(annotate::TEXT).max(7.0);
-            painter.text(
+            let px = crate::annotate::text_px(look, mm, xf);
+            crate::annotate::text(
+                painter,
                 xf.to_screen(*at),
-                egui::Align2::CENTER_CENTER,
                 text,
-                egui::FontId::proportional(px),
+                px,
                 ink,
+                0.0,
+                paper::Anchor::Middle,
+                look,
             );
         }
         PlanItem::Image {
@@ -2181,34 +2289,28 @@ fn draw_dimension(
     b: DVec2,
     offset: f64,
     text: &str,
+    look: &TextLook,
     mm: f64,
     ink: Color32,
 ) {
-    let g = dimension_geometry(a, b, offset, mm);
+    let g = dimension_geometry(a, b, offset, look, mm);
     for (p, q) in g.lines {
         painter.line_segment([xf.to_screen(p), xf.to_screen(q)], Stroke::new(1.0, ink));
     }
     for (p, q) in g.ticks {
         painter.line_segment([xf.to_screen(p), xf.to_screen(q)], Stroke::new(2.0, ink));
     }
-    let px = ((annotate::TEXT * mm * xf.scale as f64) as f32).max(7.0);
-    rotated_text(painter, xf.to_screen(g.text_at), text, px, ink, g.angle);
-}
-
-/// Text centred on `at`, turned `angle` radians counter-clockwise.
-pub fn rotated_text(
-    painter: &egui::Painter,
-    at: Pos2,
-    text: &str,
-    px: f32,
-    color: Color32,
-    angle: f64,
-) {
-    let galley = painter.layout_no_wrap(text.to_string(), egui::FontId::proportional(px), color);
-    // the screen's y runs down, so a counter-clockwise turn is a negative angle
-    let rot = egui::emath::Rot2::from_angle(-angle as f32);
-    let pos = at - rot * (galley.size() / 2.0);
-    painter.add(egui::epaint::TextShape::new(pos, galley, color).with_angle(-angle as f32));
+    let px = crate::annotate::text_px(look, mm, xf);
+    crate::annotate::text(
+        painter,
+        xf.to_screen(g.text_at),
+        text,
+        px,
+        ink,
+        g.angle,
+        paper::Anchor::Middle,
+        look,
+    );
 }
 
 /// A dimension being drawn.
@@ -2223,7 +2325,8 @@ fn preview_dimension(
     accent: Color32,
 ) {
     let text = annotate::dimension_text(a, b);
-    draw_dimension(painter, xf, a, b, offset, &text, mm, accent);
+    let look = TextLook::default();
+    draw_dimension(painter, xf, a, b, offset, &text, &look, mm, accent);
 }
 
 /// The point a dimension click lands on, what it attaches to, and the snap
@@ -2321,7 +2424,7 @@ fn dimension_tool(
             let offset = (raw - pa).dot((pb - pa).normalize_or_zero().perp());
             let e = Element::new(
                 "Dimension",
-                ElementKind::Dimension(Dimension { view, a, b, offset }),
+                ElementKind::Dimension(Dimension::linear(view, a, b, offset)),
             );
             selection.only(e.id);
             doc.commit(Transaction::new("Add dimension").insert(e))
@@ -2365,11 +2468,7 @@ fn tag_tool(
             };
             let e = Element::new(
                 "Tag",
-                ElementKind::Tag(Tag {
-                    view,
-                    host,
-                    offset: raw - proj.project(c),
-                }),
+                ElementKind::Tag(Tag::new(view, host, raw - proj.project(c))),
             );
             selection.only(e.id);
             doc.commit(Transaction::new("Add tag").insert(e))
@@ -2440,11 +2539,7 @@ pub fn tag_openings(
         };
         tx = tx.insert(Element::new(
             "Tag",
-            ElementKind::Tag(Tag {
-                view,
-                host: e.id,
-                offset,
-            }),
+            ElementKind::Tag(Tag::new(view, e.id, offset)),
         ));
         n += 1;
     }
@@ -2637,6 +2732,7 @@ pub fn hit_test(items: &[PlanItem], p: DVec2, tol: f64, mm: f64) -> Option<Eleme
             PlanItem::Tag { id, at, .. } if p.distance(*at) < (3.0 * mm).max(tol) => {
                 return Some(*id)
             }
+            PlanItem::Annotation { id, item } if item.hit(p, tol, mm) => return Some(*id),
             PlanItem::Dimension {
                 id, a, b, offset, ..
             } => {

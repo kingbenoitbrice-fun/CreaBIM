@@ -4,6 +4,8 @@ src=sys.argv[1].rstrip('/')+'/'
 names="""mouse-pointer-2 brick-wall door-open app-window layers layers-2 box scissors-line-dashed building building-2 ruler tag pen-tool slash undo-2 redo-2 move rotate-cw scaling copy-plus copy scissors clipboard-paste trash-2 eye-off focus scan-eye eye folder chevron-right chevron-down search file magnet grid-3x3 square-dashed crosshair check arrow-left layers-3 columns-2 scan sticky-note frame panel-left hash axis-3d circle-dot move-3d spline file-plus folder-open save download upload link sheet table-2 refresh-cw cuboid house map-pin layout-dashboard square-dashed-mouse-pointer git-commit-horizontal ellipsis sun moon panel-right panel-bottom maximize-2 minus diamond palette map file-text""".split()
 # for the 3D view's buttons and the command palette
 names+="""zoom-in zoom-out rotate-3d""".split()
+# for the annotation tools
+names+="""drafting-compass radius diameter message-square-text arrow-up-right""".split()
 # for the building element tools
 names+="""rectangle-vertical rectangle-horizontal tent chart-no-axes-column-increasing fence corner-down-right""".split()
 # snap markers, drawn like the markers in the views (not from Lucide)

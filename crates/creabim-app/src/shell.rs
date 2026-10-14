@@ -73,6 +73,11 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Elevation => "building-2",
         Tool::Dimension => "ruler",
         Tool::Tag => "tag",
+        Tool::Angle => "drafting-compass",
+        Tool::Radius => "radius",
+        Tool::Diameter => "diameter",
+        Tool::ArcLength => "spline",
+        Tool::Note => "message-square-text",
         Tool::Sketch => "pen-tool",
         Tool::Guide => "slash",
         Tool::Grid => "grid-3x3",
@@ -98,7 +103,13 @@ fn tool_group(t: Tool) -> u8 {
         | Tool::Stair
         | Tool::Railing => 1,
         Tool::Section | Tool::Elevation => 2,
-        Tool::Dimension | Tool::Tag => 3,
+        Tool::Dimension
+        | Tool::Tag
+        | Tool::Angle
+        | Tool::Radius
+        | Tool::Diameter
+        | Tool::ArcLength
+        | Tool::Note => 3,
         Tool::Sketch | Tool::Guide | Tool::Grid => 4,
     }
 }
@@ -140,6 +151,7 @@ fn group_title(class: &str) -> String {
         "IfcBuildingElementProxy" => "Masses".into(),
         "Sketch" => "Sketches".into(),
         "IfcMaterial" => "Materials".into(),
+        "TextStyle" => "Text styles".into(),
         c => {
             let c = c.strip_prefix("Ifc").unwrap_or(c);
             if c.ends_with('s') {
@@ -845,6 +857,7 @@ impl CreaBimApp {
             }
             "view.shaded" | "view.tag" => self.view_action(head),
             "member" => crate::memberstool::toggle_option(&mut self.plan, arg),
+            "note.leader" => self.plan.anno.leader = !self.plan.anno.leader,
             _ => {
                 self.grid_vis_action(head, arg);
             }
@@ -1067,6 +1080,14 @@ impl CreaBimApp {
             options.push(json!({"kind": "sep"}));
         }
         options.extend(crate::memberstool::tool_options(&self.plan));
+        if self.plan.tool == Tool::Note {
+            options.push(json!({
+                "kind": "toggle", "id": "note.leader", "label": "Leader",
+                "on": self.plan.anno.leader, "icon": "arrow-up-right",
+                "hint": "Draw an arrow to what the note is about: click its point first, then the text",
+            }));
+            options.push(json!({"kind": "sep"}));
+        }
         if let Some((label, value, unit, _)) = self.view_number() {
             let (step, min, max) = if unit == "°" {
                 (1.0, -89.0, 89.0)

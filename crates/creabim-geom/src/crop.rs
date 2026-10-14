@@ -138,6 +138,11 @@ pub fn crop(d: &PlanView, lo: DVec2, hi: DVec2) -> PlanView {
                     items.push(it.clone());
                 }
             }
+            PlanItem::Annotation { item, .. } => {
+                if item.extent().iter().all(|p| inside(*p, lo, hi)) {
+                    items.push(it.clone());
+                }
+            }
             PlanItem::Image {
                 id,
                 raster,

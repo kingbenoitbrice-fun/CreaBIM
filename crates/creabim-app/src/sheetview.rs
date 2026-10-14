@@ -59,10 +59,10 @@ fn gray(g: f64) -> Color32 {
     Color32::from_gray((g.clamp(0.0, 1.0) * 255.0) as u8)
 }
 
-impl Canvas for EguiCanvas<'_> {
-    fn line(&mut self, pts: &[DVec2], s: Stroke) {
+impl EguiCanvas<'_> {
+    fn line_in(&mut self, pts: &[DVec2], s: Stroke, color: Color32) {
         let pts: Vec<Pos2> = pts.iter().map(|p| self.xf.to_screen(*p)).collect();
-        let stroke = egui::Stroke::new((s.width as f32 * self.xf.zoom).max(0.5), gray(s.gray));
+        let stroke = egui::Stroke::new((s.width as f32 * self.xf.zoom).max(0.5), color);
         match s.dash {
             Some([a, b]) => {
                 let z = self.xf.zoom;
@@ -77,6 +77,48 @@ impl Canvas for EguiCanvas<'_> {
                 self.painter.add(egui::Shape::line(pts, stroke));
             }
         }
+    }
+}
+
+impl Canvas for EguiCanvas<'_> {
+    fn line(&mut self, pts: &[DVec2], s: Stroke) {
+        self.line_in(pts, s, gray(s.gray));
+    }
+
+    fn line_rgb(&mut self, pts: &[DVec2], s: Stroke, rgb: [f32; 3]) {
+        self.line_in(pts, s, crate::annotate::color32(rgb));
+    }
+
+    fn fill_rgb(&mut self, pts: &[DVec2], rgb: [f32; 3]) {
+        let pts: Vec<Pos2> = pts.iter().map(|p| self.xf.to_screen(*p)).collect();
+        let c = crate::annotate::color32(rgb);
+        self.painter
+            .add(egui::Shape::convex_polygon(pts, c, egui::Stroke::NONE));
+    }
+
+    fn styled_text(
+        &mut self,
+        at: DVec2,
+        text: &str,
+        anchor: Anchor,
+        angle: f64,
+        look: &creabim_geom::annotation::TextLook,
+    ) {
+        let px = look.size as f32 * self.xf.zoom;
+        if px < 3.0 {
+            return;
+        }
+        let color = look.rgb.map_or(Color32::BLACK, crate::annotate::color32);
+        crate::annotate::text(
+            self.painter,
+            self.xf.to_screen(at),
+            text,
+            px,
+            color,
+            angle,
+            anchor,
+            look,
+        );
     }
 
     fn fill(&mut self, pts: &[DVec2], g: f64) {
@@ -227,6 +269,7 @@ pub fn show(
             );
         }
     }
+    sheet::draw_sheet_notes(&mut canvas, doc.model(), sheet_id);
 
     // crop handles on the selected viewport: drag an edge to crop the view
     let mut error = None;
@@ -301,6 +344,30 @@ pub fn show(
     }
     if response.drag_stopped() {
         state.crop_drag = None;
+    }
+
+    // notes written on the sheet itself
+    if state.active.is_none() {
+        let pxf = planview::Xf {
+            rect,
+            center,
+            scale: zoom,
+        };
+        let took = crate::annotate::sheet_input(
+            doc,
+            sheet_id,
+            &painter,
+            &response,
+            plan.tool,
+            &mut plan.anno,
+            selection,
+            &pxf,
+            &mut plan.status,
+            &mut error,
+        );
+        if took {
+            return error;
+        }
     }
 
     // picking, moving and activating viewports
