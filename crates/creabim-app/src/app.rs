@@ -20,7 +20,7 @@ use creabim_geom::{
 };
 use eframe::egui::{self, Color32, Rect, Sense, Vec2};
 use eframe::egui_wgpu;
-use glam::{DVec2, DVec3, Vec2 as GVec2};
+use glam::{DVec2, DVec3, Vec2 as GVec2, Vec3 as GVec3};
 use std::collections::HashMap;
 
 #[path = "gridvis.rs"]
@@ -142,11 +142,17 @@ pub struct CreaBimApp {
     recent: crate::files::Recent,
     /// The web interface round the views.
     shell: shell::Shell,
+    /// Orbit about the selection rather than the middle of the view.
+    orbit_selection: bool,
+    /// Where the 3D view was drawn last frame, for its navigation buttons.
+    rect_3d: Option<Rect>,
 }
 
 impl CreaBimApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        shell::style(&cc.egui_ctx, true);
+        let settings = crate::files::Settings::load();
+        let theme = crate::theme::Theme::from_id(&settings.theme).unwrap_or_default();
+        shell::style(&cc.egui_ctx, theme);
         let viewport = cc
             .wgpu_render_state
             .as_ref()
@@ -187,8 +193,12 @@ impl CreaBimApp {
             clipboard: vec![],
             recent: crate::files::Recent::load(),
             shell: Default::default(),
+            orbit_selection: false,
+            rect_3d: None,
             status: "Loaded the sample house. Orbit with left drag, pan with right drag, zoom with the wheel.".into(),
         };
+        app.shell.theme = theme;
+        app.shell.settings = settings;
         app.load_model(sample_house());
         app
     }
@@ -489,6 +499,35 @@ impl CreaBimApp {
         Some(d)
     }
 
+    /// The box round the selected elements in 3D.
+    fn selection_bounds(&self) -> Option<(GVec3, GVec3)> {
+        self.scene
+            .iter()
+            .filter(|s| self.selection.contains(s.id))
+            .filter_map(|s| s.mesh.bounds())
+            .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+    }
+
+    /// Zoom and turn to the selection, keeping the direction looked from.
+    fn frame_selection(&mut self) {
+        match self.selection_bounds() {
+            Some((lo, hi)) => {
+                self.camera.frame(lo, hi, self.aspect);
+                self.status = "Framed the selection.".into();
+            }
+            None => self.status = "Select something to frame it.".into(),
+        }
+    }
+
+    /// Orbit the 3D view by a pointer drag, about the selection when asked.
+    fn orbit_3d(&mut self, d: Vec2) {
+        let d = GVec2::new(d.x, d.y);
+        match self.selection_bounds().filter(|_| self.orbit_selection) {
+            Some((lo, hi)) => self.camera.orbit_around((lo + hi) / 2.0, d),
+            None => self.camera.orbit(d),
+        }
+    }
+
     fn frame_all(&mut self) {
         let scene = build_scene(self.doc.model());
         let bounds = scene
@@ -612,6 +651,30 @@ impl CreaBimApp {
                 if self.plan.snap.on { "on" } else { "off" },
                 if self.plan.snap.on { "off" } else { "on" },
             );
+        }
+        let (palette, next_theme, home, frame_sel) = ctx.input(|i| {
+            let (cmd, shift) = (i.modifiers.command, i.modifiers.shift);
+            (
+                cmd && i.key_pressed(egui::Key::K),
+                cmd && shift && i.key_pressed(egui::Key::T),
+                i.key_pressed(egui::Key::Home),
+                !cmd && i.key_pressed(egui::Key::Period),
+            )
+        });
+        if palette && self.shell.web.is_some() {
+            self.open_palette(ctx);
+        }
+        if next_theme {
+            let t = self.shell.theme.next();
+            self.set_theme(ctx, t);
+        }
+        if self.plan.modal.is_none() {
+            if home {
+                self.frame_all();
+            }
+            if frame_sel {
+                self.frame_selection();
+            }
         }
         let (all, none, hide, isolate, show, events) = ctx.input(|i| {
             let (cmd, alt, shift) = (i.modifiers.command, i.modifiers.alt, i.modifiers.shift);
@@ -1108,6 +1171,7 @@ impl CreaBimApp {
     }
 
     fn show_3d(&mut self, ui: &mut egui::Ui, rect: Rect, frame: &eframe::Frame) {
+        self.rect_3d = Some(rect);
         let response = ui.interact(rect, ui.id().with("3d"), Sense::click_and_drag());
         let Some(rs) = frame.wgpu_render_state() else {
             ui.painter().text(
@@ -1310,7 +1374,7 @@ impl CreaBimApp {
         if self.plan.tool == Tool::Sketch {
             if response.dragged_by(egui::PointerButton::Primary) {
                 let d = response.drag_delta();
-                self.camera.orbit(GVec2::new(d.x, d.y));
+                self.orbit_3d(d);
             }
             self.sketch_3d(ui, &response, &painter, &project, &ray, &cam);
             return;
@@ -1452,7 +1516,7 @@ impl CreaBimApp {
         }
         if response.dragged_by(egui::PointerButton::Primary) {
             let d = response.drag_delta();
-            self.camera.orbit(GVec2::new(d.x, d.y));
+            self.orbit_3d(d);
         }
 
         let slab_outline = self.plan.outline.as_ref().is_some_and(|o| !o.is_wall());
@@ -3623,6 +3687,7 @@ impl eframe::App for CreaBimApp {
     /// Keys typed while a web pane had the keyboard reach the views.
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         raw_input.events.append(&mut self.shell.keys);
+        self.palette_keys(raw_input);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -3650,6 +3715,7 @@ impl eframe::App for CreaBimApp {
         }
 
         let web = self.web_panels(ui, frame);
+        self.rect_3d = None;
         self.plan.web_menus = web;
         self.shell.menu_3d = false;
         if !web {
@@ -3675,8 +3741,9 @@ impl eframe::App for CreaBimApp {
                 .default_size(220.0)
                 .show(ui, |ui| self.outliner(ui));
         }
-        egui::Panel::right("properties")
-            .default_size(280.0)
+        let right = egui::Panel::right("properties")
+            .default_size(self.shell.settings.right_width)
+            .size_range(220.0..=640.0)
             .frame(
                 egui::Frame::side_top_panel(ui.style())
                     .inner_margin(egui::Margin::symmetric(14, 12)),
@@ -3685,7 +3752,17 @@ impl eframe::App for CreaBimApp {
                 egui::ScrollArea::vertical()
                     .auto_shrink(false)
                     .show(ui, |ui| self.properties(ui))
-            });
+            })
+            .response
+            .rect;
+        // remember a new width once the drag is over
+        let width = right.width().round();
+        if (width - self.shell.settings.right_width).abs() >= 1.0
+            && !ui.input(|i| i.pointer.any_down())
+        {
+            self.shell.settings.right_width = width;
+            self.shell.settings.store();
+        }
 
         egui::CentralPanel::default().show(ui, |ui| {
             let full = ui.available_rect_before_wrap();

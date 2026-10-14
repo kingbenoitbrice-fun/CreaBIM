@@ -18,6 +18,7 @@ mod sketch;
 mod slabtool;
 mod snaps;
 mod textures;
+mod theme;
 mod ui_model;
 mod webui;
 
