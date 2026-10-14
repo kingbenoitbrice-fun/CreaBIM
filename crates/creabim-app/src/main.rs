@@ -1,6 +1,7 @@
 //! CreaBIM desktop app.
 
 mod app;
+mod boxsel;
 mod camera;
 mod files;
 mod handles;

@@ -97,3 +97,111 @@ impl Watch {
 fn modified(file: &str) -> Option<SystemTime> {
     std::fs::metadata(file).and_then(|m| m.modified()).ok()
 }
+
+/// Files opened or saved lately, newest first, kept in the user's settings
+/// folder between sessions.
+#[derive(Debug, Default)]
+pub struct Recent {
+    pub files: Vec<String>,
+    path: Option<std::path::PathBuf>,
+}
+
+const RECENT_MAX: usize = 10;
+
+impl Recent {
+    /// Read the list from `<settings>/CreaBIM/recent.json`, where settings
+    /// is %APPDATA% on Windows and $XDG_CONFIG_HOME or ~/.config elsewhere.
+    pub fn load() -> Self {
+        let path = settings_dir().map(|d| d.join("recent.json"));
+        let files = path
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
+            .unwrap_or_default();
+        Self { files, path }
+    }
+
+    /// Put `file` at the top of the list and save it.
+    pub fn add(&mut self, file: &str) {
+        let full = std::fs::canonicalize(file)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| file.to_string());
+        self.files.retain(|f| *f != full);
+        self.files.insert(0, full);
+        self.files.truncate(RECENT_MAX);
+        self.store();
+    }
+
+    pub fn clear(&mut self) {
+        self.files.clear();
+        self.store();
+    }
+
+    fn store(&self) {
+        if let Some(p) = &self.path {
+            if let Some(dir) = p.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Ok(t) = serde_json::to_string_pretty(&self.files) {
+                let _ = std::fs::write(p, t);
+            }
+        }
+    }
+}
+
+fn settings_dir() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("APPDATA")
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".config")))?;
+    Some(base.join("CreaBIM"))
+}
+
+/// Ask for a file to open with the system's own file picker.
+pub fn pick_open() -> Option<String> {
+    rfd::FileDialog::new()
+        .set_title("Open or link a file")
+        .add_filter(
+            "Everything CreaBIM reads",
+            &["creabim", "json", "ifc", "ifcx", "blend", "FCStd", "fcstd"],
+        )
+        .add_filter("CreaBIM project", &["creabim"])
+        .add_filter("IFC", &["ifc", "ifcx"])
+        .add_filter("Blender and FreeCAD (linked)", &["blend", "FCStd", "fcstd"])
+        .pick_file()
+        .map(|p| p.display().to_string())
+}
+
+/// Ask where to save, starting from `current`.
+pub fn pick_save(current: &str, title: &str, ext: &str) -> Option<String> {
+    let p = Path::new(current);
+    let mut d = rfd::FileDialog::new()
+        .set_title(title)
+        .add_filter(ext.to_uppercase(), &[ext]);
+    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+        d = d.set_file_name(name);
+    }
+    if let Some(dir) = p.parent().filter(|d| d.is_dir()) {
+        d = d.set_directory(dir);
+    }
+    d.save_file().map(|p| p.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_files_keep_the_newest_first_without_repeats() {
+        let mut r = Recent::default();
+        for f in ["a.creabim", "b.creabim", "a.creabim"] {
+            r.add(f);
+        }
+        assert_eq!(r.files.len(), 2);
+        assert!(r.files[0].ends_with("a.creabim"));
+        for i in 0..20 {
+            r.add(&format!("{i}.creabim"));
+        }
+        assert_eq!(r.files.len(), RECENT_MAX);
+    }
+}

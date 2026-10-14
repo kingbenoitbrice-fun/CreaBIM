@@ -2,8 +2,8 @@
 //! Drag a view to move it on the sheet; double-click it to work on the model
 //! through it, with the same tools as the view itself.
 
-use crate::selection::Selection;
 use crate::planview::{self, PaneStyle, PlanState};
+use crate::selection::Selection;
 use creabim_core::{Document, ElementId, ElementKind};
 use creabim_geom::paper::{self, Anchor, Canvas, Stroke};
 use creabim_geom::sheet::{self, PlacedView, SheetInfo};

@@ -436,6 +436,70 @@ impl PlanItem {
             | PlanItem::Image { id, .. } => *id,
         }
     }
+
+    /// Corners of what the item covers, in drawing units (none for guides,
+    /// which run on without end).
+    pub fn extent(&self) -> Vec<DVec2> {
+        let mut pts = Vec::new();
+        match self {
+            PlanItem::Polygon { points, .. } | PlanItem::Fill { points, .. } => {
+                pts.extend(points.iter().copied())
+            }
+            PlanItem::Line {
+                pen: Pen::Guide, ..
+            } => {}
+            PlanItem::Line { a, b, .. } => pts.extend([*a, *b]),
+            PlanItem::Arc { center, radius, .. } => pts.extend([
+                *center - DVec2::splat(*radius),
+                *center + DVec2::splat(*radius),
+            ]),
+            PlanItem::Label { at, text, .. } => {
+                // rough text extent at 1:100 (3 mm type)
+                let half = DVec2::new(text.chars().count() as f64 * 0.09 + 0.2, 0.25);
+                pts.extend([*at - half, *at + half]);
+            }
+            PlanItem::Text {
+                at,
+                text,
+                size,
+                align,
+                ..
+            } => {
+                // text items are in paper units already (schedules)
+                let w = crate::paper::text_width(text, *size);
+                let x0 = match align {
+                    crate::paper::Anchor::Start => at.x,
+                    crate::paper::Anchor::Middle => at.x - w / 2.0,
+                    crate::paper::Anchor::End => at.x - w,
+                };
+                pts.extend([
+                    DVec2::new(x0, at.y - size / 2.0),
+                    DVec2::new(x0 + w, at.y + size / 2.0),
+                ]);
+            }
+            PlanItem::Dimension { a, b, offset, .. } => {
+                let n = (*b - *a).normalize_or_zero().perp() * *offset;
+                pts.extend([*a, *b, *a + n, *b + n]);
+            }
+            PlanItem::Tag { anchor, at, .. } => {
+                pts.extend([*anchor, *at - DVec2::splat(0.3), *at + DVec2::splat(0.3)])
+            }
+            PlanItem::Image { lo, hi, clip, .. } => match clip {
+                Some((clo, chi)) => pts.extend([lo.max(*clo), hi.min(*chi)]),
+                None => pts.extend([*lo, *hi]),
+            },
+        }
+        pts
+    }
+
+    pub fn bounds(&self) -> Option<(DVec2, DVec2)> {
+        let pts = self.extent();
+        let first = *pts.first()?;
+        Some(
+            pts.iter()
+                .fold((first, first), |(lo, hi), p| (lo.min(*p), hi.max(*p))),
+        )
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -445,57 +509,7 @@ pub struct PlanView {
 
 impl PlanView {
     pub fn bounds(&self) -> Option<(DVec2, DVec2)> {
-        let mut pts = Vec::new();
-        for it in &self.items {
-            match it {
-                PlanItem::Polygon { points, .. } | PlanItem::Fill { points, .. } => {
-                    pts.extend(points.iter().copied())
-                }
-                PlanItem::Line {
-                    pen: Pen::Guide, ..
-                } => {}
-                PlanItem::Line { a, b, .. } => pts.extend([*a, *b]),
-                PlanItem::Arc { center, radius, .. } => pts.extend([
-                    *center - DVec2::splat(*radius),
-                    *center + DVec2::splat(*radius),
-                ]),
-                PlanItem::Label { at, text, .. } => {
-                    // rough text extent at 1:100 (3 mm type)
-                    let half = DVec2::new(text.chars().count() as f64 * 0.09 + 0.2, 0.25);
-                    pts.extend([*at - half, *at + half]);
-                }
-                PlanItem::Text {
-                    at,
-                    text,
-                    size,
-                    align,
-                    ..
-                } => {
-                    // text items are in paper units already (schedules)
-                    let w = crate::paper::text_width(text, *size);
-                    let x0 = match align {
-                        crate::paper::Anchor::Start => at.x,
-                        crate::paper::Anchor::Middle => at.x - w / 2.0,
-                        crate::paper::Anchor::End => at.x - w,
-                    };
-                    pts.extend([
-                        DVec2::new(x0, at.y - size / 2.0),
-                        DVec2::new(x0 + w, at.y + size / 2.0),
-                    ]);
-                }
-                PlanItem::Dimension { a, b, offset, .. } => {
-                    let n = (*b - *a).normalize_or_zero().perp() * *offset;
-                    pts.extend([*a, *b, *a + n, *b + n]);
-                }
-                PlanItem::Tag { anchor, at, .. } => {
-                    pts.extend([*anchor, *at - DVec2::splat(0.3), *at + DVec2::splat(0.3)])
-                }
-                PlanItem::Image { lo, hi, clip, .. } => match clip {
-                    Some((clo, chi)) => pts.extend([lo.max(*clo), hi.min(*chi)]),
-                    None => pts.extend([*lo, *hi]),
-                },
-            }
-        }
+        let pts: Vec<DVec2> = self.items.iter().flat_map(|it| it.extent()).collect();
         let first = *pts.first()?;
         Some(
             pts.iter()

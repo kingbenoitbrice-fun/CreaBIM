@@ -61,7 +61,13 @@ impl Transaction {
 
     /// Remove an element and everything that depends on it (a wall and its
     /// doors, a level and everything on it), dependents first.
-    pub fn remove_cascade(mut self, model: &Model, id: ElementId) -> Self {
+    pub fn remove_cascade(self, model: &Model, id: ElementId) -> Self {
+        self.remove_all_cascade(model, &[id])
+    }
+
+    /// Remove several elements and everything that depends on any of them,
+    /// each once, dependents first.
+    pub fn remove_all_cascade(mut self, model: &Model, ids: &[ElementId]) -> Self {
         fn visit(model: &Model, id: ElementId, out: &mut Vec<ElementId>) {
             if out.contains(&id) {
                 return;
@@ -72,7 +78,9 @@ impl Transaction {
             out.push(id);
         }
         let mut order = vec![];
-        visit(model, id, &mut order);
+        for id in ids {
+            visit(model, *id, &mut order);
+        }
         for id in order {
             if let Some(e) = model.get(id) {
                 self.ops.push(Op::Remove(e.clone()));
