@@ -173,13 +173,14 @@ impl SketchDraft {
     }
 
     /// Where a pointer on the plane lands: on the first point when it is
-    /// within `tol`, else on a 5 cm grid; Shift keeps the new line square
-    /// to the plane's axes.
-    pub fn snap(&self, p: DVec2, tol: f64, ortho: bool) -> DVec2 {
+    /// within `tol`, else on a 5 cm grid when `round` (a point already
+    /// snapped to something is kept); Shift keeps the new line square to the
+    /// plane's axes.
+    pub fn snap(&self, p: DVec2, tol: f64, ortho: bool, round: bool) -> DVec2 {
         if self.closes_at_first() && p.distance(self.points[0]) < tol {
             return self.points[0];
         }
-        let mut p = (p / 0.05).round() * 0.05;
+        let mut p = if round { (p / 0.05).round() * 0.05 } else { p };
         if let (true, None, Some(a)) = (ortho, self.arc_end, self.points.last()) {
             let d = p - *a;
             p = if d.x.abs() >= d.y.abs() {
