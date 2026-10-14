@@ -78,10 +78,15 @@ pub fn export_glb(model: &Model) -> Vec<u8> {
         }));
         let ia = accessors.len() - 1;
 
-        let (mat_name, color) = match creabim_core::material_of(model, e) {
-            Some((m, mat)) => (m.name.clone(), mat.color),
-            None => (default_material(&e.kind).to_string(), item.color),
-        };
+        let (mat_name, color, [roughness, metallic, opacity]) =
+            match creabim_core::material_of(model, e) {
+                Some((m, mat)) => (m.name.clone(), mat.color, mat.surface()),
+                None => (
+                    default_material(&e.kind).to_string(),
+                    item.color,
+                    [0.8, 0.0, 1.0],
+                ),
+            };
         let mi = *material_ids.entry(mat_name.clone()).or_insert_with(|| {
             let lin = color.map(|c| {
                 if c <= 0.04045 {
@@ -90,13 +95,17 @@ pub fn export_glb(model: &Model) -> Vec<u8> {
                     ((c + 0.055) / 1.055).powf(2.4)
                 }
             });
-            materials.push(json!({
+            let mut m = json!({
                 "name": mat_name,
                 "pbrMetallicRoughness": {
-                    "baseColorFactor": [lin[0], lin[1], lin[2], 1.0],
-                    "metallicFactor": 0.0, "roughnessFactor": 0.8,
+                    "baseColorFactor": [lin[0], lin[1], lin[2], opacity],
+                    "metallicFactor": metallic, "roughnessFactor": roughness,
                 },
-            }));
+            });
+            if opacity < 1.0 {
+                m["alphaMode"] = json!("BLEND");
+            }
+            materials.push(m);
             materials.len() - 1
         });
         meshes.push(json!({

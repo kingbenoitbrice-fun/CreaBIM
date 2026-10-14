@@ -91,6 +91,23 @@ fn check(file: &str, version: &str) {
         [0.8, 0.8, 0.75, 1.0]
     ));
     assert!(close(scene.materials[wood].color, [0.6, 0.4, 0.2, 0.5]));
+    for m in &scene.materials {
+        // viewport display defaults of a new material
+        assert!((m.roughness - 0.4).abs() < 1e-6, "{file}");
+        assert_eq!(m.metallic, 0.0, "{file}");
+        // the generator doesn't turn nodes on; from Blender 5 every
+        // material has them, with the Principled BSDF's defaults
+        if scene.version.starts_with('5') {
+            let p = m
+                .principled
+                .unwrap_or_else(|| panic!("{file}: no Principled BSDF"));
+            assert!(close(p.base_color, [0.8, 0.8, 0.8, 1.0]), "{file}");
+            assert!((p.roughness - 0.5).abs() < 1e-6, "{file}");
+            assert_eq!((p.metallic, p.alpha), (0.0, 1.0), "{file}");
+        } else {
+            assert_eq!(m.principled, None, "{file}");
+        }
+    }
 
     // World matrices, against Blender's own.
     for (name, want) in expected_worlds() {

@@ -22,13 +22,19 @@ pub fn sample_house() -> Model {
     let (g, f) = (l0.id, l1.id);
     let mut tx = Transaction::new("Sample house").insert(l0).insert(l1);
 
-    let material = |name: &str, hatch: Hatch, color: [f32; 3]| {
-        Element::new(name, ElementKind::Material(Material { hatch, color }))
+    let material = |name: &str, hatch: Hatch, color: [f32; 3], category: &str| {
+        Element::new(
+            name,
+            ElementKind::Material(Material {
+                category: category.into(),
+                ..Material::new(hatch, color)
+            }),
+        )
     };
-    let brick = material("Brick", Hatch::Brick, [0.78, 0.55, 0.45]);
-    let concrete = material("Concrete", Hatch::Concrete, [0.70, 0.70, 0.70]);
-    let stud = material("Stud partition", Hatch::Cross, [0.90, 0.89, 0.86]);
-    let timber = material("Timber", Hatch::Timber, [0.70, 0.56, 0.40]);
+    let brick = material("Brick", Hatch::Brick, [0.78, 0.55, 0.45], "brick");
+    let concrete = material("Concrete", Hatch::Concrete, [0.70, 0.70, 0.70], "concrete");
+    let stud = material("Stud partition", Hatch::Cross, [0.90, 0.89, 0.86], "gypsum");
+    let timber = material("Timber", Hatch::Timber, [0.70, 0.56, 0.40], "wood");
     let (brick_id, concrete_id, stud_id, timber_id) = (brick.id, concrete.id, stud.id, timber.id);
     tx = tx
         .insert(brick)

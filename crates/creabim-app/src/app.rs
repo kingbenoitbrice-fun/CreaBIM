@@ -25,6 +25,8 @@ use std::collections::HashMap;
 
 #[path = "gridvis.rs"]
 mod gridvis;
+#[path = "materials.rs"]
+mod materials;
 #[path = "shell.rs"]
 mod shell;
 
@@ -142,6 +144,8 @@ pub struct CreaBimApp {
     recent: crate::files::Recent,
     /// The web interface round the views.
     shell: shell::Shell,
+    /// The material browser.
+    mat: materials::MaterialsUi,
 }
 
 impl CreaBimApp {
@@ -187,6 +191,7 @@ impl CreaBimApp {
             clipboard: vec![],
             recent: crate::files::Recent::load(),
             shell: Default::default(),
+            mat: Default::default(),
             status: "Loaded the sample house. Orbit with left drag, pan with right drag, zoom with the wheel.".into(),
         };
         app.load_model(sample_house());
@@ -210,6 +215,11 @@ impl CreaBimApp {
     /// Open a project file, or import and link any other file.
     fn open_path(&mut self, path: &str) {
         let lower = path.to_ascii_lowercase();
+        // material cards and glTF files bring materials into this project
+        if materials::is_material_file(path) {
+            self.import_materials(&[path.to_string()]);
+            return;
+        }
         if lower.ends_with(".ifc") || lower.ends_with(".ifcx") {
             let r = std::fs::read_to_string(path)
                 .map_err(|e| e.to_string())
@@ -918,6 +928,7 @@ impl CreaBimApp {
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
+        let mut see_through = Vec::new();
         let highlight = [0.95, 0.55, 0.20];
         let mut ghost_lines: Vec<(DVec3, DVec3, [f32; 3])> = Vec::new();
         for item in &self.scene {
@@ -969,14 +980,26 @@ impl CreaBimApp {
                     }
                 }
             }
+            // a selected element shows solid, whatever it is made of
+            let surface = if selected {
+                [item.surface[0], item.surface[1], 1.0]
+            } else {
+                item.surface
+            };
             for (i, p) in item.mesh.positions.iter().enumerate() {
                 vertices.push(Vertex {
                     pos: *p,
                     normal: item.mesh.normals[i],
                     color: colors[i],
+                    surface,
                 });
             }
-            indices.extend(item.mesh.indices.iter().map(|i| i + base));
+            let target = if surface[2] < 0.999 {
+                &mut see_through
+            } else {
+                &mut indices
+            };
+            target.extend(item.mesh.indices.iter().map(|i| i + base));
         }
 
         // the working grid, 1 m spacing, just under the workplane or the level
@@ -1103,7 +1126,14 @@ impl CreaBimApp {
         }
 
         if let Some(vp) = &mut self.viewport {
-            vp.set_geometry(&rs.device, &vertices, &indices, &lines, &overlay);
+            vp.set_geometry(
+                &rs.device,
+                &vertices,
+                &indices,
+                &see_through,
+                &lines,
+                &overlay,
+            );
         }
     }
 
@@ -1139,7 +1169,13 @@ impl CreaBimApp {
         let ppp = ui.ctx().pixels_per_point();
         let size = [(rect.width() * ppp) as u32, (rect.height() * ppp) as u32];
         if let Some(vp) = &mut self.viewport {
-            let tex = vp.render(rs, size, self.camera.view_proj(aspect), [0.93, 0.94, 0.96]);
+            let tex = vp.render(
+                rs,
+                size,
+                self.camera.view_proj(aspect),
+                self.camera.eye().to_array(),
+                [0.93, 0.94, 0.96],
+            );
             ui.painter().image(
                 tex,
                 rect,
@@ -2653,18 +2689,13 @@ impl CreaBimApp {
             });
         if create {
             let e = Element::new(
-                format!("Material {}", materials.len() + 1),
-                ElementKind::Material(Material {
-                    hatch: Hatch::Diagonal,
-                    color: [0.8, 0.8, 0.8],
-                }),
+                creabim_core::library::unique_name(self.doc.model(), "New material"),
+                ElementKind::Material(Material::new(Hatch::Diagonal, [0.8, 0.8, 0.8])),
             );
             *current = Some(e.id);
             let r = self.doc.commit(Transaction::new("New material").insert(e));
-            self.report(
-                r,
-                "New material. Select it in the Model list to set its hatch and colour.",
-            );
+            self.open_materials(*current);
+            self.report(r, "New material. Set its look in the material browser.");
             changed = true;
         }
         changed
@@ -3178,31 +3209,13 @@ impl CreaBimApp {
                 }
             }
             ElementKind::Material(m) => {
-                egui::ComboBox::from_label("Cut hatch")
-                    .selected_text(m.hatch.label())
-                    .show_ui(ui, |ui| {
-                        for h in Hatch::ALL {
-                            if ui.selectable_value(&mut m.hatch, h, h.label()).changed() {
-                                label = "Material hatch"
-                            }
-                        }
-                    });
-                ui.horizontal(|ui| {
-                    ui.label("Colour");
-                    if ui.color_edit_button_rgb(&mut m.color).changed() {
-                        label = "Material colour"
-                    }
-                });
-                let users = self
-                    .doc
-                    .model()
-                    .iter()
-                    .filter(|u| {
-                        creabim_core::material_of(self.doc.model(), u)
-                            .is_some_and(|(x, _)| x.id == id)
-                    })
-                    .count();
+                materials::preview(ui, m, 72.0);
+                label = materials::material_fields(ui, m);
+                let users = creabim_core::library::users(self.doc.model(), id).len();
                 ui.label(egui::RichText::new(format!("Used by {users} elements.")).weak());
+                if ui.button("Open in the material browser").clicked() {
+                    self.open_materials(Some(id));
+                }
             }
             ElementKind::Dimension(d) => {
                 let measured = self
@@ -3637,7 +3650,10 @@ impl eframe::App for CreaBimApp {
                 .collect()
         });
         for path in dropped {
-            self.path = path.clone();
+            // a dropped material file joins this project, which keeps its path
+            if !materials::is_material_file(&path) {
+                self.path = path.clone();
+            }
             self.open_path(&path);
         }
         if self.live_reload {
@@ -3689,6 +3705,7 @@ impl eframe::App for CreaBimApp {
 
         egui::CentralPanel::default().show(ui, |ui| {
             let full = ui.available_rect_before_wrap();
+            self.mat.area = Some(full);
             let plan_bg = Color32::from_rgb(252, 252, 250);
             match self.placement {
                 PlanPlacement::Docked => {
@@ -3731,6 +3748,7 @@ impl eframe::App for CreaBimApp {
             self.run_command(&ctx, c, at);
         }
         self.open_view_menu();
+        self.materials_window(&ctx);
         // a plan in its own window keeps egui's menus
         self.plan.web_menus = false;
 
@@ -3843,6 +3861,7 @@ fn line_vertex(pos: [f32; 3], color: [f32; 3]) -> Vertex {
         pos,
         normal: [0.0, 0.0, 1.0],
         color,
+        surface: crate::render3d::PLAIN,
     }
 }
 

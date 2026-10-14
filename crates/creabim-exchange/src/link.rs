@@ -155,10 +155,11 @@ pub fn sync(model: &Model, file: &str, incoming: &[Incoming]) -> (Transaction, S
                     *materials.entry(name.clone()).or_insert_with(|| {
                         let m = Element::new(
                             name.clone(),
-                            ElementKind::Material(Material {
-                                hatch: Hatch::Empty,
-                                color: *color,
-                            }),
+                            ElementKind::Material(creabim_core::library::imported(
+                                name,
+                                Material::new(Hatch::Empty, *color),
+                                false,
+                            )),
                         );
                         let id = m.id;
                         tx = std::mem::take(&mut tx).insert(m);

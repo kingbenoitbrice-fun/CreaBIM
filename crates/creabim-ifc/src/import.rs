@@ -70,6 +70,23 @@ pub fn import_ifc(text: &str) -> Result<ImportResult, ImportError> {
     })
 }
 
+/// Read only the materials of an IFC STEP file: every IfcMaterial, with
+/// its category and description, and its colour, transparency and (when
+/// given) roughness from its IfcSurfaceStyle, or from the style on the body
+/// of something made of it. Names are kept as they are, so importing again
+/// updates the same materials.
+pub fn import_ifc_materials(text: &str) -> Result<Vec<(String, Material)>, ImportError> {
+    let file = parse(text)?;
+    let schema = file.schemas.first().cloned().unwrap_or_default();
+    let by_class = file.by_class();
+    if !by_class.contains_key("IFCPROJECT") && !schema.to_ascii_uppercase().starts_with("IFC") {
+        return Err(ImportError::NotIfc(schema));
+    }
+    let mut imp = Importer::new(&file, &by_class);
+    imp.index_relationships();
+    Ok(imp.all_materials())
+}
+
 /// Insert elements into a fresh model, dropping any that fail validation.
 /// Elements must come in dependency order.
 pub(crate) fn build_model(
@@ -185,8 +202,8 @@ struct Importer<'a> {
     has_parts: HashSet<u64>,
     materials_of: HashMap<u64, u64>,
     type_of: HashMap<u64, u64>,
-    styles: HashMap<u64, [f32; 3]>,
-    material_colors: HashMap<u64, [f32; 3]>,
+    styles: HashMap<u64, Surface>,
+    material_colors: HashMap<u64, Surface>,
     /// Imported materials by name.
     materials: HashMap<String, ElementId>,
     walls: HashMap<u64, HostWall>,
@@ -363,7 +380,7 @@ impl<'a> Importer<'a> {
         self.filled = self.fills.values().copied().collect();
         self.has_parts = self.parent.values().copied().collect();
         for s in each("IFCSTYLEDITEM") {
-            if let (Some(item), Some(c)) = (s.arg(0).as_ref(), style_color(f, s.arg(1))) {
+            if let (Some(item), Some(c)) = (s.arg(0).as_ref(), style_surface(f, s.arg(1))) {
                 self.styles.insert(item, c);
             }
         }
@@ -377,7 +394,7 @@ impl<'a> Importer<'a> {
                 .filter_map(|r| f.get(r))
                 .flat_map(|r| r.arg(3).refs().collect::<Vec<_>>())
                 .filter_map(|i| f.get(i))
-                .find_map(|si| style_color(f, si.arg(1)));
+                .find_map(|si| style_surface(f, si.arg(1)));
             if let Some(c) = color {
                 self.material_colors.insert(m, c);
             }
@@ -559,33 +576,53 @@ impl<'a> Importer<'a> {
             return Some(m);
         }
         let f = self.f;
-        let color = mat_id
+        let surface = mat_id
             .and_then(|m| self.material_colors.get(&m).copied())
-            .or_else(|| {
-                let e = f.get(id)?;
-                let body = self.g.body(e)?;
-                body.items.iter().find_map(|i| self.styles.get(i).copied())
-            })
-            .unwrap_or([0.75, 0.75, 0.75]);
-        let description = mat_id
-            .and_then(|m| f.get(m))
-            .filter(|m| m.is("IFCMATERIAL"))
-            .map(|m| {
-                (
-                    m.arg(1).as_str().unwrap_or(""),
-                    m.arg(2).as_str().unwrap_or(""),
-                )
-            })
-            .unwrap_or(("", ""));
-        let hatch = hatch_for(&name, description.0, description.1);
-        let e = Element::new(
-            name.clone(),
-            ElementKind::Material(Material { hatch, color }),
-        );
+            .or_else(|| self.product_surface(f.get(id)?));
+        let material = material_from(f, &name, mat_id, surface);
+        let e = Element::new(name.clone(), ElementKind::Material(material));
         let mid = e.id;
         self.material_elems.push(e);
         self.materials.insert(name, mid);
         Some(mid)
+    }
+
+    /// The surface style on a product's body, if it has one.
+    fn product_surface(&self, e: &Entity) -> Option<Surface> {
+        let body = self.g.body(e)?;
+        body.items.iter().find_map(|i| self.styles.get(i).copied())
+    }
+
+    /// Every IfcMaterial of the file, whether anything uses it or not,
+    /// with its look: its own surface style, else the style on the body of
+    /// the first product made of it.
+    fn all_materials(&self) -> Vec<(String, Material)> {
+        let f = self.f;
+        // the first product made of each material, for its body's style
+        let mut product_of: HashMap<u64, u64> = HashMap::new();
+        let mut assocs: Vec<(&u64, &u64)> = self.materials_of.iter().collect();
+        assocs.sort();
+        for (product, assoc) in assocs {
+            if let Some((_, Some(m))) = self.material_name(*assoc, 0) {
+                product_of.entry(m).or_insert(*product);
+            }
+        }
+        let mut out: Vec<(String, Material)> = vec![];
+        for &id in self.ids("IFCMATERIAL") {
+            let Some(e) = f.get(id) else { continue };
+            let Some(name) = e.arg(0).as_str().map(str::trim).filter(|n| !n.is_empty()) else {
+                continue;
+            };
+            if out.iter().any(|(n, _)| n == name) {
+                continue;
+            }
+            let surface = self.material_colors.get(&id).copied().or_else(|| {
+                let p = f.get(*product_of.get(&id)?)?;
+                self.product_surface(p)
+            });
+            out.push((name.to_string(), material_from(f, name, Some(id), surface)));
+        }
+        out
     }
 
     /// A material select's name and the IfcMaterial it is mostly made of.
@@ -1254,22 +1291,81 @@ fn unit_factor(f: &StepFile, e: &Entity, depth: usize) -> Option<f64> {
     }
 }
 
-/// The surface colour of a list of presentation styles.
-fn style_color(f: &StepFile, styles: &Value) -> Option<[f32; 3]> {
+/// How a surface style says a surface looks: its colour, and when the
+/// style is a full rendering, how see-through, rough and metallic it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Surface {
+    pub color: [f32; 3],
+    /// 0 opaque .. 1 invisible.
+    pub transparency: f32,
+    pub roughness: Option<f32>,
+    pub metallic: Option<f32>,
+}
+
+impl Surface {
+    /// The material with this look, and whether the style said anything
+    /// about roughness or metal (else the caller guesses from the name).
+    pub fn apply(&self, m: &mut Material) -> bool {
+        m.color = self.color;
+        m.opacity = (1.0 - self.transparency).clamp(0.05, 1.0);
+        if let Some(r) = self.roughness {
+            m.roughness = r.clamp(0.0, 1.0);
+        }
+        if let Some(x) = self.metallic {
+            m.metallic = x.clamp(0.0, 1.0);
+        }
+        self.roughness.is_some() || self.metallic.is_some()
+    }
+}
+
+/// The surface of a list of presentation styles (IfcSurfaceStyleShading
+/// or IfcSurfaceStyleRendering, read through style assignments).
+///
+/// A rendering's `SpecularHighlight` is used when it is an
+/// `IfcSpecularRoughness`; `IfcSpecularExponent` is ignored, since some
+/// exporters write the same exponent for every material. A `METAL`
+/// reflectance method makes the surface metallic.
+pub(crate) fn style_surface(f: &StepFile, styles: &Value) -> Option<Surface> {
     for s in styles.as_list() {
         let Some(e) = f.deref(s) else { continue };
         let found = match e.class.as_str() {
-            "IFCPRESENTATIONSTYLEASSIGNMENT" => style_color(f, e.arg(0)),
+            "IFCPRESENTATIONSTYLEASSIGNMENT" => style_surface(f, e.arg(0)),
             "IFCSURFACESTYLE" => e.arg(2).as_list().iter().find_map(|r| {
                 let r = f.deref(r)?;
-                if !r.class.starts_with("IFCSURFACESTYLESHADING")
-                    && !r.class.starts_with("IFCSURFACESTYLERENDERING")
-                {
+                let rendering = r.class.starts_with("IFCSURFACESTYLERENDERING");
+                if !r.class.starts_with("IFCSURFACESTYLESHADING") && !rendering {
                     return None;
                 }
                 let c = f.deref(r.arg(0))?;
                 let ch = |i: usize| c.arg(i).as_f64().map(|v| v.clamp(0.0, 1.0) as f32);
-                Some([ch(1)?, ch(2)?, ch(3)?])
+                let mut out = Surface {
+                    color: [ch(1)?, ch(2)?, ch(3)?],
+                    transparency: r
+                        .arg(1)
+                        .as_f64()
+                        .filter(|t| t.is_finite())
+                        .map_or(0.0, |t| t.clamp(0.0, 1.0) as f32),
+                    roughness: None,
+                    metallic: None,
+                };
+                if rendering {
+                    if let Value::Typed(t, v) = r.arg(7) {
+                        if t == "IFCSPECULARROUGHNESS" {
+                            out.roughness = v.as_f64().map(|v| v.clamp(0.0, 1.0) as f32);
+                        }
+                    }
+                    match r.arg(8).as_enum() {
+                        Some("METAL") => out.metallic = Some(1.0),
+                        Some("GLASS" | "MIRROR") => {
+                            out.roughness = out.roughness.or(Some(0.05));
+                            out.metallic = Some(0.0);
+                        }
+                        Some("MATT") => out.roughness = out.roughness.or(Some(1.0)),
+                        Some("PLASTIC") => out.roughness = out.roughness.or(Some(0.4)),
+                        _ => {}
+                    }
+                }
+                Some(out)
             }),
             _ => None,
         };
@@ -1280,12 +1376,51 @@ fn style_color(f: &StepFile, styles: &Value) -> Option<[f32; 3]> {
     None
 }
 
+/// A CreaBIM material from an IfcMaterial (or a layer set's name and its
+/// main IfcMaterial) and the surface style found for it.
+fn material_from(
+    f: &StepFile,
+    name: &str,
+    mat_id: Option<u64>,
+    surface: Option<Surface>,
+) -> Material {
+    let (description, category) = mat_id
+        .and_then(|m| f.get(m))
+        .filter(|m| m.is("IFCMATERIAL"))
+        .map(|m| {
+            (
+                m.arg(1).as_str().unwrap_or(""),
+                m.arg(2).as_str().unwrap_or(""),
+            )
+        })
+        .unwrap_or(("", ""));
+    let (_, plain) = split_description(description);
+    let mut m = Material {
+        hatch: hatch_for(name, description, category),
+        color: [0.75, 0.75, 0.75],
+        category: category.trim().to_lowercase(),
+        description: plain,
+        ..Default::default()
+    };
+    let has_surface = surface.is_some_and(|s| s.apply(&mut m));
+    creabim_core::library::imported(name, m, has_surface)
+}
+
+/// The hatch CreaBIM wrote at the start of a material's description, and
+/// the rest of the description.
+pub(crate) fn split_description(description: &str) -> (Option<Hatch>, String) {
+    let Some(rest) = description.strip_prefix(crate::export::HATCH_PREFIX) else {
+        return (None, description.trim().to_string());
+    };
+    let (label, plain) = rest.split_once(". ").unwrap_or((rest, ""));
+    let hatch = Hatch::ALL.into_iter().find(|h| h.label() == label.trim());
+    (hatch, plain.trim().to_string())
+}
+
 /// The hatch CreaBIM wrote, or a guess from the material's name and category.
 pub(crate) fn hatch_for(name: &str, description: &str, category: &str) -> Hatch {
-    if let Some(label) = description.strip_prefix(crate::export::HATCH_PREFIX) {
-        if let Some(h) = Hatch::ALL.into_iter().find(|h| h.label() == label.trim()) {
-            return h;
-        }
+    if let (Some(h), _) = split_description(description) {
+        return h;
     }
     let text = format!("{name} {category}").to_lowercase();
     if ["brick", "masonry", "block"]

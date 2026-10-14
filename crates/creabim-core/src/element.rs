@@ -206,10 +206,15 @@ impl Element {
                 }
             }
             ElementKind::Material(m) => {
-                if m.color.iter().all(|c| (0.0..=1.0).contains(c)) {
-                    Ok(())
-                } else {
+                if !m.color.iter().all(|c| (0.0..=1.0).contains(c)) {
                     Err("material colour components must be within 0..1".into())
+                } else if ![m.roughness, m.metallic, m.opacity]
+                    .iter()
+                    .all(|c| (0.0..=1.0).contains(c))
+                {
+                    Err("material roughness, metallic and opacity must be within 0..1".into())
+                } else {
+                    Ok(())
                 }
             }
             ElementKind::Dimension(d) => {
@@ -338,11 +343,94 @@ impl Hatch {
 }
 
 /// What an element is made of: how it looks in 3D and how its cut faces are hatched.
+///
+/// Everything after `color` was added later and is optional in files, so
+/// projects saved before it open unchanged.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Material {
     pub hatch: Hatch,
     /// sRGB colour, 0..1, as picked in a colour chooser.
     pub color: [f32; 3],
+    /// What kind of material this is, as IFC's `IfcMaterial.Category`
+    /// (`concrete`, `brick`, `wood`, `steel`, `glass`...). Empty when unknown.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub category: String,
+    /// Free text, as `IfcMaterial.Description`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// 0 is mirror-smooth, 1 is fully matte (glTF's roughness).
+    #[serde(
+        default = "default_roughness",
+        skip_serializing_if = "is_default_roughness"
+    )]
+    pub roughness: f32,
+    /// 0 for dielectrics (almost everything), 1 for bare metal.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub metallic: f32,
+    /// 1 is opaque; glass is around 0.3.
+    #[serde(default = "one_f32", skip_serializing_if = "is_one")]
+    pub opacity: f32,
+}
+
+/// The roughness of a material that doesn't say: matte, like most
+/// building materials.
+pub const DEFAULT_ROUGHNESS: f32 = 0.8;
+
+fn default_roughness() -> f32 {
+    DEFAULT_ROUGHNESS
+}
+fn is_default_roughness(v: &f32) -> bool {
+    *v == DEFAULT_ROUGHNESS
+}
+fn one_f32() -> f32 {
+    1.0
+}
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+impl Default for Material {
+    fn default() -> Self {
+        Self {
+            hatch: Hatch::Solid,
+            color: [0.8, 0.8, 0.8],
+            category: String::new(),
+            description: String::new(),
+            roughness: DEFAULT_ROUGHNESS,
+            metallic: 0.0,
+            opacity: 1.0,
+        }
+    }
+}
+
+impl Material {
+    /// A plain material with a hatch and a colour.
+    pub fn new(hatch: Hatch, color: [f32; 3]) -> Self {
+        Self {
+            hatch,
+            color,
+            ..Default::default()
+        }
+    }
+
+    /// Roughness, metallic and opacity, as the 3D view takes them.
+    pub fn surface(&self) -> [f32; 3] {
+        [self.roughness, self.metallic, self.opacity]
+    }
+
+    /// The same material with every number in its range (for values read
+    /// from other files): non-finite values take their defaults.
+    pub fn clamped(mut self) -> Self {
+        let unit = |v: f32, d: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { d };
+        self.color = self.color.map(|c| unit(c, 0.8));
+        self.roughness = unit(self.roughness, DEFAULT_ROUGHNESS);
+        self.metallic = unit(self.metallic, 0.0);
+        self.opacity = unit(self.opacity, 1.0).max(0.05);
+        self
+    }
 }
 
 /// One end of a dimension. With a host, `local` is in the host's own

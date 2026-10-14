@@ -38,6 +38,7 @@ const XFORM: &str = "usd::xformop";
 const VISIBILITY: &str = "usd::usdgeom::visibility";
 const MATERIAL: &str = "bsi::ifc::material";
 const COLOR: &str = "bsi::ifc::presentation::diffuseColor";
+const OPACITY: &str = "bsi::ifc::presentation::opacity";
 /// CreaBIM's own parameters for an element: `{"name": …, "kind": …}`.
 const CREABIM: &str = "creabim::element";
 const CLASS_URI: &str = "https://identifier.buildingsmart.org/uri/buildingsmart/ifc/4.3/class/";
@@ -156,6 +157,9 @@ pub fn export_ifcx(model: &Model) -> String {
             ElementKind::Material(m) => {
                 attrs.insert(MATERIAL.into(), json!({ "code": e.name }));
                 attrs.insert(COLOR.into(), json!(m.color));
+                if m.opacity < 1.0 {
+                    attrs.insert(OPACITY.into(), json!(m.opacity));
+                }
                 attrs.insert(CREABIM.into(), creabim);
                 nodes.push(node(&path, Names::default(), Map::new(), attrs));
                 continue; // materials are roots, inherited by what is made of them
@@ -810,10 +814,16 @@ impl Builder {
                 Element {
                     source: None,
                     id,
-                    kind: ElementKind::Material(Material {
-                        hatch: hatch_for(&name, "", ""),
-                        color,
-                    }),
+                    kind: ElementKind::Material(creabim_core::library::imported(
+                        &name,
+                        Material {
+                            hatch: hatch_for(&name, "", ""),
+                            color,
+                            opacity: attrs.get(OPACITY).and_then(J::as_f64).unwrap_or(1.0) as f32,
+                            ..Default::default()
+                        },
+                        false,
+                    )),
                     name,
                 }
             }

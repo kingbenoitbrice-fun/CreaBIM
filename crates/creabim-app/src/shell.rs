@@ -186,6 +186,7 @@ impl CreaBimApp {
             "menu:File" => self.file_menu(),
             "menu:Edit" => self.edit_menu(),
             "menu:View" => self.view_menu(),
+            "menu:Materials" => self.materials_menu(),
             "views" => {
                 let mut items = vec![Item::Header("Views".into())];
                 for (id, name, _) in self.views() {
@@ -660,7 +661,9 @@ impl CreaBimApp {
             }
             "view.shaded" | "view.tag" => self.view_action(head),
             _ => {
-                self.grid_vis_action(head, arg);
+                if !self.materials_action(head, arg) {
+                    self.grid_vis_action(head, arg);
+                }
             }
         }
     }
@@ -918,7 +921,7 @@ impl CreaBimApp {
         json!({
             "theme": self.theme(),
             "popup": self.popup_key(),
-            "menus": (["File", "Edit", "View"].map(|m| json!({"name": m, "key": format!("menu:{m}")}))),
+            "menus": (["File", "Edit", "View", "Materials"].map(|m| json!({"name": m, "key": format!("menu:{m}")}))),
             "quick": quick,
             "doc": {
                 "name": file_label(&self.path),
@@ -1279,7 +1282,7 @@ impl CreaBimApp {
     pub(super) fn classic_menu(&mut self, ui: &mut egui::Ui) {
         let mut picked = None;
         egui::MenuBar::new().ui(ui, |ui| {
-            for m in ["File", "Edit", "View"] {
+            for m in ["File", "Edit", "View", "Materials"] {
                 let items = self.menu_items(&format!("menu:{m}"));
                 ui.menu_button(m, |ui| {
                     if let Some(id) = ui_model::show(ui, &items) {
