@@ -500,8 +500,16 @@ impl Modal {
                         along * v
                     }
                     None => {
-                        let a = (map.to_model)(self.grab, self.axis, self.pivot)?;
-                        let b = (map.to_model)(self.pointer, self.axis, self.pivot)?;
+                        // measure the pointer's travel at the pivot, not where
+                        // the pointer happened to be when the move began: a
+                        // move started from a button begins wherever the
+                        // pointer comes into the view, often near the horizon
+                        let (from, to) = match (map.project)(self.pivot) {
+                            Some(p) => (p, p + (self.pointer - self.grab)),
+                            None => (self.grab, self.pointer),
+                        };
+                        let a = (map.to_model)(from, self.axis, self.pivot)?;
+                        let b = (map.to_model)(to, self.axis, self.pivot)?;
                         let mut d = b - a;
                         if let Some(ax) = self.axis {
                             d = ax.unit() * d.dot(ax.unit());

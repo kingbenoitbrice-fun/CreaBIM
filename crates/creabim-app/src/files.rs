@@ -149,6 +149,44 @@ impl Recent {
     }
 }
 
+/// Interface choices kept between sessions in `<settings>/CreaBIM/settings.json`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub theme: String,
+    /// Width of the project browser and of the properties panel, in points.
+    pub left_width: f32,
+    pub right_width: f32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            theme: "dark".into(),
+            left_width: 264.0,
+            right_width: 290.0,
+        }
+    }
+}
+
+impl Settings {
+    pub fn load() -> Self {
+        settings_dir()
+            .and_then(|d| std::fs::read_to_string(d.join("settings.json")).ok())
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn store(&self) {
+        if let Some(dir) = settings_dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            if let Ok(t) = serde_json::to_string_pretty(self) {
+                let _ = std::fs::write(dir.join("settings.json"), t);
+            }
+        }
+    }
+}
+
 fn settings_dir() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("APPDATA")
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
