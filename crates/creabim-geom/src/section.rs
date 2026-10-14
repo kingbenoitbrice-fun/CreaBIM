@@ -92,6 +92,26 @@ pub fn section_view(
 
     crate::plan::clean_up_cuts(model, &mut items);
 
+    // Sketches between the cut plane and the far edge of the view
+    for e in model.iter() {
+        let ElementKind::Sketch(sk) = &e.kind else {
+            continue;
+        };
+        let z = sk
+            .level
+            .and_then(|l| model.level(l))
+            .map_or(0.0, |l| l.elevation);
+        let lift = |p: DVec3| frame.project(p + DVec3::Z * z);
+        let inside = sk.segments().iter().all(|(a, b)| {
+            [lift(*a), lift(*b)]
+                .iter()
+                .all(|p| (-1e-6..=frame.depth + 1e-6).contains(&p.z))
+        });
+        if inside {
+            items.extend(crate::plan::sketch_items(e.id, sk, &lift));
+        }
+    }
+
     // Level datums across what the drawing shows, a metre past each side.
     let span = PlanView {
         items: items.clone(),

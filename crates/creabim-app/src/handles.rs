@@ -615,7 +615,7 @@ pub fn interact(
         (Constraint::Line { point, dir }, Some((p, snap)))
             if matches!(
                 snap.kind,
-                SnapKind::Endpoint | SnapKind::Midpoint | SnapKind::Intersection
+                SnapKind::Endpoint | SnapKind::Midpoint | SnapKind::Center | SnapKind::Intersection
             ) =>
         {
             if let Some(at) = (input.project)(p) {

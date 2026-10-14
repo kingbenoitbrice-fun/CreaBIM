@@ -78,7 +78,7 @@ impl Tool {
             Tool::Elevation => "Click two points for the elevation line, outside the building. It looks to the left of the direction you draw.",
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to wall corners, door and window edges and levels, and stay attached to them.",
             Tool::Tag => "Click a door, window, wall or slab, then click where its tag goes.",
-            Tool::Sketch => "Click the corners of a sketch on this level. Click the first corner to close it, Enter or right-click to leave it open, Esc to cancel. Then E extrudes it.",
+            Tool::Sketch => "Click the corners of a sketch on this level. Click the first corner to close it, Enter or right-click to leave it open, Esc to cancel. L, A and C draw lines, arcs and circles. Then E extrudes it.",
             Tool::Guide => "Click two points for a guide through them. Or click an edge, then click where its parallel guide goes. Everything snaps to guides.",
         }
     }
@@ -92,7 +92,7 @@ impl Tool {
             Tool::Section => "Click where the new section cuts, then click on the side it should look towards.",
             Tool::Elevation => "Click where the new elevation stands, then click on the side it should look towards.",
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to levels.",
-            Tool::Sketch => "Click the corners of a sketch on the section plane. Click the first corner to close it, Enter or right-click to leave it open. Then E extrudes it.",
+            Tool::Sketch => "Click the corners of a sketch on the section plane. Click the first corner to close it, Enter or right-click to leave it open. L, A and C draw lines, arcs and circles. Then E extrudes it.",
             t => t.hint(),
         }
     }
@@ -331,6 +331,7 @@ pub fn show(
     for item in &plan.items {
         draw_item(&painter, &xf, item, *selection == Some(item.id()), mm);
     }
+    crate::sketch::draw_marks_in_pane(&painter, doc.model(), *selection, kind, &xf);
 
     let shift = ui.input(|i| i.modifiers.shift);
     // snaps: the selection and what joins it are left out while selecting,
@@ -1318,6 +1319,10 @@ fn sketch_tool(
     let project = |p: DVec3| Some(xf.to_screen(model_to_pane(space, p)));
     // a sketch being drawn in another pane is left alone
     let mine = state.sketch.as_ref().is_some_and(|d| d.pane == Some(view));
+    let draft = state.sketch.as_mut().filter(|d| d.pane == Some(view));
+    if let Some(hint) = crate::sketch::shape_controls(ui, response.rect, Some(view), draft) {
+        state.status = Some(hint);
+    }
     let tol = 10.0 / xf.scale as f64;
     let on_plane = match (&state.sketch, hover) {
         (Some(d), Some(m)) if mine => Some(d.snap(d.plane.to_plane(m), tol, shift)),
@@ -1377,12 +1382,19 @@ fn sketch_tool(
                     ..Workplane::ground(m.z)
                 },
             };
-            state.sketch = Some(SketchDraft::new(plane, Some(view)));
+            let draft = SketchDraft::new(plane, Some(view));
+            let shape = crate::sketch::shape(ui.ctx());
+            state.status = Some(crate::sketch::hint(shape, Some(&draft)));
+            state.sketch = Some(draft);
             Some(None)
         }
         Some(d) => match d.click(on_plane?) {
             Some(Click::Closed) => finish(doc, state, selection, true),
-            _ => Some(None),
+            Some(Click::Added) => {
+                state.status = Some(crate::sketch::hint(d.shape, Some(d)));
+                Some(None)
+            }
+            None => Some(None),
         },
     }
 }

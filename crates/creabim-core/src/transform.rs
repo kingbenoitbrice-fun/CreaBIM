@@ -124,9 +124,7 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
             s.plane.x = t.direction(s.plane.x);
             s.plane.y = t.direction(s.plane.y);
             if let Xform::Scale { factor, .. } = t {
-                for p in &mut s.points {
-                    *p *= *factor;
-                }
+                s.scale(*factor);
             }
         }
         ElementKind::View(v) => match &mut v.kind {

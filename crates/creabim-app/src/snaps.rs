@@ -14,6 +14,8 @@ use std::collections::HashMap;
 pub enum SnapKind {
     Endpoint,
     Midpoint,
+    /// The centre of an arc or circle.
+    Center,
     Intersection,
     Perpendicular,
     OnEdge,
@@ -29,6 +31,7 @@ impl SnapKind {
         match self {
             SnapKind::Endpoint => "Endpoint",
             SnapKind::Midpoint => "Midpoint",
+            SnapKind::Center => "Centre",
             SnapKind::Intersection => "Intersection",
             SnapKind::Perpendicular => "Perpendicular",
             SnapKind::OnEdge => "On edge",
@@ -80,6 +83,57 @@ impl Snapper {
         }
     }
 
+    /// A curve given as a polyline: its pieces snap as edges, but only its
+    /// ends and halfway point as points, plus `center` for an arc.
+    pub fn add_curve(&mut self, pts: &[DVec3], center: Option<DVec3>) {
+        let Some((first, last)) = pts.first().zip(pts.last()) else {
+            return;
+        };
+        for w in pts.windows(2) {
+            if w[0].distance(w[1]) > 1e-9 {
+                self.segments.push((w[0], w[1], false));
+            }
+        }
+        self.points.push((*first, SnapKind::Endpoint));
+        if first.distance(*last) > 1e-9 {
+            self.points.push((*last, SnapKind::Endpoint));
+        }
+        self.points.push((pts[pts.len() / 2], SnapKind::Midpoint));
+        if let Some(c) = center {
+            self.points.push((c, SnapKind::Center));
+        }
+    }
+
+    /// Every sketch's lines and arcs, in model coordinates, for the 3D view.
+    pub fn add_sketches(
+        &mut self,
+        model: &creabim_core::Model,
+        exclude: &[creabim_core::ElementId],
+    ) {
+        for e in model.iter() {
+            let creabim_core::ElementKind::Sketch(sk) = &e.kind else {
+                continue;
+            };
+            if exclude.contains(&e.id) {
+                continue;
+            }
+            let z = sk
+                .level
+                .and_then(|l| model.level(l))
+                .map_or(0.0, |l| l.elevation);
+            let at = |p: DVec2| sk.plane.to_model(p) + DVec3::Z * z;
+            for c in sk.curves() {
+                let pts: Vec<DVec3> = c.points().into_iter().map(at).collect();
+                match c {
+                    creabim_core::Curve::Line(a, b) => self.add_segment(at(a), at(b), false),
+                    creabim_core::Curve::Arc { center, .. } => {
+                        self.add_curve(&pts, Some(at(center)))
+                    }
+                }
+            }
+        }
+    }
+
     /// Where segments cross. Only meaningful for flat drawings; the 3D view
     /// snaps to corners and edges instead.
     pub fn add_intersections(&mut self) {
@@ -116,6 +170,24 @@ impl Snapper {
                         let j = (i + 1) % points.len();
                         s.add_segment(p3(points[i]), p3(points[j]), false);
                     }
+                }
+                PlanItem::Arc {
+                    center,
+                    radius,
+                    start,
+                    end,
+                    ..
+                } => {
+                    let n = (((end - start).abs() / creabim_core::sketch::ARC_STEP).ceil()
+                        as usize)
+                        .max(2);
+                    let pts: Vec<DVec3> = (0..=n)
+                        .map(|i| {
+                            let t = start + (end - start) * i as f64 / n as f64;
+                            p3(*center + DVec2::from_angle(t) * *radius)
+                        })
+                        .collect();
+                    s.add_curve(&pts, Some(p3(*center)));
                 }
                 _ => {}
             }
@@ -183,7 +255,7 @@ impl Snapper {
         let rank = |k: SnapKind| match k {
             SnapKind::Endpoint => 0.0,
             SnapKind::Intersection => 0.5,
-            SnapKind::Midpoint => 1.0,
+            SnapKind::Midpoint | SnapKind::Center => 1.0,
             _ => 2.0,
         };
         let best_point = self
@@ -370,6 +442,7 @@ pub fn draw(painter: &Painter, snap: Snap, at: Pos2, from: Option<Pos2>) {
     let c = match snap.kind {
         SnapKind::Endpoint | SnapKind::Intersection => Color32::from_rgb(20, 150, 60),
         SnapKind::Midpoint => Color32::from_rgb(20, 120, 200),
+        SnapKind::Center => Color32::from_rgb(200, 120, 20),
         SnapKind::Perpendicular => Color32::from_rgb(160, 60, 180),
         SnapKind::OnEdge | SnapKind::Guide => Color32::from_rgb(200, 40, 40),
         SnapKind::AxisX => Color32::from_rgb(220, 50, 50),
@@ -396,6 +469,10 @@ pub fn draw(painter: &Painter, snap: Snap, at: Pos2, from: Option<Pos2>) {
                 ],
                 s,
             ));
+        }
+        SnapKind::Center => {
+            painter.circle_stroke(at, r, s);
+            painter.circle_filled(at, 1.5, c);
         }
         SnapKind::Intersection => {
             painter.line_segment([at + egui::vec2(-r, -r), at + egui::vec2(r, r)], s);
@@ -457,6 +534,31 @@ mod tests {
         let hit = s.snap(at(3.0, 0.04), &flat, None, None).unwrap();
         assert_eq!(hit.kind, SnapKind::OnEdge);
         assert!((hit.p.y).abs() < 1e-9);
+    }
+
+    #[test]
+    fn arcs_snap_to_their_ends_middle_and_centre_only() {
+        let items = [PlanItem::Arc {
+            id: creabim_core::ElementId::new(),
+            pen: creabim_geom::plan::Pen::Symbol,
+            center: DVec2::ZERO,
+            radius: 2.0,
+            start: 0.0,
+            end: std::f64::consts::PI,
+        }];
+        let s = Snapper::from_drawing(&items, &[]);
+        let at = |x: f64, y: f64| flat(DVec3::new(x, y, 0.0)).unwrap();
+        let hit = s.snap(at(0.02, 0.01), &flat, None, None).unwrap();
+        assert_eq!(hit.kind, SnapKind::Center);
+        let hit = s.snap(at(0.01, 2.02), &flat, None, None).unwrap();
+        assert_eq!(hit.kind, SnapKind::Midpoint);
+        // between pieces it is on the edge, not at a piece's end
+        let a = 0.3f64;
+        let hit = s
+            .snap(at(2.0 * a.cos(), 2.0 * a.sin()), &flat, None, None)
+            .unwrap();
+        assert_eq!(hit.kind, SnapKind::OnEdge);
+        assert!((hit.p.length() - 2.0).abs() < 0.01);
     }
 
     #[test]

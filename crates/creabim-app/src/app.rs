@@ -1009,6 +1009,7 @@ impl CreaBimApp {
         if !fresh {
             let mut snapper = Snapper::from_scene(&self.scene, exclude);
             snapper.add_guides(self.doc.model(), GUIDE_REACH_3D);
+            snapper.add_sketches(self.doc.model(), exclude);
             self.snaps_3d = Some((rev, exclude.to_vec(), snapper));
         }
     }
@@ -1368,6 +1369,9 @@ impl CreaBimApp {
                 painter.line_segment([a, b], stroke);
             }
         }
+        crate::sketch::draw_marks(painter, self.doc.model(), self.selection, project, &|_| {
+            true
+        });
     }
 
     /// The Sketch tool in the 3D view: the first click sets the workplane on
@@ -1385,6 +1389,10 @@ impl CreaBimApp {
         let mine = self.plan.sketch.as_ref().is_some_and(|d| d.pane.is_none());
         if !mine && response.clicked() {
             self.plan.sketch = None;
+        }
+        let draft = self.plan.sketch.as_mut().filter(|d| d.pane.is_none());
+        if let Some(hint) = crate::sketch::shape_controls(ui, response.rect, None, draft) {
+            self.status = hint;
         }
         let (enter, escape, shift) = ui.input(|i| {
             (
@@ -1475,14 +1483,21 @@ impl CreaBimApp {
         match &mut self.plan.sketch {
             None => {
                 if let Some(plane) = hover.and_then(candidate) {
-                    self.plan.sketch = Some(SketchDraft::new(plane, None));
-                    self.status = "Workplane set. Click the corners; click the first one to close the sketch, Enter to leave it open.".into();
+                    let draft = SketchDraft::new(plane, None);
+                    let shape = crate::sketch::shape(ui.ctx());
+                    self.status = format!(
+                        "Workplane set. {}",
+                        crate::sketch::hint(shape, Some(&draft))
+                    );
+                    self.plan.sketch = Some(draft);
                 }
             }
             Some(d) => {
                 if let Some(p) = on_plane {
-                    if let Some(Click::Closed) = d.click(p) {
-                        finish(self, true);
+                    match d.click(p) {
+                        Some(Click::Closed) => finish(self, true),
+                        Some(Click::Added) => self.status = crate::sketch::hint(d.shape, Some(d)),
+                        None => {}
                     }
                 }
             }
@@ -2549,14 +2564,12 @@ impl CreaBimApp {
                 });
             }
             ElementKind::Sketch(sk) => {
-                ui.label(format!(
-                    "{} corners, {}",
-                    sk.points.len(),
-                    if sk.closed { "closed" } else { "open" }
-                ));
-                if sk.points.len() >= 3 && ui.checkbox(&mut sk.closed, "Closed").changed() {
-                    label = "Close sketch"
+                match crate::sketch::properties(ui, sk) {
+                    crate::sketch::Edit::Done(l) => label = l,
+                    crate::sketch::Edit::Refused(why) => self.status = why,
+                    crate::sketch::Edit::None => {}
                 }
+                ui.add_space(4.0);
                 if num(ui, "Plane X", &mut sk.plane.origin.x, -1e4, 1e4)
                     | num(ui, "Plane Y", &mut sk.plane.origin.y, -1e4, 1e4)
                     | num(ui, "Plane Z", &mut sk.plane.origin.z, -1e3, 1e3)
