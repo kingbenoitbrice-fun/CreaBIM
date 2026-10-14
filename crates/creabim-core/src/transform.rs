@@ -284,7 +284,8 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
         | ElementKind::Tag(_)
         | ElementKind::Note(_)
         | ElementKind::TextStyle(_)
-        | ElementKind::Cut(_) => return None,
+        | ElementKind::Cut(_)
+        | ElementKind::GridGroup(_) => return None,
     }
     Some(out)
 }
@@ -346,6 +347,11 @@ pub fn duplicate(model: &Model, id: ElementId) -> Vec<Element> {
         return vec![];
     }
     let mut copy = Element::new(format!("{} copy", e.name), e.kind.clone());
+    if let ElementKind::Grid(g) = &mut copy.kind {
+        // a copied grid line follows on in its group
+        g.label = crate::grids::next_label(model, g.group, g.start, g.end);
+        copy.name = format!("Grid {}", crate::grids::display_label(model, g));
+    }
     if let ElementKind::Opening(o) = &mut copy.kind {
         // a lone door copy goes beside the original, on the same wall
         if let Some(ElementKind::Wall(w)) = model.get(o.host).map(|h| &h.kind) {

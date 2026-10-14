@@ -158,3 +158,63 @@ fn layered_file_with_types_and_transforms() {
     assert!((f.mesh.volume() - 1.0 / 6.0).abs() < 1e-9);
     assert!(r.warnings.iter().any(|w| w.contains("spaces")));
 }
+
+/// A grid group exports as one IfcGrid with its lines as its axes, and
+/// comes back with its lines in it, even when a line was made before it.
+#[test]
+fn grid_groups_export_as_an_ifc_grid_with_its_axes() {
+    use creabim_core::{grids, Transaction};
+    let mut model = sample_house();
+    let group = grids::new_group(&model);
+    // a line made before the group joins it later
+    let line = grids::new_grid(&model, None, DVec2::new(30.0, 0.0), DVec2::new(30.0, 8.0));
+    Transaction::new("Line")
+        .insert(line.clone())
+        .insert(group.clone())
+        .apply(&mut model)
+        .unwrap();
+    let mut joined = line.clone();
+    if let ElementKind::Grid(g) = &mut joined.kind {
+        g.group = Some(group.id);
+    }
+    Transaction::new("Join")
+        .replace(line, joined.clone())
+        .apply(&mut model)
+        .unwrap();
+
+    let text = export_ifcx(&model);
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let group_path = group.id.0.to_string();
+    let node = |path: &str| {
+        json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["path"] == path)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let class = |path: &str| {
+        node(path).iter().find_map(|n| {
+            n["attributes"]["bsi::ifc::class"]["code"]
+                .as_str()
+                .map(String::from)
+        })
+    };
+    assert_eq!(class(&group_path).as_deref(), Some("IfcGrid"));
+    assert_eq!(
+        class(&joined.id.0.to_string()).as_deref(),
+        Some("IfcGridAxis")
+    );
+    let axes: Vec<String> = node(&group_path)
+        .iter()
+        .filter_map(|n| n["children"].as_object())
+        .flat_map(|c| c.values().filter_map(|v| v.as_str().map(String::from)))
+        .collect();
+    assert!(axes.contains(&joined.id.0.to_string()), "{axes:?}");
+
+    let r = import_ifcx(&text).unwrap();
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert_eq!(r.model.get(group.id), model.get(group.id));
+    assert_eq!(r.model.get(joined.id), Some(&joined));
+}

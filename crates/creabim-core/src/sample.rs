@@ -48,6 +48,7 @@ pub fn sample_house() -> Model {
                 label: label.into(),
                 start: a,
                 end: b,
+                group: None,
             }),
         ));
     }

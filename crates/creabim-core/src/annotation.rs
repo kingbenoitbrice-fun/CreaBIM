@@ -302,5 +302,10 @@ mod tests {
         assert!(doc.model().get(id).is_none());
         doc.undo();
         assert!(doc.model().get(id).is_some());
+        // a view can leave notes out, like dimensions and tags
+        let mut hidden = crate::visibility::ViewHidden::default();
+        assert!(!hidden.hidden_set(doc.model()).contains(&id));
+        hidden.set_category(crate::visibility::Category::Notes, true);
+        assert!(hidden.hidden_set(doc.model()).contains(&id));
     }
 }

@@ -41,10 +41,11 @@ pub enum Tool {
     Note,
     Sketch,
     Guide,
+    Grid,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 17] = [
+    pub const ALL: [Tool; 18] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
@@ -62,6 +63,7 @@ impl Tool {
         Tool::Note,
         Tool::Sketch,
         Tool::Guide,
+        Tool::Grid,
     ];
 
     /// Dimensions, tags and notes: tools that annotate a view.
@@ -88,6 +90,7 @@ impl Tool {
             Tool::Note => "Note",
             Tool::Sketch => "Sketch",
             Tool::Guide => "Guide",
+            Tool::Grid => "Grid",
         }
     }
 
@@ -110,6 +113,7 @@ impl Tool {
             Tool::Note => "Click what the note points at, then where its text goes (turn Leader off to just click). Type its text in Properties. Works on sheets too.",
             Tool::Sketch => "Click the corners of a sketch on this level. Click the first corner to close it, Enter or right-click to leave it open, Esc to cancel. L, A and C draw lines, arcs and circles. Then E extrudes it.",
             Tool::Guide => "Click two points for a guide through them. Or click an edge, then click where its parallel guide goes. Everything snaps to guides.",
+            Tool::Grid => "Click two points for a grid line. It goes in the active grid system (top bar) and takes its next label. Shift keeps it straight.",
         }
     }
 
@@ -239,6 +243,8 @@ pub struct PlanState {
     pub menu_request: Option<egui::Pos2>,
     /// Which snaps are on, in every pane and the 3D view.
     pub snap: snaps::SnapSettings,
+    /// The grid system the Grid tool puts new lines in.
+    pub grid_group: Option<ElementId>,
 }
 
 impl Default for PlanState {
@@ -272,6 +278,7 @@ impl Default for PlanState {
             web_menus: false,
             menu_request: None,
             snap: snaps::SnapSettings::default(),
+            grid_group: None,
         }
     }
 }
@@ -844,7 +851,7 @@ pub fn show(
     if let (Some(a), Some(b)) = (state.pending, hover_world) {
         let accent = Stroke::new(1.5, Color32::from_rgb(230, 120, 30));
         match tool {
-            Tool::Wall | Tool::Section | Tool::Elevation => {
+            Tool::Wall | Tool::Section | Tool::Elevation | Tool::Grid => {
                 painter.line_segment([xf.to_screen(a), xf.to_screen(b)], accent);
                 let len = a.distance(b);
                 painter.text(
@@ -1190,6 +1197,22 @@ pub fn plan_tool(
                 doc.commit(Transaction::new("Add guide").insert(e))
             }
         },
+        Tool::Grid => match state.pending.take() {
+            None => {
+                state.pending = Some(p);
+                Ok(())
+            }
+            Some(a) if a.distance(p) > 0.1 => {
+                let e = creabim_core::grids::new_grid(doc.model(), state.grid_group, a, p);
+                state.status = Some(format!("Added {}. Click again for the next line.", e.name));
+                selection.only(e.id);
+                doc.commit(Transaction::new("Add grid line").insert(e))
+            }
+            Some(a) => {
+                state.pending = Some(a);
+                Ok(())
+            }
+        },
         Tool::Mass => {
             let e = Element::new(
                 "Mass",
@@ -1208,6 +1231,13 @@ pub fn plan_tool(
 /// The element a section or 3D view shows at drawing point `p`, found by
 /// casting the viewing ray through the model.
 fn ray_pick(doc: &Document, view: ElementId, kind: PaneKind, p: DVec2) -> Option<ElementId> {
+    // what the view leaves out can't be clicked in it, and isn't in the
+    // model its drawing was made from
+    let hidden = match doc.model().get(view).map(|e| &e.kind) {
+        Some(ElementKind::View(v)) => v.hidden.hidden_set(doc.model()),
+        _ => Default::default(),
+    };
+    let model = creabim_core::visibility::without(doc.model(), &hidden);
     let (o, d) = match kind {
         PaneKind::Plan { .. } | PaneKind::Schedule => return None,
         PaneKind::Section { start, end } => {
@@ -1219,14 +1249,15 @@ fn ray_pick(doc: &Document, view: ElementId, kind: PaneKind, p: DVec2) -> Option
             let Some(ElementKind::View(View {
                 kind: ViewKind::Axonometric { azimuth, altitude },
                 ..
-            })) = doc.model().get(view).map(|e| &e.kind)
+            })) = model.get(view).map(|e| &e.kind)
             else {
                 return None;
             };
-            creabim_geom::section::AxoFrame::new(doc.model(), *azimuth, *altitude).ray(p)
+            creabim_geom::section::AxoFrame::new(&model, *azimuth, *altitude).ray(p)
         }
     };
-    let scene = creabim_geom::build_scene(doc.model());
+    let mut scene = creabim_geom::build_scene(&model);
+    scene.retain(|s| !hidden.contains(&s.id));
     creabim_geom::pick::pick(&scene, o.as_vec3(), d.as_vec3()).map(|h| h.id)
 }
 
@@ -2087,8 +2118,9 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
             let blue = Color32::from_rgb(120, 140, 170);
             // short tags (grids, section marks) sit in a bubble; longer
             // labels such as level datums are plain text
-            if text.chars().count() <= 3 {
-                painter.circle(p, 10.0, Color32::WHITE, Stroke::new(1.0, blue));
+            if creabim_geom::plan::is_bubble(text) {
+                let r = 10.0 * creabim_geom::plan::bubble_scale(text) as f32;
+                painter.circle(p, r, Color32::WHITE, Stroke::new(1.0, blue));
             }
             painter.text(
                 p,

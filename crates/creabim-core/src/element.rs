@@ -1,5 +1,7 @@
 pub use crate::annotation::{DimensionKind, Note, TextStyle};
+pub use crate::grids::GridGroup;
 pub use crate::sketch::Sketch;
+use crate::visibility::ViewHidden;
 use crate::{
     editmesh::EditMesh,
     modifiers::{Evaluated, Modifier},
@@ -59,7 +61,7 @@ impl Element {
     /// leave any of these missing.
     pub fn references(&self) -> Vec<ElementId> {
         match &self.kind {
-            ElementKind::Level(_) | ElementKind::Grid(_) => vec![],
+            ElementKind::Level(_) | ElementKind::Grid(_) | ElementKind::GridGroup(_) => vec![],
             ElementKind::Wall(w) => vec![w.level],
             ElementKind::Slab(s) => vec![s.level],
             // a missing material falls back to the element type's default,
@@ -96,7 +98,7 @@ impl Element {
     pub fn ifc_class(&self) -> &str {
         match &self.kind {
             ElementKind::Level(_) => "IfcBuildingStorey",
-            ElementKind::Grid(_) => "IfcGrid",
+            ElementKind::Grid(_) | ElementKind::GridGroup(_) => "IfcGrid",
             ElementKind::Wall(_) => "IfcWall",
             ElementKind::Slab(_) => "IfcSlab",
             ElementKind::Opening(o) => match o.kind {
@@ -134,6 +136,13 @@ impl Element {
                     Ok(())
                 } else {
                     Err("grid line has zero length".into())
+                }
+            }
+            ElementKind::GridGroup(g) => {
+                if g.color.iter().all(|c| (0.0..=1.0).contains(c)) {
+                    Ok(())
+                } else {
+                    Err("grid group colour components must be within 0..1".into())
                 }
             }
             ElementKind::Wall(w) => {
@@ -271,6 +280,7 @@ pub enum ElementKind {
     TextStyle(TextStyle),
     Cut(Cut),
     Guide(Guide),
+    GridGroup(GridGroup),
 }
 
 impl ElementKind {
@@ -294,6 +304,7 @@ impl ElementKind {
             ElementKind::Guide(_) => "Guide",
             ElementKind::Note(_) => "Note",
             ElementKind::TextStyle(_) => "TextStyle",
+            ElementKind::GridGroup(_) => "GridGroup",
         }
     }
 }
@@ -492,9 +503,13 @@ pub struct Level {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Grid {
+    /// The label after its group's prefix (see [`crate::grids`]).
     pub label: String,
     pub start: DVec2,
     pub end: DVec2,
+    /// The grid system it belongs to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<ElementId>,
 }
 
 /// A straight wall defined by its centreline on a level.
@@ -816,6 +831,9 @@ pub struct View {
     pub scale: f64,
     #[serde(default)]
     pub style: ViewStyle,
+    /// Categories, elements and grid groups this view leaves out.
+    #[serde(default, skip_serializing_if = "ViewHidden::is_empty")]
+    pub hidden: ViewHidden,
 }
 
 /// How a section, elevation or 3D view draws what is beyond the cut.
@@ -887,6 +905,7 @@ impl View {
             },
             scale: 100.0,
             style: ViewStyle::HiddenLine,
+            hidden: ViewHidden::default(),
         }
     }
 
@@ -900,6 +919,7 @@ impl View {
             },
             scale: 100.0,
             style: ViewStyle::HiddenLine,
+            hidden: ViewHidden::default(),
         }
     }
 }
@@ -910,6 +930,7 @@ impl View {
             kind: ViewKind::Axonometric { azimuth, altitude },
             scale: 100.0,
             style: ViewStyle::Shaded,
+            hidden: ViewHidden::default(),
         }
     }
 
@@ -918,6 +939,7 @@ impl View {
             kind: ViewKind::Schedule { category },
             scale: 1000.0,
             style: ViewStyle::HiddenLine,
+            hidden: ViewHidden::default(),
         }
     }
 

@@ -10,6 +10,7 @@ pub mod csg;
 pub mod document;
 pub mod editmesh;
 pub mod element;
+pub mod grids;
 pub mod id;
 pub mod joins;
 pub mod marks;
@@ -21,6 +22,7 @@ pub mod sample;
 pub mod sketch;
 pub mod slab;
 pub mod transform;
+pub mod visibility;
 
 pub use annotation::{text_style, DimensionKind, Font, Note, TextStyle};
 pub use constraint::{Constraint, SolveError};
@@ -28,9 +30,9 @@ pub use csg::BoolOp;
 pub use document::{Document, Step, StepId};
 pub use editmesh::EditMesh;
 pub use element::{
-    Cut, Dimension, Element, ElementKind, FreeMesh, Grid, Guide, Hatch, HostPoint, Level, Material,
-    Opening, OpeningKind, ScheduleCategory, Sheet, Sketch, Slab, Source, Tag, View, ViewKind,
-    ViewStyle, Viewport, Wall, Workplane,
+    Cut, Dimension, Element, ElementKind, FreeMesh, Grid, GridGroup, Guide, Hatch, HostPoint,
+    Level, Material, Opening, OpeningKind, ScheduleCategory, Sheet, Sketch, Slab, Source, Tag,
+    View, ViewKind, ViewStyle, Viewport, Wall, Workplane,
 };
 pub use id::ElementId;
 pub use joins::{wall_joins, WallEnds};
@@ -41,6 +43,7 @@ pub use ops::{Op, Transaction};
 pub use sketch::{bulge_through, Circle, Curve, SegmentKind};
 pub use slab::{room_outline, slab_from_sketch};
 pub use transform::Xform;
+pub use visibility::{Category, ViewHidden};
 
 /// Errors raised when an edit would leave the model inconsistent.
 #[derive(Debug, thiserror::Error, PartialEq)]
