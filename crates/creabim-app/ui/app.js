@@ -96,7 +96,7 @@
     for (const t of S.tools) {
       if (group !== null && t.group !== group) tools += `<span class="vsep"></span>`;
       group = t.group;
-      tools += `<button class="tool ${t.active ? "on" : ""}" data-act="${esc(t.id)}" title="${esc(t.hint)}">${icon(t.icon)}<span>${esc(t.label)}</span></button>`;
+      tools += `<button class="tool ${t.active ? "on" : ""}" data-act="${esc(t.id)}" title="${esc(t.label + ": " + t.hint)}">${icon(t.icon)}<span>${esc(t.label)}</span></button>`;
     }
     root.innerHTML =
       `<div class="bar1"><div class="brand"><div class="logo">${icon("box")}</div>CreaBIM</div>${menus}<span class="vsep"></span>` +
@@ -139,9 +139,48 @@
       S.controls.map(control).join("") + `</div>`;
   }
 
+  // ---- the 3D view's navigation buttons ----
+
+  function drawNav() {
+    let html = `<div class="nav">`;
+    for (const b of S.buttons) {
+      if (!b) continue;
+      html += `<button class="ibtn ${b.on ? "on" : ""}" data-act="${esc(b.id)}" title="${esc(b.hint)}" ${b.off ? "disabled" : ""}>${icon(b.icon)}</button>`;
+    }
+    html += `<span class="qsep"></span><button class="dd ${S.popup === S.look.key ? "open" : ""}" data-popup="${esc(S.look.key)}" title="${esc(S.look.hint)}">${icon("axis-3d")}<span class="v">View</span>${icon("chevron-down", "chev")}</button></div>`;
+    root.innerHTML = html;
+  }
+
+  // ---- command palette ----
+
+  function drawPalette() {
+    if (local.key !== S.key) {
+      local.key = S.key;
+      local.query = "";
+      local.hot = 0;
+    }
+    const words = (local.query || "").toLowerCase().split(/\s+/).filter(Boolean);
+    const found = S.items.filter((i) => i.id && words.every((w) => i.label.toLowerCase().includes(w)));
+    local.found = found;
+    local.hot = Math.max(0, Math.min(local.hot || 0, found.length - 1));
+    let html = `<div class="palette"><label class="pq">${icon("search")}<input data-key="palette" data-live="1" placeholder="Type a command, a tool or a view" value="${esc(local.query || "")}"></label><div class="pl">`;
+    found.slice(0, 60).forEach((i, n) => {
+      html += `<button class="mi ${n === local.hot ? "hot" : ""}" data-act="${esc(i.id)}" data-n="${n}" title="${esc(i.hint)}"><span class="ck">${i.icon ? icon(i.icon) : ""}</span><span class="label">${esc(i.label)}</span>${i.key ? `<span class="key">${esc(i.key)}</span>` : ""}</button>`;
+    });
+    if (found.length === 0) html += `<div class="empty">Nothing matches.</div>`;
+    html += `</div><div class="pfoot"><span>↑↓ choose</span><span>Enter run</span><span>Esc close</span></div></div>`;
+    keepFocus(() => { root.innerHTML = html; });
+    const input = root.querySelector("input[data-key=palette]");
+    if (input && document.activeElement !== input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+    const hot = root.querySelector(".mi.hot");
+    if (hot) hot.scrollIntoView({ block: "nearest" });
+    post({ t: "size", w: window.innerWidth, h: Math.ceil(root.querySelector(".palette").scrollHeight) + 2 });
+  }
+
   // ---- popup menus ----
 
   function drawPopup() {
+    if (S.key === "palette" && S.items && S.items.length) return drawPalette();
     if (!S.items || S.items.length === 0) {
       root.innerHTML = "";
       local.stack = [];
@@ -167,7 +206,8 @@
       else if (i.header) html += `<div class="mhead">${esc(i.header)}</div>`;
       else if (i.items) html += `<button class="mi" data-sub="${esc(i.label)}" ${i.enabled ? "" : "disabled"}><span class="ck"></span><span class="label">${esc(i.label)}</span>${icon("chevron-right", "sub")}</button>`;
       else html += `<button class="mi" data-act="${esc(i.id)}" data-keep="${i.keep ? 1 : 0}" title="${esc(i.hint)}" ${i.enabled ? "" : "disabled"}>` +
-        `<span class="ck">${i.checked ? icon("check") : (i.icon ? icon(i.icon) : "")}</span><span class="label">${esc(i.label)}</span>${i.key ? `<span class="key">${esc(i.key)}</span>` : ""}</button>`;
+        `<span class="ck">${i.checked ? icon("check") : (i.icon && i.checked !== false ? icon(i.icon) : "")}</span>` +
+        (i.icon && i.checked != null ? `<span class="glyph">${icon(i.icon)}</span>` : "") + `<span class="label">${esc(i.label)}</span>${i.key ? `<span class="key">${esc(i.key)}</span>` : ""}</button>`;
     });
     html += `</div>`;
     root.innerHTML = html;
@@ -183,13 +223,38 @@
 
   // ---- drawing and events ----
 
-  const draw = { top: drawTop, left: drawLeft, status: drawStatus, popup: drawPopup }[pane];
+  const draw = { top: drawTop, left: drawLeft, status: drawStatus, popup: drawPopup, nav: drawNav }[pane];
+
+  // Keys typed in the views while the palette is open.
+  function paletteKey(k) {
+    const found = local.found || [];
+    if (k === "ArrowDown" || k === "ArrowUp") {
+      local.hot = (local.hot + (k === "ArrowDown" ? 1 : -1) + found.length) % Math.max(found.length, 1);
+    } else if (k === "Enter") {
+      const i = found[local.hot];
+      post(i ? { t: "act", id: i.id, keep: false } : { t: "close" });
+      return false;
+    } else if (k === "Escape") {
+      post({ t: "close" });
+      return false;
+    } else if (k === "Backspace") {
+      local.query = (local.query || "").slice(0, -1);
+      local.hot = 0;
+    }
+    return true;
+  }
 
   window.CB = {
     state(s) {
       S = s;
       if (s.theme) document.documentElement.dataset.theme = s.theme;
       keepFocus(draw);
+    },
+    feed(f) {
+      if (!S || S.key !== "palette") return;
+      if (f.text) { local.query = (local.query || "") + f.text; local.hot = 0; }
+      for (const k of f.keys) if (!paletteKey(k)) return;
+      drawPalette();
     },
   };
 
@@ -246,12 +311,16 @@
     if (t.dataset.key === "filter") {
       local.filter = t.value;
       drawLeft();
+    } else if (t.dataset.key === "palette") {
+      local.query = t.value;
+      local.hot = 0;
+      drawPalette();
     }
   });
 
   document.addEventListener("change", (e) => {
     const t = e.target;
-    if (t.dataset.key && t.dataset.key !== "filter") {
+    if (t.dataset.key && t.dataset.key !== "filter" && t.dataset.key !== "palette") {
       const v = parseFloat(t.value.replace(",", "."));
       if (!isNaN(v)) setNumber(t, v);
     }
@@ -259,6 +328,17 @@
 
   document.addEventListener("keydown", (e) => {
     const t = e.target;
+    if (t instanceof HTMLInputElement && t.dataset.key === "palette") {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        paletteKey(e.key);
+        drawPalette();
+      } else if (e.key === "Enter" || e.key === "Escape") {
+        paletteKey(e.key);
+        post({ t: "focus" });
+      }
+      return;
+    }
     if (t instanceof HTMLInputElement) {
       if (e.key === "Enter") { t.blur(); post({ t: "focus" }); }
       else if (e.key === "Escape") { t.value = t.defaultValue; t.blur(); post({ t: "focus" }); }

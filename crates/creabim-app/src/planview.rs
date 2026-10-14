@@ -2707,6 +2707,17 @@ pub fn hit_test(items: &[PlanItem], p: DVec2, tol: f64, mm: f64) -> Option<Eleme
             PlanItem::Arc {
                 id, center, radius, ..
             } if (p.distance(*center) - radius).abs() < tol => return Some(*id),
+            // view marks and grid ends: their arrow or their bubble
+            PlanItem::Polygon {
+                id,
+                pen: Pen::Symbol,
+                points,
+            } if point_in_polygon(p, points) => return Some(*id),
+            PlanItem::Label { id, at, text }
+                if text.chars().count() <= 3 && p.distance(*at) < tol * 1.2 =>
+            {
+                return Some(*id)
+            }
             _ => {}
         }
     }
