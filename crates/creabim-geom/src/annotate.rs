@@ -120,7 +120,7 @@ pub fn centre(model: &Model, id: ElementId) -> Option<DVec3> {
         }
         ElementKind::Slab(s) => {
             let c = s.boundary.iter().copied().sum::<DVec2>() / s.boundary.len().max(1) as f64;
-            c.extend(elevation(s.level) - s.thickness / 2.0)
+            c.extend(s.top(elevation(s.level)) - s.thickness / 2.0)
         }
         ElementKind::FreeMesh(m) => {
             let mesh = m.evaluated().mesh;

@@ -59,7 +59,7 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                     continue;
                 };
                 (
-                    slab_mesh(&s.boundary, level.elevation, s.thickness),
+                    slab_mesh(&s.outline(), s.top(level.elevation), s.thickness),
                     [0.70, 0.70, 0.72],
                 )
             }
@@ -307,6 +307,44 @@ mod tests {
         let mut cw = l.to_vec();
         cw.reverse();
         assert!((slab_mesh(&cw, 0.0, 0.25).volume() - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_slab_top_offset_lifts_its_mesh_and_arcs_round_it() {
+        let mut model = creabim_core::sample::sample_house();
+        let (id, elevation, t) = model
+            .iter()
+            .find_map(|e| match &e.kind {
+                ElementKind::Slab(s) => Some((e.id, model.level(s.level)?.elevation, s.thickness)),
+                _ => None,
+            })
+            .unwrap();
+        let mut e = model.get(id).unwrap().clone();
+        let ElementKind::Slab(s) = &mut e.kind else {
+            panic!()
+        };
+        // a 4 x 2 m slab whose far side is a half circle, its top 0.6 m up
+        s.boundary = vec![
+            DVec2::new(0.0, 0.0),
+            DVec2::new(4.0, 0.0),
+            DVec2::new(4.0, 2.0),
+            DVec2::new(0.0, 2.0),
+        ];
+        s.bulges = vec![0.0, 1.0, 0.0, 0.0];
+        s.top_offset = 0.6;
+        creabim_core::Transaction::new("edit")
+            .replace(model.get(id).unwrap().clone(), e)
+            .apply(&mut model)
+            .unwrap();
+        let scene = build_scene(&model);
+        let item = scene.iter().find(|i| i.id == id).unwrap();
+        let (lo, hi) = item.mesh.bounds().unwrap();
+        assert!((hi.z as f64 - (elevation + 0.6)).abs() < 1e-5);
+        assert!((lo.z as f64 - (elevation + 0.6 - t)).abs() < 1e-5);
+        // the arc bulges a metre past the straight side
+        assert!((hi.x - 5.0).abs() < 1e-4);
+        let area = 8.0 + std::f64::consts::PI / 2.0;
+        assert!((item.mesh.volume() - area * t).abs() < 0.01);
     }
 
     #[test]

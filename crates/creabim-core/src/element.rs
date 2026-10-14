@@ -2,6 +2,7 @@ pub use crate::sketch::Sketch;
 use crate::{
     editmesh::EditMesh,
     modifiers::{Evaluated, Modifier},
+    sketch::Curve,
     ElementId,
 };
 use glam::{DVec2, DVec3};
@@ -133,8 +134,12 @@ impl Element {
             }
             ElementKind::Slab(s) => {
                 positive(s.thickness, "slab thickness")?;
-                if s.boundary.len() < 3 {
-                    return Err("slab boundary needs at least 3 points".into());
+                if !s.top_offset.is_finite() || s.bulges.iter().any(|b| !b.is_finite()) {
+                    return Err("slab top offset and arcs must be finite".into());
+                }
+                let arcs = s.bulges.iter().any(|b| b.abs() > 1e-9);
+                if s.boundary.len() < 3 && !(arcs && s.boundary.len() == 2) {
+                    return Err("slab boundary needs at least 3 points, or 2 and an arc".into());
                 }
                 Ok(())
             }
@@ -430,15 +435,138 @@ impl Wall {
     }
 }
 
-/// A horizontal slab whose top face sits at its level's elevation.
+/// A horizontal slab: its outline pushed `thickness` down from its top
+/// face, which sits `top_offset` above its level's elevation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Slab {
     pub level: ElementId,
-    /// Outline in plan, counter-clockwise.
+    /// Corners of the outline in plan, counter-clockwise.
     pub boundary: Vec<DVec2>,
     pub thickness: f64,
     #[serde(default)]
     pub material: Option<ElementId>,
+    /// Height of the top face above the level; negative for below.
+    #[serde(default)]
+    pub top_offset: f64,
+    /// How each edge (corner `i` to corner `i + 1`, the last back to the
+    /// first) bends: a bulge as in sketches, 0 for straight. Edges past the
+    /// end of the list are straight, so older slabs have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bulges: Vec<f64>,
+}
+
+impl Slab {
+    /// A straight-edged slab with its top at its level.
+    pub fn new(level: ElementId, boundary: Vec<DVec2>, thickness: f64) -> Self {
+        Self {
+            level,
+            boundary,
+            thickness,
+            material: None,
+            top_offset: 0.0,
+            bulges: vec![],
+        }
+    }
+
+    /// The bulge of edge `i`; 0 for a straight one.
+    pub fn bulge(&self, i: usize) -> f64 {
+        self.bulges.get(i).copied().unwrap_or(0.0)
+    }
+
+    pub fn has_arcs(&self) -> bool {
+        self.bulges.iter().any(|b| b.abs() > 1e-9)
+    }
+
+    /// Edge `i`'s exact shape.
+    pub fn edge(&self, i: usize) -> Curve {
+        let n = self.boundary.len();
+        let (a, b) = (self.boundary[i % n], self.boundary[(i + 1) % n]);
+        Curve::arc(a, b, self.bulge(i))
+    }
+
+    /// The outline as a polygon, arcs in pieces of at most
+    /// [`crate::sketch::ARC_STEP`]. Without arcs it is `boundary`.
+    pub fn outline(&self) -> Vec<DVec2> {
+        if !self.has_arcs() {
+            return self.boundary.clone();
+        }
+        let mut out = Vec::new();
+        for i in 0..self.boundary.len() {
+            let pts = self.edge(i).points();
+            out.extend(&pts[..pts.len() - 1]);
+        }
+        out
+    }
+
+    /// Plan area of the outline, arcs included.
+    pub fn area(&self) -> f64 {
+        crate::polygon::signed_area2(&self.outline()).abs() / 2.0
+    }
+
+    /// Height of the top face, given the level's elevation.
+    pub fn top(&self, elevation: f64) -> f64 {
+        elevation + self.top_offset
+    }
+
+    /// Change the thickness, keeping the top face where it is, or with
+    /// `keep_bottom` the underside (the top moves instead).
+    pub fn set_thickness(&mut self, thickness: f64, keep_bottom: bool) {
+        if keep_bottom {
+            self.top_offset += thickness - self.thickness;
+        }
+        self.thickness = thickness;
+    }
+
+    /// Run the outline the other way round, arcs and all.
+    pub fn reverse(&mut self) {
+        let n = self.boundary.len();
+        if self.has_arcs() {
+            // edge j of the reversed outline is edge n - 2 - j run backwards
+            self.bulges = (0..n).map(|j| -self.bulge((2 * n - 2 - j) % n)).collect();
+        }
+        self.boundary.reverse();
+    }
+
+    /// Make the outline counter-clockwise, as slabs keep it.
+    pub fn make_ccw(&mut self) {
+        if crate::polygon::signed_area2(&self.outline()) < 0.0 {
+            self.reverse();
+        }
+    }
+
+    /// Add a corner in the middle of edge `i` (on the arc, for an arc).
+    pub fn split_edge(&mut self, i: usize) {
+        let n = self.boundary.len();
+        if i >= n {
+            return;
+        }
+        let mid = self.edge(i).at(0.5);
+        let b = self.bulge(i);
+        self.boundary.insert(i + 1, mid);
+        if self.has_arcs() {
+            self.bulges.resize(n, 0.0);
+            // each half turns through half the angle
+            let half = (b.atan() / 2.0).tan();
+            self.bulges[i] = half;
+            self.bulges.insert(i + 1, half);
+        }
+    }
+
+    /// Take corner `i` away; the edges either side of it become one
+    /// straight edge.
+    pub fn remove_corner(&mut self, i: usize) {
+        let n = self.boundary.len();
+        if i >= n {
+            return;
+        }
+        self.boundary.remove(i);
+        if self.has_arcs() {
+            self.bulges.resize(n, 0.0);
+            self.bulges.remove(i);
+            let before = (i + n - 2) % (n - 1);
+            self.bulges[before] = 0.0;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

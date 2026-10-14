@@ -1426,6 +1426,14 @@ impl CreaBimApp {
             self.camera.orbit(GVec2::new(d.x, d.y));
         }
 
+        let slab_outline = self.plan.outline.as_ref().is_some_and(|o| !o.is_wall());
+        if self.plan.tool == Tool::Slab || slab_outline {
+            let modes = self.plan.tool == Tool::Slab;
+            let (doc, plan, sel) = (&mut self.doc, &mut self.plan, &mut self.selection);
+            if let Some(msg) = crate::slabtool::controls(ui, rect, None, modes, doc, plan, sel) {
+                self.status = msg;
+            }
+        }
         if self.plan.outline.is_some() {
             self.outline_3d(ui, &response, &painter, &project, &ray);
             return;
@@ -1729,6 +1737,12 @@ impl CreaBimApp {
         };
         let accent = Color32::from_rgb(230, 120, 30);
         let stroke = egui::Stroke::new(2.0, accent);
+        // a right-click with nothing drawn leaves the Slab tool
+        if tool == Tool::Slab && response.secondary_clicked() && self.pending_3d.is_none() {
+            self.plan.tool = Tool::Select;
+            self.status = "Left the Slab tool.".into();
+            return;
+        }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) || response.secondary_clicked() {
             self.pending_3d = None;
         }
@@ -1890,13 +1904,14 @@ impl CreaBimApp {
             } else {
                 self.status = match (tool, self.pending_3d) {
                     (Tool::Wall, Some(_)) => format!("Drawing walls on {level_name}. Click the next corner; Esc or right-click ends."),
-                    (Tool::Slab | Tool::Section | Tool::Elevation, Some(_)) => "Click the second corner.".into(),
+                    (Tool::Slab, _) => self.plan.status.take().unwrap_or_default(),
+                    (Tool::Section | Tool::Elevation, Some(_)) => "Click the second corner.".into(),
                     (Tool::Guide, Some(_)) if self.plan.guide_edge.is_some() => "Click where the parallel guide goes.".into(),
                     (Tool::Guide, Some(_)) => "Click a second point the guide runs through.".into(),
                     _ => format!("Added on {level_name}."),
                 };
             }
-        } else if from.is_none() && response.hovered() {
+        } else if from.is_none() && response.hovered() && tool != Tool::Slab {
             self.status = format!(
                 "{} on {level_name} (the open plan's level). {}",
                 tool.label(),
@@ -1905,7 +1920,8 @@ impl CreaBimApp {
         }
     }
 
-    /// Redrawing a slab or wall in the 3D view, on its level, with snaps.
+    /// Drawing a slab, or redrawing a slab or wall, in the 3D view, on its
+    /// level, with snaps.
     fn outline_3d(
         &mut self,
         ui: &egui::Ui,
@@ -1917,18 +1933,15 @@ impl CreaBimApp {
         let Some(outline) = self.plan.outline.clone() else {
             return;
         };
-        let (enter, escape) = ui.input(|i| {
+        let here = response.hovered();
+        let (enter, escape, shift) = ui.input(|i| {
             (
-                i.key_pressed(egui::Key::Enter),
-                i.key_pressed(egui::Key::Escape),
+                here && i.key_pressed(egui::Key::Enter),
+                here && i.key_pressed(egui::Key::Escape),
+                i.modifiers.shift,
             )
         });
-        if escape {
-            self.plan.outline = None;
-            self.status = "Redraw cancelled.".into();
-            return;
-        }
-        let exclude = [outline.target];
+        let exclude: Vec<ElementId> = outline.target.into_iter().collect();
         self.refresh_snaps_3d(&exclude);
         let hover = response.hover_pos().and_then(|h| {
             let (o, d) = ray(h);
@@ -1944,25 +1957,35 @@ impl CreaBimApp {
             Some((h, s.p.truncate()))
         });
         outline.draw(painter, project, hover.map(|h| h.1));
-        let finish = enter || (response.secondary_clicked() && !outline.points.is_empty());
-        let mut closed = false;
-        if response.clicked() {
-            if let Some((h, p)) = hover {
-                let near = outline.near_first(h, project);
-                let o = self.plan.outline.as_mut().expect("checked");
-                closed = o.click(p, near);
+        let click = match (response.clicked(), hover) {
+            (true, Some((h, p))) => Some((p, outline.near_first(h, project))),
+            _ => None,
+        };
+        let right = response.secondary_clicked() && !shift;
+        let arc = self.plan.slab_arc;
+        let Some(o) = self.plan.outline.as_mut() else {
+            return;
+        };
+        match o.input(enter, escape, right, click, arc) {
+            crate::outline::Next::Drawing(hint) => self.status = hint,
+            crate::outline::Next::Cancel(msg) => {
+                self.plan.outline = None;
+                self.status = msg.into();
             }
-        }
-        if finish || closed {
-            if let Some(o) = self.plan.outline.take() {
-                let r = o.finish(&mut self.doc, closed);
-                match r {
-                    Ok(msg) => self.status = msg,
-                    Err(e) => self.status = format!("Couldn't redraw: {e}"),
+            crate::outline::Next::Finish(closed) => {
+                if let Some(o) = self.plan.outline.take() {
+                    match o.finish(&mut self.doc, closed) {
+                        Ok((msg, made)) => {
+                            if let Some(id) = made {
+                                self.selection.only(id);
+                                self.face = None;
+                            }
+                            self.status = msg;
+                        }
+                        Err(e) => self.status = format!("Couldn't draw that: {e}"),
+                    }
                 }
             }
-        } else {
-            self.status = outline.hint().into();
         }
     }
 
@@ -3135,13 +3158,44 @@ impl CreaBimApp {
                 }
             }
             ElementKind::Slab(s) => {
-                if num(ui, "Thickness", &mut s.thickness, 0.02, 3.0) {
+                let mut thickness = s.thickness;
+                if num(ui, "Thickness", &mut thickness, 0.02, 3.0) {
+                    s.set_thickness(thickness, self.plan.slab_keep_bottom);
                     label = "Slab thickness"
                 }
+                let keep = &mut self.plan.slab_keep_bottom;
+                ui.horizontal(|ui| {
+                    ui.label("Keep");
+                    ui.selectable_value(keep, false, "Top")
+                        .on_hover_text("A new thickness moves the underside; the top stays put.");
+                    ui.selectable_value(keep, true, "Bottom")
+                        .on_hover_text("A new thickness moves the top; the underside stays put.");
+                });
+                if num(ui, "Top offset", &mut s.top_offset, -100.0, 100.0) {
+                    label = "Slab top offset"
+                }
+                let level = self.doc.model().level(s.level).map_or(0.0, |l| l.elevation);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Top at {:.3} m, underside at {:.3} m. The top handle moves the top, the underside handle the underside.",
+                        s.top(level),
+                        s.top(level) - s.thickness
+                    ))
+                    .weak(),
+                );
                 if self.material_combo(ui, &mut s.material) {
                     label = "Slab material"
                 }
-                ui.label(format!("{} boundary points", s.boundary.len()));
+                let arcs = s.bulges.iter().filter(|b| b.abs() > 1e-9).count();
+                ui.label(match arcs {
+                    0 => format!("{} corners, {:.2} m²", s.boundary.len(), s.area()),
+                    n => format!(
+                        "{} corners, {n} arc{}, {:.2} m²",
+                        s.boundary.len(),
+                        if n == 1 { "" } else { "s" },
+                        s.area()
+                    ),
+                });
                 if ui
                     .button("Redraw outline")
                     .on_hover_text("Click a new outline for this slab, in a plan or the 3D view.")
@@ -3744,7 +3798,7 @@ impl CreaBimApp {
             self.plan.tool = Tool::Select;
             self.plan.outline = crate::outline::Outline::start(self.doc.model(), id);
             if let Some(o) = &self.plan.outline {
-                self.status = o.hint().into();
+                self.status = o.hint();
             }
         }
 

@@ -18,6 +18,7 @@ pub mod ops;
 pub mod polygon;
 pub mod sample;
 pub mod sketch;
+pub mod slab;
 pub mod transform;
 
 pub use constraint::{Constraint, SolveError};
@@ -36,6 +37,7 @@ pub use model::Model;
 pub use modifiers::{Axis, Modifier, ModifierKind};
 pub use ops::{Op, Transaction};
 pub use sketch::{bulge_through, Circle, Curve, SegmentKind};
+pub use slab::{room_outline, slab_from_sketch};
 pub use transform::Xform;
 
 /// Errors raised when an edit would leave the model inconsistent.

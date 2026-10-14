@@ -728,12 +728,15 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                 }
             }
             ElementKind::Slab(s) if s.level == level => {
+                // cut when the plan plane passes through it, else seen below
+                let bottom = s.top_offset - s.thickness;
+                let cut = bottom < cut_height && cut_height < s.top_offset;
                 items.insert(
                     0,
                     PlanItem::Polygon {
                         id: e.id,
-                        pen: Pen::Projection,
-                        points: s.boundary.clone(),
+                        pen: if cut { Pen::Cut } else { Pen::Projection },
+                        points: s.outline(),
                     },
                 );
             }
