@@ -570,6 +570,20 @@ pub fn interact(
         }
     }
 
+    // a click on a handle keeps the selection (it may be the first half of
+    // a double-click), rather than picking what lies under it
+    if drag.is_none() && response.clicked() {
+        if let Some(p) = response.interact_pointer_pos() {
+            let on_handle = shown
+                .iter()
+                .filter_map(|h| (input.project)(h.at))
+                .any(|c| c.distance(p) < 10.0);
+            if on_handle {
+                return true;
+            }
+        }
+    }
+
     if drag.is_none() && response.drag_started_by(egui::PointerButton::Primary) {
         let Some(press) = painter
             .ctx()

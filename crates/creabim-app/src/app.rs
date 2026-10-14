@@ -701,7 +701,9 @@ impl CreaBimApp {
             return;
         }
         let n = ids.len();
-        self.hidden.extend(ids);
+        // a wall's doors and windows go with it
+        let with = creabim_core::transform::copy_set(self.doc.model(), &ids);
+        self.hidden.extend(with);
         self.hidden_rev += 1;
         self.selection.clear();
         self.face = None;
