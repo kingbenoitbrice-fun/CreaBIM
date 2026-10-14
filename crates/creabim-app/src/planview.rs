@@ -204,7 +204,11 @@ pub struct PlanState {
     /// the model point the menu was opened at.
     pub commands: Vec<(Command, Option<DVec3>)>,
     /// Where the right-click menu was opened, in the model.
-    menu_at: Option<DVec3>,
+    pub menu_at: Option<DVec3>,
+    /// Menus are drawn by the web interface: a right-click asks for one at
+    /// this point on screen instead of opening egui's.
+    pub web_menus: bool,
+    pub menu_request: Option<egui::Pos2>,
     /// Which snaps are on, in every pane and the 3D view.
     pub snap: snaps::SnapSettings,
 }
@@ -236,6 +240,8 @@ impl Default for PlanState {
             armed: None,
             commands: vec![],
             menu_at: None,
+            web_menus: false,
+            menu_request: None,
             snap: snaps::SnapSettings::default(),
         }
     }
@@ -865,7 +871,8 @@ pub fn show(
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !ui.ctx().egui_wants_keyboard_input() {
         state.step_back();
     }
-    if right && !state.step_back() && tool == Tool::Select {
+    let menu = right && !state.step_back() && tool == Tool::Select;
+    if menu {
         // right-click on something not yet selected selects it first
         if let Some(p) = response.interact_pointer_pos() {
             let raw = xf.to_world(p);
@@ -882,7 +889,11 @@ pub fn show(
             state.menu_at = space.map(|space| pane_to_model(space, w, level_z));
         }
     }
-    if tool == Tool::Select && state.modal.is_none() {
+    if tool == Tool::Select && state.modal.is_none() && state.web_menus {
+        if menu {
+            state.menu_request = response.interact_pointer_pos();
+        }
+    } else if tool == Tool::Select && state.modal.is_none() {
         let n = selection.len();
         let at = state.menu_at;
         response.context_menu(|ui| {
