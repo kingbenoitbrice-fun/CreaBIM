@@ -299,7 +299,7 @@ pub fn click(
 ) -> Result<String, ModelError> {
     let model = doc.model();
     let (hp, p, snapped) = match hit {
-        Some((hp, p, k)) => (hp, p, k.is_some_and(|k| k != SnapKind::Grid)),
+        Some((hp, p, k)) => (hp, p, k.is_some_and(|k| k.is_point())),
         None => (HostPoint::free(raw), raw, false),
     };
     if let Some(ready) = d.ready.take() {
@@ -797,8 +797,18 @@ pub fn sheet_input(
     let zoom = xf.scale;
     for it in &items {
         if let PlanItem::Annotation { id, item } = it {
-            if selection.contains(*id) {
-                paint(painter, xf, item, ACCENT, 1.0);
+            // the sheet draws the note itself; a selected one gets a frame
+            let pts = item.extent();
+            if let (true, Some(first)) = (selection.contains(*id), pts.first()) {
+                let (lo, hi) = pts
+                    .iter()
+                    .fold((*first, *first), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+                painter.rect_stroke(
+                    egui::Rect::from_two_pos(xf.to_screen(lo), xf.to_screen(hi)).expand(3.0),
+                    2.0,
+                    Stroke::new(1.5, ACCENT),
+                    egui::StrokeKind::Outside,
+                );
             }
         }
     }
@@ -1015,6 +1025,49 @@ pub fn style_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
     label
 }
 
+/// The text style a dimension, tag or note refers to.
+pub fn style_of(kind: &ElementKind) -> Option<ElementId> {
+    match kind {
+        ElementKind::Dimension(d) => d.style,
+        ElementKind::Tag(t) => t.style,
+        ElementKind::Note(n) => n.style,
+        _ => None,
+    }
+}
+
+/// The style an annotation uses, editable in place under its picker, so a
+/// change shows at once on everything using it. `open` unfolds it (for a
+/// style just made). Returns a status message after an edit.
+pub fn style_inline(
+    ui: &mut egui::Ui,
+    doc: &mut Document,
+    kind: &ElementKind,
+    open: bool,
+) -> Option<String> {
+    let id = style_of(kind)?;
+    let e = doc.model().get(id)?;
+    let ElementKind::TextStyle(mut s) = e.kind else {
+        return None;
+    };
+    let users = style_users(doc.model(), id);
+    let mut label = None;
+    egui::CollapsingHeader::new(format!("Edit \u{201c}{}\u{201d}", e.name))
+        .id_salt(("style", id))
+        .open(open.then_some(true))
+        .show(ui, |ui| {
+            label = style_ui(ui, &mut s);
+            ui.label(
+                egui::RichText::new(format!("Changes every one of its {users} users.")).weak(),
+            );
+        });
+    let label = label?;
+    let r = doc.edit_merged(id, label, |e| e.kind = ElementKind::TextStyle(s));
+    Some(match r {
+        Ok(()) => format!("{label}."),
+        Err(e) => format!("Couldn't do that: {e}"),
+    })
+}
+
 /// How many dimensions, tags and notes use a style.
 pub fn style_users(model: &Model, id: ElementId) -> usize {
     model
@@ -1185,7 +1238,10 @@ mod tests {
         let (mut d, mut sel) = (Draft::default(), Selection::default());
         let before = ids(&doc);
         let mut go = |doc: &mut Document, tool: Tool, at: DVec2, items: &[PlanItem]| {
-            click(doc, vid, &view, tool, None, at, items, 0.1, &mut d, &mut sel).unwrap();
+            click(
+                doc, vid, &view, tool, None, at, items, 0.1, &mut d, &mut sel,
+            )
+            .unwrap();
         };
         go(&mut doc, Tool::Radius, DVec2::new(5.0, 7.03), &items);
         go(&mut doc, Tool::Radius, DVec2::new(8.0, 5.0), &items);

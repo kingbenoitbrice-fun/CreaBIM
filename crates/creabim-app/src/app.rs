@@ -3184,7 +3184,10 @@ impl CreaBimApp {
                         })
                     })
                     .unwrap_or_else(|| "-".into());
-                let unit = if d.kind == creabim_core::DimensionKind::Angular {
+                let unit = if !matches!(
+                    d.kind,
+                    creabim_core::DimensionKind::Linear | creabim_core::DimensionKind::ArcLength
+                ) {
                     ""
                 } else {
                     " mm"
@@ -3605,9 +3608,11 @@ impl CreaBimApp {
             self.report(r, format!("{label}."));
         }
         if new_style {
-            self.status =
-                "New text style. Select it in the model list to set its font, size and colour."
-                    .into();
+            self.status = "New text style: set its font, size and colour below.".into();
+        }
+        if let Some(msg) = crate::annotate::style_inline(ui, &mut self.doc, &edited.kind, new_style)
+        {
+            self.status = msg;
         }
         if extrude_sketch {
             self.extrude_sketch();
