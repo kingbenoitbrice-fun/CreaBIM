@@ -199,7 +199,11 @@ impl Element {
                 }
             }
             ElementKind::Dimension(d) => {
-                if d.offset.is_finite() && d.a.local.is_finite() && d.b.local.is_finite() {
+                if d.offset.is_finite()
+                    && [d.a, d.b]
+                        .iter()
+                        .all(|p| p.local.is_finite() && p.body.is_none_or(|b| b.is_finite()))
+                {
                     Ok(())
                 } else {
                     Err("dimension points must be finite".into())
@@ -332,6 +336,10 @@ pub struct Material {
 /// - door or window: (distance from its left edge, offset across the wall);
 /// - level: (drawing x, height above the level).
 ///
+/// Any other host (a mass, slab, grid, sketch or guide, or a wall seen in a
+/// section) keeps the point in `body` instead, in the host's own 3D axes,
+/// so it follows the host when it moves or turns.
+///
 /// Without a host, `local` is a point in the view's drawing.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HostPoint {
@@ -339,6 +347,8 @@ pub struct HostPoint {
     pub local: DVec2,
     #[serde(default)]
     pub from_end: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<DVec3>,
 }
 
 impl HostPoint {
@@ -347,6 +357,7 @@ impl HostPoint {
             host: None,
             local: p,
             from_end: false,
+            body: None,
         }
     }
 }
@@ -785,3 +796,26 @@ pub const FREE_MESH_CLASSES: &[&str] = &[
     "IfcCovering",
     "IfcFurniture",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dimension_points_from_older_files_still_read() {
+        let old: HostPoint =
+            serde_json::from_str(r#"{"host":null,"local":[1.0,2.0],"from_end":false}"#).unwrap();
+        assert_eq!(old, HostPoint::free(DVec2::new(1.0, 2.0)));
+        // a point on a body round-trips, a free point writes no body
+        let on = HostPoint {
+            host: Some(ElementId::new()),
+            local: DVec2::ZERO,
+            from_end: false,
+            body: Some(DVec3::new(1.0, -1.0, 3.0)),
+        };
+        let text = serde_json::to_string(&on).unwrap();
+        assert_eq!(serde_json::from_str::<HostPoint>(&text).unwrap(), on);
+        let free = serde_json::to_string(&HostPoint::free(DVec2::ONE)).unwrap();
+        assert!(!free.contains("body"));
+    }
+}

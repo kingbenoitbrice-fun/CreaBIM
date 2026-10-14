@@ -7,7 +7,7 @@ use crate::handles::{self, PaneInput};
 use crate::modal::{self, Modal, Mode, Outcome, PaneMap, Space};
 use crate::selection::Selection;
 use crate::sketch::{level_below, Click, SketchDraft};
-use crate::snaps::{self, Snapper};
+use crate::snaps::{self, SnapKind, Snapper};
 use creabim_core::Workplane;
 use creabim_core::{
     Dimension, Document, EditMesh, Element, ElementId, ElementKind, FreeMesh, HostPoint, Opening,
@@ -186,6 +186,8 @@ pub struct PlanState {
     pub pivot: modal::Pivot,
     /// The pivot cursor, placed with Shift+right-click.
     pub cursor: Option<DVec3>,
+    /// Which snaps are on, in every pane and the 3D view.
+    pub snap: snaps::SnapSettings,
 }
 
 impl Default for PlanState {
@@ -209,6 +211,7 @@ impl Default for PlanState {
             boxsel: None,
             pivot: modal::Pivot::default(),
             cursor: None,
+            snap: snaps::SnapSettings::default(),
         }
     }
 }
@@ -344,7 +347,9 @@ pub fn show(
     }
     crate::sketch::draw_marks_in_pane(&painter, doc.model(), selection.active, kind, &xf);
 
-    let shift = ui.input(|i| i.modifiers.shift);
+    let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+    // holding Alt picks free of snaps
+    let snap_cfg = state.snap.live(alt);
     // snaps: the selection and what joins it are left out while selecting,
     // since dragging them must not snap to themselves
     let exclude = match tool {
@@ -358,17 +363,45 @@ pub fn show(
         refresh_snaps(state, view, doc.model().revision(), plan, &exclude);
     }
     let pane_project = |p: DVec3| Some(xf.to_screen(p.truncate()));
+    // a line starts from the tool's first click, or the sketch's last corner
+    let sketch_last = state
+        .sketch
+        .as_ref()
+        .filter(|d| d.pane == Some(view))
+        .and_then(|d| Some(d.plane.to_model(*d.points.last()?)));
+    let from_pane = |m: DVec3| match kind {
+        PaneKind::Section { start, end } => model_to_pane(Space::Section { start, end }, m),
+        _ => m.truncate(),
+    };
     let tool_snap = response.hover_pos().and_then(|p| {
         let snapper = &state.snaps.get(&view)?.2;
-        let from = state.pending.map(|a| a.extend(0.0));
-        let s = snapper.snap(p, &pane_project, from, Some(xf.to_world(p).extend(0.0)))?;
+        let from = state
+            .pending
+            .or(sketch_last.map(from_pane))
+            .map(|a| a.extend(0.0));
+        let s = snapper.snap(
+            &snap_cfg,
+            p,
+            &pane_project,
+            from,
+            Some(xf.to_world(p).extend(0.0)),
+        )?;
         Some(s)
     });
     let hover_world = response.hover_pos().map(|p| match kind {
-        PaneKind::Plan { .. } if !shift => tool_snap.map_or(xf.to_world(p), |s| s.p.truncate()),
-        PaneKind::Plan { level } => {
-            snap(doc, level, &xf, xf.to_world(p), state.pending, shift, &[])
+        PaneKind::Plan { .. } | PaneKind::Section { .. } if !shift => {
+            tool_snap.map_or(xf.to_world(p), |s| s.p.truncate())
         }
+        PaneKind::Plan { level } => snap(
+            doc,
+            level,
+            &xf,
+            xf.to_world(p),
+            state.pending,
+            shift,
+            &[],
+            &snap_cfg,
+        ),
         PaneKind::Axonometric | PaneKind::Schedule => xf.to_world(p),
         PaneKind::Section { .. } => {
             let mut p = xf.to_world(p);
@@ -380,7 +413,11 @@ pub fn show(
                     DVec2::new(a.x, p.y)
                 };
             }
-            (p / 0.05).round() * 0.05
+            if snap_cfg.allows(SnapKind::Grid) {
+                (p / 0.05).round() * 0.05
+            } else {
+                p
+            }
         }
     });
 
@@ -460,8 +497,12 @@ pub fn show(
                 _ => 0.0,
             };
             let hover = hover_world.map(|w| pane_to_model(space, w, level_z));
+            // a point snapped to something, or with increments off, is kept as is
+            let exact = !snap_cfg.allows(SnapKind::Grid)
+                || (!shift && tool_snap.is_some_and(|s| s.kind != SnapKind::Grid));
             if let Some(r) = sketch_tool(
                 ui, doc, view, space, &xf, &painter, &response, state, selection, hover, shift,
+                exact,
             ) {
                 return r;
             }
@@ -489,10 +530,10 @@ pub fn show(
                 let to_pane = |p: DVec3| model_to_pane(space, p).extend(0.0);
                 let pane_project = |p: DVec3| Some(xf.to_screen(p.truncate()));
                 let free = Some(xf.to_world(pos).extend(0.0));
-                let s = snapper.snap(pos, &pane_project, from.map(to_pane), free)?;
+                let s = snapper.snap(&snap_cfg, pos, &pane_project, from.map(to_pane), free)?;
                 let z = from.map_or(level_z, |f| f.z);
                 let p = pane_to_model(space, s.p.truncate(), z);
-                Some((p, snaps::Snap { p, kind: s.kind }))
+                Some((p, snaps::Snap { p, ..s }))
             };
             let grab_body = |pos: Pos2, id: ElementId| {
                 let w = xf.to_world(pos);
@@ -581,16 +622,32 @@ pub fn show(
         Some(ElementKind::View(v)) => Some(v.clone()),
         _ => None,
     };
-    let dim_hover = match (tool, &view_def, response.hover_pos()) {
+    let dim_snapper = state.snaps.get(&view).map(|s| &s.2);
+    let dim_hit = match (tool, &view_def, response.hover_pos()) {
         (Tool::Dimension, Some(v), Some(p)) => {
-            Some(dim_snap(doc, v, kind, plan, &xf, xf.to_world(p)))
+            Some(dim_snap(doc, v, kind, dim_snapper, &snap_cfg, &xf, p))
         }
         _ => None,
     };
     let accent = Color32::from_rgb(230, 120, 30);
-    if let Some((_, at)) = dim_hover {
-        painter.circle_stroke(xf.to_screen(at), 5.0, Stroke::new(1.5, accent));
+    if let Some((_, at, k)) = dim_hit {
+        let c = xf.to_screen(at);
+        match k {
+            Some(k) if k != SnapKind::Grid => {
+                let from = state.dim.first().map(|d| xf.to_screen(d.1));
+                let s = snaps::Snap {
+                    p: at.extend(0.0),
+                    kind: k,
+                    host: None,
+                };
+                snaps::draw(&painter, s, c, from);
+            }
+            _ => {
+                painter.circle_stroke(c, 5.0, Stroke::new(1.5, accent));
+            }
+        }
     }
+    let dim_hover = dim_hit.map(|(h, at, _)| (h, at));
     match (state.dim.as_slice(), dim_hover, response.hover_pos()) {
         ([(_, a)], Some((_, b)), _) if a.distance(b) > 1e-6 => {
             preview_dimension(&painter, &xf, *a, b, 0.0, mm, accent);
@@ -676,12 +733,14 @@ pub fn show(
             _ => {}
         }
     }
-    if let (Some(s), PaneKind::Plan { .. }, false) = (tool_snap, kind, shift) {
-        if !matches!(
-            tool,
-            Tool::Select | Tool::Dimension | Tool::Tag | Tool::Sketch
-        ) {
-            let from = state.pending.map(|a| xf.to_screen(a));
+    if let (Some(s), PaneKind::Plan { .. } | PaneKind::Section { .. }, false) =
+        (tool_snap, kind, shift)
+    {
+        if !matches!(tool, Tool::Select | Tool::Dimension | Tool::Tag) {
+            let from = state
+                .pending
+                .or(sketch_last.map(from_pane))
+                .map(|a| xf.to_screen(a));
             snaps::draw(&painter, s, xf.to_screen(s.p.truncate()), from);
         }
     }
@@ -1411,6 +1470,7 @@ fn sketch_tool(
     selection: &mut Selection,
     hover: Option<DVec3>,
     shift: bool,
+    exact: bool,
 ) -> Option<Option<String>> {
     let project = |p: DVec3| Some(xf.to_screen(model_to_pane(space, p)));
     // a sketch being drawn in another pane is left alone
@@ -1421,7 +1481,7 @@ fn sketch_tool(
     }
     let tol = 10.0 / xf.scale as f64;
     let on_plane = match (&state.sketch, hover) {
-        (Some(d), Some(m)) if mine => Some(d.snap(d.plane.to_plane(m), tol, shift)),
+        (Some(d), Some(m)) if mine => Some(d.snap(d.plane.to_plane(m), tol, shift, !exact)),
         _ => None,
     };
     if let (Some(d), true) = (&state.sketch, mine) {
@@ -1940,80 +2000,72 @@ fn preview_dimension(
     draw_dimension(painter, xf, a, b, offset, &text, mm, accent);
 }
 
-/// The point a dimension click lands on, and what it attaches to: a wall
-/// corner, a door or window edge, or a level; otherwise a free point.
+/// The point a dimension click lands on, what it attaches to, and the snap
+/// that found it. Wall corners and door or window edges come first, since
+/// those keep the most useful attachment; then any snap in the pane's
+/// drawing: corners, edges and centres of masses, slabs, columns, beams,
+/// sketches, and grid and level lines. A point on an element follows it.
 fn dim_snap(
     doc: &Document,
     view: &View,
     kind: PaneKind,
-    drawing: &Drawing,
+    snapper: Option<&Snapper>,
+    cfg: &snaps::SnapSettings,
     xf: &Xf,
-    p: DVec2,
-) -> (HostPoint, DVec2) {
+    cursor: Pos2,
+) -> (HostPoint, DVec2, Option<SnapKind>) {
     let model = doc.model();
+    let p = xf.to_world(cursor);
     let tol = 10.0 / xf.scale as f64;
-    let mut best: Option<(f64, Option<ElementId>, DVec2)> = None;
-    let mut consider = |host: Option<ElementId>, q: DVec2| {
+    let mut best: Option<(f64, ElementId, DVec2)> = None;
+    let mut consider = |host: ElementId, q: DVec2| {
         let d = q.distance(p);
         if d < tol && best.is_none_or(|(bd, ..)| d < bd) {
             best = Some((d, host, q));
         }
     };
-    match kind {
-        PaneKind::Plan { level } => {
-            let joins = creabim_core::wall_joins(model);
-            for e in model.iter() {
-                let ElementKind::Wall(w) = &e.kind else {
+    if let (PaneKind::Plan { level }, true) = (kind, cfg.allows(SnapKind::Endpoint)) {
+        let joins = creabim_core::wall_joins(model);
+        for e in model.iter() {
+            let ElementKind::Wall(w) = &e.kind else {
+                continue;
+            };
+            if w.level != level {
+                continue;
+            }
+            let ends = joins.get(&e.id).copied().unwrap_or_default();
+            for q in ends.footprint(w) {
+                consider(e.id, q);
+            }
+            for q in [w.start, w.end] {
+                consider(e.id, q);
+            }
+            let (d, n, t) = (w.direction(), w.direction().perp(), w.thickness / 2.0);
+            for oid in model.dependents(e.id) {
+                let Some(ElementKind::Opening(o)) = model.get(oid).map(|e| &e.kind) else {
                     continue;
                 };
-                if w.level != level {
-                    continue;
-                }
-                let ends = joins.get(&e.id).copied().unwrap_or_default();
-                for q in ends.footprint(w) {
-                    consider(Some(e.id), q);
-                }
-                for q in [w.start, w.end] {
-                    consider(Some(e.id), q);
-                }
-                let (d, n, t) = (w.direction(), w.direction().perp(), w.thickness / 2.0);
-                for oid in model.dependents(e.id) {
-                    let Some(ElementKind::Opening(o)) = model.get(oid).map(|e| &e.kind) else {
-                        continue;
-                    };
-                    for u in [o.offset, o.offset + o.width] {
-                        for s in [-t, t] {
-                            consider(Some(oid), w.start + d * u + n * s);
-                        }
+                for u in [o.offset, o.offset + o.width] {
+                    for s in [-t, t] {
+                        consider(oid, w.start + d * u + n * s);
                     }
                 }
             }
         }
-        PaneKind::Section { .. } => {
-            for (e, l) in model.levels() {
-                if (p.y - l.elevation).abs() < tol {
-                    consider(
-                        Some(e.id),
-                        DVec2::new((p.x / 0.05).round() * 0.05, l.elevation),
-                    );
-                }
-            }
-            // corners of what the section cuts
-            for it in &drawing.items {
-                if let PlanItem::Fill { points, .. } = it {
-                    for q in points {
-                        consider(None, *q);
-                    }
-                }
-            }
-        }
-        _ => {}
     }
-    let (host, at) = match best {
-        Some((_, h, q)) => (h, q),
-        None => (None, (p / 0.05).round() * 0.05),
+    let project = |q: DVec3| Some(xf.to_screen(q.truncate()));
+    let hit = snapper.and_then(|s| s.snap(cfg, cursor, &project, None, Some(p.extend(0.0))));
+    let (host, at, kind) = match (best, hit) {
+        // a nearer corner of something else beats the wall's
+        (Some((d, host, q)), h)
+            if h.is_none_or(|h| !h.kind.is_point() || h.p.truncate().distance(p) >= d) =>
+        {
+            (Some(host), q, Some(SnapKind::Endpoint))
+        }
+        (_, Some(h)) => (h.host, h.p.truncate(), Some(h.kind)),
+        (_, None) => (None, p, None),
     };
-    (annotate::attach(model, view, host, at), at)
+    (annotate::attach(model, view, host, at), at, kind)
 }
 
 /// A click with the Dimension tool: first point, second point, then where the line goes.
@@ -2253,8 +2305,10 @@ fn drag_annotation(
     Some(r.err().map(|e| e.to_string()))
 }
 
-/// Snap to wall endpoints within 10 px, else to a 5 cm grid. With `ortho`,
-/// keep the segment from `from` horizontal or vertical.
+/// Snap to wall endpoints within 10 px, else to a 5 cm grid, as far as
+/// `cfg` allows. With `ortho`, keep the segment from `from` horizontal or
+/// vertical.
+#[allow(clippy::too_many_arguments)]
 fn snap(
     doc: &Document,
     level: ElementId,
@@ -2263,6 +2317,7 @@ fn snap(
     from: Option<DVec2>,
     ortho: bool,
     exclude: &[ElementId],
+    cfg: &snaps::SnapSettings,
 ) -> DVec2 {
     let mut p = p;
     if let (true, Some(a)) = (ortho, from) {
@@ -2277,7 +2332,7 @@ fn snap(
     let mut best: Option<(f64, DVec2)> = None;
     for e in doc.model().iter() {
         if let ElementKind::Wall(w) = &e.kind {
-            if w.level != level || exclude.contains(&e.id) {
+            if w.level != level || exclude.contains(&e.id) || !cfg.allows(SnapKind::Endpoint) {
                 continue;
             }
             for q in [w.start, w.end] {
@@ -2288,8 +2343,13 @@ fn snap(
             }
         }
     }
-    best.map(|(_, q)| q)
-        .unwrap_or_else(|| (p / 0.05).round() * 0.05)
+    best.map(|(_, q)| q).unwrap_or_else(|| {
+        if cfg.allows(SnapKind::Grid) {
+            (p / 0.05).round() * 0.05
+        } else {
+            p
+        }
+    })
 }
 
 /// Fill a possibly concave polygon.
@@ -2487,5 +2547,66 @@ pub fn pane_kind(v: &View) -> PaneKind {
         ViewKind::Section { start, end, .. } => PaneKind::Section { start, end },
         ViewKind::Axonometric { .. } => PaneKind::Axonometric,
         ViewKind::Schedule { .. } => PaneKind::Schedule,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use creabim_core::{EditMesh, FreeMesh};
+
+    #[test]
+    fn a_dimension_attaches_to_a_mass_corner_and_follows_it() {
+        let mut doc = Document::from_model(creabim_core::sample::sample_house());
+        let (view, v) = doc
+            .model()
+            .iter()
+            .find_map(|e| match &e.kind {
+                ElementKind::View(v) if matches!(v.kind, ViewKind::Plan { .. }) => {
+                    Some((e.id, v.clone()))
+                }
+                _ => None,
+            })
+            .unwrap();
+        let ViewKind::Plan { level, .. } = v.kind else {
+            unreachable!()
+        };
+        let mass = Element::new(
+            "Mass",
+            ElementKind::FreeMesh(FreeMesh::new(
+                Some(level),
+                DVec3::new(20.0, 5.0, 0.0),
+                EditMesh::cuboid(DVec3::new(2.0, 4.0, 3.0)),
+            )),
+        );
+        let id = mass.id;
+        doc.commit(Transaction::new("Add mass").insert(mass))
+            .unwrap();
+        let drawing = creabim_geom::section::view_drawing(doc.model(), view).unwrap();
+        let snapper = Snapper::from_drawing(&drawing.items, &[]);
+        let xf = Xf {
+            rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(1000.0)),
+            center: DVec2::new(20.0, 5.0),
+            scale: 100.0,
+        };
+        let cursor = xf.to_screen(DVec2::new(21.03, 6.98));
+        let cfg = snaps::SnapSettings::default();
+        let (hp, at, kind) = dim_snap(&doc, &v, pane_kind(&v), Some(&snapper), &cfg, &xf, cursor);
+        assert_eq!(kind, Some(SnapKind::Endpoint));
+        assert!(at.distance(DVec2::new(21.0, 7.0)) < 1e-9);
+        assert_eq!(hp.host, Some(id));
+        // move the mass: the point goes with it
+        doc.edit(id, "Move mass", |e| {
+            if let ElementKind::FreeMesh(m) = &mut e.kind {
+                m.origin += DVec3::new(1.5, -1.0, 0.0);
+            }
+        })
+        .unwrap();
+        let now = annotate::resolve(doc.model(), &v, &hp).unwrap();
+        assert!(now.distance(DVec2::new(22.5, 6.0)) < 1e-9, "{now}");
+        // with snapping off it is a free point
+        let off = cfg.live(true);
+        let (hp, ..) = dim_snap(&doc, &v, pane_kind(&v), Some(&snapper), &off, &xf, cursor);
+        assert_eq!(hp.host, None);
     }
 }

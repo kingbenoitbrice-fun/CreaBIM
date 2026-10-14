@@ -484,6 +484,14 @@ impl CreaBimApp {
                 !cmd && i.key_pressed(egui::Key::E),
             )
         });
+        if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
+            self.plan.snap.on = !self.plan.snap.on;
+            self.status = format!(
+                "Snaps {}. F3 turns them {}.",
+                if self.plan.snap.on { "on" } else { "off" },
+                if self.plan.snap.on { "off" } else { "on" },
+            );
+        }
         let (all, none, hide, isolate, show, events) = ctx.input(|i| {
             let (cmd, alt, shift) = (i.modifiers.command, i.modifiers.alt, i.modifiers.shift);
             let h = i.key_pressed(egui::Key::H);
@@ -1221,6 +1229,7 @@ impl CreaBimApp {
             .map(|id| planview::joined_with(&self.doc, id))
             .unwrap_or_default();
         self.refresh_snaps_3d(&exclude);
+        let snap_cfg = self.plan.snap.live(ui.input(|i| i.modifiers.alt));
         let dragging = {
             let snapper = &self.snaps_3d.as_ref().expect("just built").2;
             let scene = &self.scene;
@@ -1231,7 +1240,7 @@ impl CreaBimApp {
             let snap = |p: egui::Pos2, from: Option<DVec3>| {
                 let (o, d) = ray(p);
                 let free = Workplane::ground(from.map_or(0.0, |f| f.z)).intersect(o, d);
-                let s = snapper.snap(p, &project, from, free)?;
+                let s = snapper.snap(&snap_cfg, p, &project, from, free)?;
                 Some((s.p, s))
             };
             let grab_body = |p: egui::Pos2, id: ElementId| {
@@ -1350,6 +1359,7 @@ impl CreaBimApp {
         if !fresh {
             let mut snapper = Snapper::from_scene(&self.scene, exclude);
             snapper.add_guides(self.doc.model(), GUIDE_REACH_3D);
+            snapper.add_grids(self.doc.model());
             snapper.add_sketches(self.doc.model(), exclude);
             self.snaps_3d = Some((rev, exclude.to_vec(), snapper));
         }
@@ -1478,7 +1488,8 @@ impl CreaBimApp {
         let exclude: Vec<ElementId> = vec![];
         self.refresh_snaps_3d(&exclude);
         let snapper = &self.snaps_3d.as_ref().expect("just built").2;
-        let Some(snap) = snapper.snap(hover, project, from, free) else {
+        let snap_cfg = self.plan.snap.live(ui.input(|i| i.modifiers.alt));
+        let Some(snap) = snapper.snap(&snap_cfg, hover, project, from, free) else {
             return;
         };
         let p = snap.p.truncate();
@@ -1609,12 +1620,13 @@ impl CreaBimApp {
         }
         let exclude = [outline.target];
         self.refresh_snaps_3d(&exclude);
+        let snap_cfg = self.plan.snap.live(ui.input(|i| i.modifiers.alt));
         let hover = response.hover_pos().and_then(|h| {
             let (o, d) = ray(h);
             let free = Workplane::ground(outline.z).intersect(o, d);
             let from = outline.points.last().map(|p| p.extend(outline.z));
             let snapper = &self.snaps_3d.as_ref()?.2;
-            let s = snapper.snap(h, project, from, free)?;
+            let s = snapper.snap(&snap_cfg, h, project, from, free)?;
             if let Some(c) = project(s.p.truncate().extend(outline.z)) {
                 if s.kind != SnapKind::Grid {
                     snaps::draw(painter, s, c, from.and_then(project));
@@ -1740,14 +1752,33 @@ impl CreaBimApp {
         if let Some(hint) = crate::sketch::shape_controls(ui, response.rect, None, draft) {
             self.status = hint;
         }
-        let (enter, escape, shift) = ui.input(|i| {
+        let (enter, escape, shift, alt) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Enter),
                 i.key_pressed(egui::Key::Escape),
                 i.modifiers.shift,
+                i.modifiers.alt,
             )
         });
         let hover = response.hover_pos();
+        // corners, edges and centres of what is modelled; Shift keeps lines square instead
+        self.refresh_snaps_3d(&[]);
+        let snap_cfg = self.plan.snap.live(alt || shift);
+        let last = self
+            .plan
+            .sketch
+            .as_ref()
+            .filter(|_| mine)
+            .and_then(|d| Some(d.plane.to_model(*d.points.last()?)));
+        let snapped = hover.and_then(|h| {
+            let snapper = &self.snaps_3d.as_ref()?.2;
+            snapper.snap(&snap_cfg, h, project, last, None)
+        });
+        if let Some(s) = snapped {
+            if let Some(c) = project(s.p) {
+                snaps::draw(painter, s, c, last.and_then(project));
+            }
+        }
         // the plane a first click would start on
         let candidate = |p: egui::Pos2| -> Option<Workplane> {
             let (o, d) = ray(p);
@@ -1776,6 +1807,9 @@ impl CreaBimApp {
             }
         };
         let on_plane = match (&self.plan.sketch, hover) {
+            (Some(d), Some(_)) if mine && snapped.is_some() => {
+                snapped.map(|s| d.snap(d.plane.to_plane(s.p), 1e-6, false, false))
+            }
             (Some(d), Some(p)) if mine => {
                 let (o, dir) = ray(p);
                 d.plane.intersect(o, dir).map(|m| {
@@ -1783,7 +1817,12 @@ impl CreaBimApp {
                     let dist = m.distance(cam.eye().as_dvec3());
                     let tol = dist * 2.0 * (cam.fov_y as f64 / 2.0).tan() * 10.0
                         / response.rect.height() as f64;
-                    d.snap(d.plane.to_plane(m), tol, shift)
+                    d.snap(
+                        d.plane.to_plane(m),
+                        tol,
+                        shift,
+                        self.plan.snap.live(alt).allows(SnapKind::Grid),
+                    )
                 })
             }
             _ => None,
@@ -1828,7 +1867,11 @@ impl CreaBimApp {
         }
         match &mut self.plan.sketch {
             None => {
-                if let Some(plane) = hover.and_then(candidate) {
+                if let Some(mut plane) = hover.and_then(candidate) {
+                    // start on the snapped point, kept on the face's plane
+                    if let Some(s) = snapped {
+                        plane.origin = plane.to_model(plane.to_plane(s.p));
+                    }
                     let draft = SketchDraft::new(plane, None);
                     let shape = crate::sketch::shape(ui.ctx());
                     self.status = format!(
@@ -2285,6 +2328,7 @@ impl CreaBimApp {
                         ui.selectable_value(&mut self.plan.pivot, p, p.label());
                     }
                 });
+            snaps::snap_bar(ui, &mut self.plan.snap);
             ui.separator();
             ui.label("View:");
             let current = self

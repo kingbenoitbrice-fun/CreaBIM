@@ -340,6 +340,7 @@ pub fn sample_house() -> Model {
         host: Some(host),
         local: DVec2::new(u, s),
         from_end,
+        body: None,
     };
     let (south, west) = (ground_walls[0], ground_walls[3]);
     let face = -0.15;
@@ -396,6 +397,7 @@ pub fn sample_house() -> Model {
             host: Some(id),
             local: DVec2::new(3.6, h),
             from_end: false,
+            body: None,
         };
         tx = tx
             .insert(dim(section, level(g, 0.0), level(f, 0.0), 0.0))
