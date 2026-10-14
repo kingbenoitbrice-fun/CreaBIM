@@ -23,6 +23,8 @@ use eframe::egui_wgpu;
 use glam::{DVec2, DVec3, Vec2 as GVec2, Vec3 as GVec3};
 use std::collections::HashMap;
 
+#[path = "gridvis.rs"]
+mod gridvis;
 #[path = "shell.rs"]
 mod shell;
 
@@ -132,6 +134,9 @@ pub struct CreaBimApp {
     /// or exports), and a count of changes to them.
     hidden: std::collections::HashSet<ElementId>,
     hidden_rev: u64,
+    /// What the 3D view leaves out (categories, grid groups, elements),
+    /// for the session.
+    vis3d: creabim_core::ViewHidden,
     /// What Ctrl+C copied, for pasting when the system clipboard has none.
     clipboard: Vec<Element>,
     recent: crate::files::Recent,
@@ -184,6 +189,7 @@ impl CreaBimApp {
             live_reload: true,
             hidden: Default::default(),
             hidden_rev: 0,
+            vis3d: Default::default(),
             clipboard: vec![],
             recent: crate::files::Recent::load(),
             shell: Default::default(),
@@ -969,7 +975,9 @@ impl CreaBimApp {
         }
         self.geometry_key = Some(key);
         self.scene = build_scene(self.doc.model());
-        self.scene.retain(|i| !self.hidden.contains(&i.id));
+        let left_out = self.hidden_in_3d();
+        self.scene
+            .retain(|i| !self.hidden.contains(&i.id) && !left_out.contains(&i.id));
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
@@ -1063,6 +1071,7 @@ impl CreaBimApp {
         if let Some((plane, _)) = self.workplane {
             lines.extend(grid_lines(plane, -8.0, 8.0, [0.92, 0.55, 0.30]));
         }
+        lines.extend(self.grid_lines_3d());
 
         // 2D drawing shown in 3D space, on its level
         let mut overlay = Vec::new();
@@ -1235,6 +1244,7 @@ impl CreaBimApp {
         };
         let hover = response.hover_pos();
         self.draw_sketches(&painter, &project);
+        self.draw_grid_bubbles(&painter, &project);
 
         // a keyboard move, rotate or scale running here
         if modal_here {
@@ -1560,7 +1570,10 @@ impl CreaBimApp {
                 let hit = pick::pick(&self.scene, o.as_vec3(), d.as_vec3());
                 // guides cross everything, so they only take clicks that miss
                 if hit.is_none() {
-                    if let Some(id) = self.guide_near(p, &project) {
+                    let near = self
+                        .grid_bubble_near(p, &project)
+                        .or_else(|| self.guide_near(p, &project));
+                    if let Some(id) = near {
                         pick(&mut self.selection, Some(id));
                         self.face = None;
                         return;
@@ -1594,7 +1607,7 @@ impl CreaBimApp {
         if !fresh {
             let mut snapper = Snapper::from_scene(&self.scene, exclude);
             snapper.add_guides(self.doc.model(), GUIDE_REACH_3D);
-            snapper.add_grids(self.doc.model());
+            snapper.add_grids(self.doc.model(), &self.hidden_in_3d());
             snapper.add_sketches(self.doc.model(), exclude);
             self.snaps_3d = Some((rev, exclude.to_vec(), snapper));
         }
@@ -2122,10 +2135,14 @@ impl CreaBimApp {
         painter: &egui::Painter,
         project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
     ) {
+        let left_out = self.hidden_in_3d();
         for e in self.doc.model().iter() {
             let ElementKind::Guide(g) = &e.kind else {
                 continue;
             };
+            if left_out.contains(&e.id) {
+                continue;
+            }
             let stroke = if self.selection.contains(e.id) {
                 egui::Stroke::new(2.0, Color32::from_rgb(242, 140, 51))
             } else {
@@ -2134,6 +2151,9 @@ impl CreaBimApp {
             draw_guide_3d(painter, project, g.a, g.b, stroke);
         }
         for (id, a, b) in creabim_geom::scene::sketch_lines(self.doc.model()) {
+            if left_out.contains(&id) {
+                continue;
+            }
             let selected = self.selection.contains(id);
             let stroke = if selected {
                 egui::Stroke::new(2.5, Color32::from_rgb(242, 140, 51))
@@ -2869,6 +2889,17 @@ impl CreaBimApp {
             ui.label(
                 "Nothing selected. Click an element in the plan, the 3D view or the model list.",
             );
+            if self.plan.tool == Tool::Grid {
+                ui.add_space(8.0);
+                self.grid_systems_panel(ui);
+            }
+            // with nothing selected, the view shown in the 2D pane
+            if let Some(gridvis::VisTarget::View(v)) = self.vis_target(false) {
+                ui.add_space(8.0);
+                let name = self.doc.model().get(v).map_or("", |e| e.name.as_str());
+                ui.label(egui::RichText::new(format!("View: {name}")).strong());
+                self.visibility_panel(ui, gridvis::VisTarget::View(v));
+            }
             return;
         };
         let Some(e) = self.doc.model().get(id).cloned() else {
@@ -2933,6 +2964,7 @@ impl CreaBimApp {
             .inner
         };
         let mut redraw = false;
+        let mut show_visibility = false;
         match &mut edited.kind {
             ElementKind::Level(l) => {
                 if num(ui, "Elevation", &mut l.elevation, -100.0, 1000.0) {
@@ -3135,6 +3167,7 @@ impl CreaBimApp {
                 if self.active_view != Some(id) && ui.button("Open this view").clicked() {
                     self.active_view = Some(id);
                 }
+                show_visibility = true;
             }
             ElementKind::Sheet(sh) => {
                 ui.horizontal(|ui| {
@@ -3278,10 +3311,20 @@ impl CreaBimApp {
             ElementKind::Grid(g) => {
                 ui.horizontal(|ui| {
                     ui.label("Label");
+                    if let Some((_, gg)) = creabim_core::grids::group_of(self.doc.model(), g) {
+                        ui.label(egui::RichText::new(&gg.prefix).weak());
+                    }
                     if ui.text_edit_singleline(&mut g.label).changed() {
                         label = "Grid label"
                     }
                 });
+                let l = self.grid_properties(ui, g);
+                if !l.is_empty() {
+                    label = l;
+                }
+            }
+            ElementKind::GridGroup(g) => {
+                label = self.grid_group_properties(ui, id, g);
             }
             ElementKind::Sketch(sk) => {
                 match crate::sketch::properties(ui, sk) {
@@ -3610,6 +3653,10 @@ impl CreaBimApp {
         if extrude_sketch {
             self.extrude_sketch();
             return;
+        }
+        if show_visibility {
+            ui.add_space(6.0);
+            self.visibility_panel(ui, gridvis::VisTarget::View(id));
         }
         if redraw {
             self.plan.cancel();
@@ -3940,6 +3987,7 @@ fn kind_word(k: &ElementKind) -> &'static str {
     match k {
         ElementKind::Level(_) => "level",
         ElementKind::Grid(_) => "grid line",
+        ElementKind::GridGroup(_) => "grid system",
         ElementKind::Wall(_) => "wall",
         ElementKind::Slab(_) => "slab",
         ElementKind::Opening(o) => match o.kind {

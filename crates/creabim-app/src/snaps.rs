@@ -491,9 +491,15 @@ impl Snapper {
 
     /// Every grid line, for the 3D view, on each level (or the ground when
     /// there are none), with where grid lines cross.
-    pub fn add_grids(&mut self, model: &creabim_core::Model) {
+    /// Lines in `skip` (hidden in the view) are left out.
+    pub fn add_grids(
+        &mut self,
+        model: &creabim_core::Model,
+        skip: &std::collections::HashSet<ElementId>,
+    ) {
         let grids: Vec<(ElementId, DVec2, DVec2)> = model
             .iter()
+            .filter(|e| !skip.contains(&e.id))
             .filter_map(|e| match &e.kind {
                 creabim_core::ElementKind::Grid(g) => Some((e.id, g.start, g.end)),
                 _ => None,

@@ -422,6 +422,18 @@ pub enum PlanItem {
     },
 }
 
+/// Is a label short enough to sit in a bubble, as grid and section marks
+/// do (level datums and longer text are plain)?
+pub fn is_bubble(text: &str) -> bool {
+    !text.contains(' ') && (1..=5).contains(&text.chars().count())
+}
+
+/// A bubble's radius for `text`, in units of the bubble for one or two
+/// characters.
+pub fn bubble_scale(text: &str) -> f64 {
+    (text.chars().count() as f64 * 0.38).max(1.0)
+}
+
 impl PlanItem {
     pub fn id(&self) -> ElementId {
         match self {
@@ -633,7 +645,7 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                 items.push(PlanItem::Label {
                     id: e.id,
                     at: g.end + dir * 0.6,
-                    text: g.label.clone(),
+                    text: creabim_core::grids::display_label(model, g),
                 });
             }
             ElementKind::Wall(w) if w.level == level => {

@@ -470,6 +470,18 @@ impl<'a> Importer<'a> {
         for &id in self.ids("IFCGRID") {
             let Some(e) = self.f.get(id) else { continue };
             let world = self.g.placement(e.arg(5));
+            // a grid of several axes becomes a grid group holding them
+            let count: usize = [7, 8, 9].iter().map(|i| e.arg(*i).as_list().len()).sum();
+            let group = (count > 1).then(|| {
+                let name = e.arg(2).as_str().unwrap_or("").trim().to_string();
+                let g = Element::new(
+                    if name.is_empty() { "Grid".into() } else { name },
+                    ElementKind::GridGroup(creabim_core::GridGroup::default()),
+                );
+                let id = g.id;
+                self.grid_elems.push(g);
+                id
+            });
             for axes in [7, 8, 9] {
                 for ax in e.arg(axes).as_list() {
                     let Some(a) = self.g.get(ax) else { continue };
@@ -487,6 +499,7 @@ impl<'a> Importer<'a> {
                             label,
                             start: p.truncate(),
                             end: q.truncate(),
+                            group,
                         }),
                     ));
                 }

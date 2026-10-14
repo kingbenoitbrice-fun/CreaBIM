@@ -62,6 +62,7 @@ pub fn export_ifcx(model: &Model) -> String {
     let mut building_children = Names::default();
     let mut level_children: HashMap<ElementId, Names> = HashMap::new();
     let mut wall_children: HashMap<ElementId, Names> = HashMap::new();
+    let mut group_children: HashMap<ElementId, Names> = HashMap::new();
     let elevation = |level: Option<ElementId>| {
         level
             .and_then(|l| model.level(l))
@@ -73,7 +74,15 @@ pub fn export_ifcx(model: &Model) -> String {
         let mut attrs = Map::new();
         let mut children = Names::default();
         let mut inherits = Map::new();
-        let class = e.ifc_class().to_string();
+        // a grid group is the IfcGrid; its lines are its axes
+        let grouped = match &e.kind {
+            ElementKind::Grid(g) => creabim_core::grids::group_of(model, g).map(|(ge, _)| ge.id),
+            _ => None,
+        };
+        let class = match grouped {
+            Some(_) => "IfcGridAxis".to_string(),
+            None => e.ifc_class().to_string(),
+        };
         let creabim = json!({ "name": e.name, "kind": e.kind });
         let (parent, frame_z) = match &e.kind {
             ElementKind::Level(l) => {
@@ -125,7 +134,12 @@ pub fn export_ifcx(model: &Model) -> String {
                 }
                 (f.level.map_or(Parent::Building, Parent::Level), None)
             }
+            ElementKind::GridGroup(_) => (Parent::Building, None),
             ElementKind::Grid(g) => {
+                attrs.insert(
+                    "bsi::ifc::prop::AxisTag".into(),
+                    json!(creabim_core::grids::display_label(model, g)),
+                );
                 let axis = derived(e.id, 0x2);
                 children.add("Axis", &axis);
                 nodes.push(node(
@@ -137,7 +151,7 @@ pub fn export_ifcx(model: &Model) -> String {
                         json!({ "points": [[g.start.x, g.start.y, 0.0], [g.end.x, g.end.y, 0.0]] }),
                     )]),
                 ));
-                (Parent::Building, None)
+                (grouped.map_or(Parent::Building, Parent::Group), None)
             }
             ElementKind::Material(m) => {
                 attrs.insert(MATERIAL.into(), json!({ "code": e.name }));
@@ -171,13 +185,18 @@ pub fn export_ifcx(model: &Model) -> String {
             Parent::Building => &mut building_children,
             Parent::Level(l) => level_children.entry(l).or_default(),
             Parent::Wall(w) => wall_children.entry(w).or_default(),
+            Parent::Group(g) => group_children.entry(g).or_default(),
         };
         siblings.add(&e.name, &path);
         nodes.push(node(&path, children, inherits, attrs));
     }
     // children found after their parent was written go in extra entries,
     // which IFCX composes onto the parent
-    for (id, kids) in level_children.into_iter().chain(wall_children) {
+    for (id, kids) in level_children
+        .into_iter()
+        .chain(wall_children)
+        .chain(group_children)
+    {
         nodes.push(node(&path_of(id), kids, Map::new(), Map::new()));
     }
     let class = |c: &str| {
@@ -234,6 +253,8 @@ enum Parent {
     Building,
     Level(ElementId),
     Wall(ElementId),
+    /// A grid line, under its grid group.
+    Group(ElementId),
 }
 
 /// Children by unique, IFCX-friendly name.
@@ -899,6 +920,8 @@ impl Builder {
                 };
                 match &e.kind {
                     ElementKind::Opening(_) => self.openings.push(e),
+                    // groups first, so their lines find them
+                    ElementKind::GridGroup(_) => self.grids.insert(0, e),
                     ElementKind::Grid(_) => self.grids.push(e),
                     ElementKind::Level(_) | ElementKind::Material(_) => {}
                     _ => self.main.push(e),
@@ -911,7 +934,7 @@ impl Builder {
                     spaces += 1;
                     continue;
                 }
-                "IfcOpeningElement" | "IfcGrid" | "IfcAnnotation" => continue,
+                "IfcOpeningElement" | "IfcGrid" | "IfcGridAxis" | "IfcAnnotation" => continue,
                 _ => {}
             }
             let name = o.name.replace('_', " ");
