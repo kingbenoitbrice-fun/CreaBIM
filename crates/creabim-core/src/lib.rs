@@ -14,6 +14,7 @@ pub mod grids;
 pub mod id;
 pub mod joins;
 pub mod marks;
+pub mod members;
 pub mod model;
 pub mod modifiers;
 pub mod ops;
@@ -37,6 +38,7 @@ pub use element::{
 pub use id::ElementId;
 pub use joins::{wall_joins, WallEnds};
 pub use marks::{marks, material_of};
+pub use members::{Beam, Column, Landing, Profile, Railing, Roof, RoofShape, Stair, StairSide};
 pub use model::Model;
 pub use modifiers::{Axis, Modifier, ModifierKind};
 pub use ops::{Op, Transaction};

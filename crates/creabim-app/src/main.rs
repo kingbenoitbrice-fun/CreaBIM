@@ -8,6 +8,7 @@ mod commands;
 mod files;
 mod handles;
 mod icons;
+mod memberstool;
 mod modal;
 mod outline;
 mod planview;

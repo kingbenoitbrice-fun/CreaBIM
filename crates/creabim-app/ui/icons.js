@@ -91,5 +91,11 @@ window.ICONS = {
 "radius": "<path d=\"M20.34 17.52a10 10 0 1 0-2.82 2.82\" /> <circle cx=\"19\" cy=\"19\" r=\"2\" /> <path d=\"m13.41 13.41 4.18 4.18\" /> <circle cx=\"12\" cy=\"12\" r=\"2\" />",
 "diameter": "<circle cx=\"19\" cy=\"19\" r=\"2\" /> <circle cx=\"5\" cy=\"5\" r=\"2\" /> <path d=\"M6.48 3.66a10 10 0 0 1 13.86 13.86\" /> <path d=\"m6.41 6.41 11.18 11.18\" /> <path d=\"M3.66 6.48a10 10 0 0 0 13.86 13.86\" />",
 "message-square-text": "<path d=\"M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z\" /> <path d=\"M13 8H7\" /> <path d=\"M17 12H7\" />",
-"arrow-up-right": "<path d=\"M7 7h10v10\" /> <path d=\"M7 17 17 7\" />"
+"arrow-up-right": "<path d=\"M7 7h10v10\" /> <path d=\"M7 17 17 7\" />",
+"rectangle-vertical": "<rect width=\"12\" height=\"20\" x=\"6\" y=\"2\" rx=\"2\" />",
+"rectangle-horizontal": "<rect width=\"20\" height=\"12\" x=\"2\" y=\"6\" rx=\"2\" />",
+"tent": "<path d=\"M3.5 21 14 3\" /> <path d=\"M20.5 21 10 3\" /> <path d=\"M15.5 21 12 15l-3.5 6\" /> <path d=\"M2 21h20\" />",
+"chart-no-axes-column-increasing": "<line x1=\"12\" x2=\"12\" y1=\"20\" y2=\"10\" /> <line x1=\"18\" x2=\"18\" y1=\"20\" y2=\"4\" /> <line x1=\"6\" x2=\"6\" y1=\"20\" y2=\"16\" />",
+"fence": "<path d=\"M4 3 2 5v15c0 .6.4 1 1 1h2c.6 0 1-.4 1-1V5Z\" /> <path d=\"M6 8h4\" /> <path d=\"M6 18h4\" /> <path d=\"m12 3-2 2v15c0 .6.4 1 1 1h2c.6 0 1-.4 1-1V5Z\" /> <path d=\"M14 8h4\" /> <path d=\"M14 18h4\" /> <path d=\"m20 3-2 2v15c0 .6.4 1 1 1h2c.6 0 1-.4 1-1V5Z\" />",
+"corner-down-right": "<polyline points=\"15 10 20 15 15 20\" /> <path d=\"M4 4v7a4 4 0 0 0 4 4h12\" />"
 };

@@ -92,6 +92,12 @@ pub enum HandleKind {
     },
     /// Push or pull a face of a mass along its normal.
     Face(usize),
+    /// Grip `i` of a column, beam, roof, stair or railing; `free` ones
+    /// move across the plan, others along a line.
+    Member {
+        i: usize,
+        free: bool,
+    },
     /// An end of a section or elevation line.
     ViewEnd {
         end: bool,
@@ -108,6 +114,7 @@ impl HandleKind {
             HandleKind::WallEnd { .. }
                 | HandleKind::SlabCorner(_)
                 | HandleKind::GridEnd { .. }
+                | HandleKind::Member { free: true, .. }
                 | HandleKind::ViewEnd { .. }
         )
     }
@@ -268,7 +275,21 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
             }
             vec![line(HandleKind::Face(f), c, n)]
         }
-        _ => vec![],
+        _ => creabim_core::members::grips(model, e)
+            .into_iter()
+            .enumerate()
+            .map(|(i, g)| match g.how {
+                creabim_core::members::GripMove::Flat => {
+                    flat(HandleKind::Member { i, free: true }, g.at)
+                }
+                creabim_core::members::GripMove::Vertical => {
+                    line(HandleKind::Member { i, free: false }, g.at, DVec3::Z)
+                }
+                creabim_core::members::GripMove::Along(d) => {
+                    line(HandleKind::Member { i, free: false }, g.at, d.extend(0.0))
+                }
+            })
+            .collect(),
     }
 }
 
@@ -441,6 +462,9 @@ pub fn apply(
             let local = m.to_local(n * dist);
             m.mesh.translate_vertices(&verts, local);
         }
+        (_, HandleKind::Member { i, .. }) => {
+            creabim_core::members::drag_grip(model, first, i, grab, now, step)?
+        }
         _ => return Err("this handle doesn't fit this element".into()),
     }
     let opening_ok = match &first.kind {
@@ -499,6 +523,26 @@ pub fn readout(changed: &[Element]) -> String {
             s.top_offset,
             s.top_offset - s.thickness
         ),
+        Some(ElementKind::Column(c)) => match c.height {
+            Some(h) => format!("{} mm, height {h:.2} m", c.profile.label()),
+            None => format!("{} mm", c.profile.label()),
+        },
+        Some(ElementKind::Beam(b)) => format!(
+            "length {:.2} m, {:.0} × {:.0} mm",
+            b.length(),
+            b.width * 1000.0,
+            b.depth * 1000.0
+        ),
+        Some(ElementKind::Roof(r)) => format!(
+            "{} roof, pitch {:.1}°, {:.2} m² with overhang",
+            r.effective_shape().label(),
+            r.pitch,
+            r.plan_area()
+        ),
+        Some(ElementKind::Stair(s)) => {
+            format!("width {:.2} m, treads {:.0} mm", s.width, s.tread * 1000.0)
+        }
+        Some(ElementKind::Railing(r)) => format!("height {:.2} m", r.height),
         _ => String::new(),
     }
 }

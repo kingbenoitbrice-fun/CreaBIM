@@ -104,7 +104,11 @@ pub fn set_material(e: &mut Element, material: Option<ElementId>) {
         ElementKind::Wall(w) => w.material = material,
         ElementKind::Slab(s) => s.material = material,
         ElementKind::FreeMesh(m) => m.material = material,
-        _ => {}
+        k => {
+            if let Some(m) = creabim_core::members::material_mut(k) {
+                *m = material;
+            }
+        }
     }
 }
 
@@ -123,7 +127,7 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
             Some(ElementKind::Wall(w)) => Some(w.level),
             _ => None,
         },
-        _ => None,
+        k => creabim_core::members::level_of(k),
     };
     let elevation = |e: &Element| {
         level_of(e)
@@ -273,6 +277,55 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                     String::new(),
                     String::new(),
                     area(total),
+                ],
+            )
+        }
+        ScheduleCategory::Structure => {
+            let columns = vec![
+                col("Name", Some(Field::Name), 30.0, false),
+                col("Type", None, 16.0, false),
+                col("Level", None, 28.0, false),
+                col("Material", Some(Field::Material), 30.0, false),
+                col("Section", None, 22.0, false),
+                col("Length", None, 18.0, true),
+            ];
+            let mut total = 0.0;
+            for e in model.iter() {
+                let (kind, section, length) = match &e.kind {
+                    ElementKind::Column(c) => ("Column", c.profile.label(), c.height_in(model)),
+                    ElementKind::Beam(b) => (
+                        "Beam",
+                        format!("{:.0} × {:.0}", b.width * 1000.0, b.depth * 1000.0),
+                        b.length(),
+                    ),
+                    _ => continue,
+                };
+                total += length;
+                rows.push((
+                    elevation(e),
+                    kind.to_string(),
+                    Row {
+                        id: e.id,
+                        cells: vec![
+                            e.name.clone(),
+                            kind.into(),
+                            level_of(e).map(name).unwrap_or_default(),
+                            material(e),
+                            section,
+                            mm(length),
+                        ],
+                    },
+                ));
+            }
+            (
+                columns,
+                vec![
+                    format!("{} members", rows.len()),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    mm(total),
                 ],
             )
         }
