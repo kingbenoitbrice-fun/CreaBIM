@@ -11,6 +11,7 @@ pub mod blend;
 pub mod freecad;
 pub mod gltf;
 pub mod link;
+pub mod materials;
 pub mod shape;
 
 pub use assign::{assign, Assign};

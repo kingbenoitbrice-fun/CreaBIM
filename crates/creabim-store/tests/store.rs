@@ -372,3 +372,60 @@ fn loading_the_sample_is_quick_to_do() {
         assert_eq!(open(&path).unwrap().model().len(), doc.model().len());
     }
 }
+
+#[test]
+fn the_material_library_round_trips_with_its_history() {
+    let (_dir, path) = tmp();
+    let mut doc = Document::from_model(sample_house());
+    let incoming = creabim_core::library::LIBRARY
+        .iter()
+        .map(|e| (e.name.to_string(), e.material()))
+        .collect();
+    let (tx, merged, ids) = creabim_core::library::merge(doc.model(), incoming, "Add materials");
+    assert_eq!(merged.added, creabim_core::library::LIBRARY.len());
+    doc.commit(tx).unwrap();
+    let (tx, n) = creabim_core::library::assign(doc.model(), &[first_wall(&doc)], Some(ids[0]));
+    assert_eq!(n, 1);
+    doc.commit(tx).unwrap();
+    save(&path, &doc).unwrap();
+    let back = open(&path).unwrap();
+    assert_same(&doc, &back);
+}
+
+#[test]
+fn materials_saved_before_the_library_open_unchanged() {
+    let (_dir, path) = tmp();
+    save(&path, &Document::from_model(sample_house())).unwrap();
+    // what a project saved before materials had more than a hatch and a
+    // colour holds
+    sql(
+        &path,
+        "UPDATE elements SET data = json_remove(data, '$.kind.Material.category') WHERE kind = 'Material'",
+    );
+    let raw: String = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT json_extract(data, '$.kind') FROM elements WHERE kind = 'Material' ORDER BY ord",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        raw,
+        r#"{"Material":{"hatch":"Brick","color":[0.78,0.55,0.45]}}"#
+    );
+    let back = open(&path).unwrap();
+    let m = back
+        .model()
+        .iter()
+        .find_map(|e| match &e.kind {
+            ElementKind::Material(m) if e.name == "Brick" => Some(m.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        m,
+        creabim_core::Material::new(creabim_core::Hatch::Brick, [0.78, 0.55, 0.45])
+    );
+    assert_eq!((m.roughness, m.metallic, m.opacity), (0.8, 0.0, 1.0));
+}

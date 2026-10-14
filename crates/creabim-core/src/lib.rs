@@ -13,6 +13,7 @@ pub mod element;
 pub mod grids;
 pub mod id;
 pub mod joins;
+pub mod library;
 pub mod marks;
 pub mod members;
 pub mod model;

@@ -455,26 +455,47 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         contained.entry(Some(level)).or_default().push(fill);
     }
 
-    // Materials, each associated with the elements made of it.
+    // Materials, each associated with the elements made of it. Unused ones
+    // are written too, so the project's material library goes along.
     for e in model.iter() {
-        let Some(users) = by_material.get(&e.id) else {
-            continue;
-        };
+        let users = by_material.get(&e.id);
         let ElementKind::Material(mat) = &e.kind else {
             continue;
         };
-        let description = string(&format!("{HATCH_PREFIX}{}", mat.hatch.label()));
+        let mut description = format!("{HATCH_PREFIX}{}", mat.hatch.label());
+        if !mat.description.trim().is_empty() {
+            description = format!("{description}. {}", mat.description.trim());
+        }
+        let category = match mat.category.trim() {
+            "" => "$".to_string(),
+            c => string(c),
+        };
         let m = c.w.add(
             "IFCMATERIAL",
-            format!("{},{description},$", string(&e.name)),
+            format!("{},{},{category}", string(&e.name), string(&description)),
         );
-        // the colour, as a surface style on the material
+        // the look, as a surface style on the material: colour,
+        // transparency, roughness and whether it is a metal
         let [r, g, b] = mat.color.map(|v| real(v as f64));
         let rgb = c.w.add("IFCCOLOURRGB", format!("$,{r},{g},{b}"));
-        let shading = c.w.add("IFCSURFACESTYLESHADING", format!("{rgb},$"));
+        let method = if mat.metallic >= 0.5 {
+            ".METAL."
+        } else if mat.category == "glass" {
+            ".GLASS."
+        } else {
+            ".NOTDEFINED."
+        };
+        let rendering = c.w.add(
+            "IFCSURFACESTYLERENDERING",
+            format!(
+                "{rgb},{},$,$,$,$,$,IFCSPECULARROUGHNESS({}),{method}",
+                real((1.0 - mat.opacity as f64).clamp(0.0, 1.0)),
+                real(mat.roughness as f64)
+            ),
+        );
         let style = c.w.add(
             "IFCSURFACESTYLE",
-            format!("{},.BOTH.,({shading})", string(&e.name)),
+            format!("{},.BOTH.,({rendering})", string(&e.name)),
         );
         let styled = c.w.add("IFCSTYLEDITEM", format!("$,({style}),$"));
         let styled_rep = c.w.add(
@@ -485,11 +506,13 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             "IFCMATERIALDEFINITIONREPRESENTATION",
             format!("$,$,({styled_rep}),{m}"),
         );
-        let g = c.guid();
-        c.w.add(
-            "IFCRELASSOCIATESMATERIAL",
-            format!("{g},$,$,$,{},{m}", list(users)),
-        );
+        if let Some(users) = users.filter(|u| !u.is_empty()) {
+            let g = c.guid();
+            c.w.add(
+                "IFCRELASSOCIATESMATERIAL",
+                format!("{g},$,$,$,{},{m}", list(users)),
+            );
+        }
     }
 
     // Spatial structure.

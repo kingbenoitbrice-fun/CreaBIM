@@ -82,6 +82,23 @@ pub struct BlendMaterial {
     pub name: String,
     /// Viewport display colour (`diffuse_color`), linear RGBA.
     pub color: [f32; 4],
+    /// Viewport display roughness (0.4 for a new material).
+    pub roughness: f32,
+    /// Viewport display metallic.
+    pub metallic: f32,
+    /// The inputs of the material's Principled BSDF node, when it uses
+    /// nodes and has one (what Blender renders with).
+    pub principled: Option<Principled>,
+}
+
+/// The unconnected input values of a Principled BSDF node.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Principled {
+    /// Base Color, linear RGBA.
+    pub base_color: [f32; 4],
+    pub roughness: f32,
+    pub metallic: f32,
+    pub alpha: f32,
 }
 
 #[derive(Debug, thiserror::Error)]

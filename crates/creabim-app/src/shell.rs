@@ -220,6 +220,7 @@ impl CreaBimApp {
             "menu:File" => self.file_menu(),
             "menu:Edit" => self.edit_menu(),
             "menu:View" => self.view_menu(),
+            "menu:Materials" => self.materials_menu(),
             "menu:Create" => self.create_menu(),
             "palette" => self.palette_items(),
             "look" => crate::camera::Look::ALL
@@ -569,6 +570,7 @@ impl CreaBimApp {
         flatten(self.edit_menu(), "", &mut out);
         flatten(self.view_menu(), "View › ", &mut out);
         flatten(self.file_menu(), "File › ", &mut out);
+        flatten(self.materials_menu(), "Materials › ", &mut out);
         flatten(self.menu_items("views"), "Open › ", &mut out);
         out
     }
@@ -859,7 +861,9 @@ impl CreaBimApp {
             "member" => crate::memberstool::toggle_option(&mut self.plan, arg),
             "note.leader" => self.plan.anno.leader = !self.plan.anno.leader,
             _ => {
-                self.grid_vis_action(head, arg);
+                if !self.materials_action(head, arg) {
+                    self.grid_vis_action(head, arg);
+                }
             }
         }
     }
@@ -1126,7 +1130,7 @@ impl CreaBimApp {
         json!({
             "theme": self.theme(),
             "popup": self.popup_key(),
-            "menus": (["File", "Edit", "View", "Create"].map(|m| json!({"name": m, "key": format!("menu:{m}")}))),
+            "menus": (["File", "Edit", "View", "Create", "Materials"].map(|m| json!({"name": m, "key": format!("menu:{m}")}))),
             "quick": quick,
             "doc": {
                 "name": file_label(&self.path),
@@ -1585,7 +1589,7 @@ impl CreaBimApp {
     pub(super) fn classic_menu(&mut self, ui: &mut egui::Ui) {
         let mut picked = None;
         egui::MenuBar::new().ui(ui, |ui| {
-            for m in ["File", "Edit", "View"] {
+            for m in ["File", "Edit", "View", "Materials"] {
                 let items = self.menu_items(&format!("menu:{m}"));
                 ui.menu_button(m, |ui| {
                     if let Some(id) = ui_model::show(ui, &items) {

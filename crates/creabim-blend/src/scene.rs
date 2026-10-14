@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use crate::container::BlendFile;
 use crate::math::{self, Mat4};
 use crate::view::{c_string, View};
-use crate::{BlendMaterial, BlendMesh, BlendObject, BlendScene, ObjectKind};
+use crate::{BlendMaterial, BlendMesh, BlendObject, BlendScene, ObjectKind, Principled};
 
 /// `eCustomDataType` values of the legacy mesh arrays. These numbers are
 /// part of the file format and never change.
@@ -43,6 +43,9 @@ pub(crate) fn extract(file: &BlendFile) -> BlendScene {
         materials.push(BlendMaterial {
             name: id_name(&ma),
             color: [c("r", 0.8), c("g", 0.8), c("b", 0.8), c("a", 1.0)],
+            roughness: c("roughness", 0.4),
+            metallic: c("metallic", 0.0),
+            principled: principled(&ma),
         });
     }
 
@@ -105,6 +108,53 @@ pub(crate) fn extract(file: &BlendFile) -> BlendScene {
         version: format!("{}.{}", file.version / 100, file.version % 100),
         unit_scale,
     }
+}
+
+/// The Principled BSDF of a material's node tree: the input values set on
+/// the node itself (inputs linked to other nodes, such as textures, keep
+/// the value they would have unlinked).
+fn principled(ma: &View) -> Option<Principled> {
+    // before Blender 5, a material renders with its nodes only when asked to
+    if ma.has("use_nodes") && ma.int("use_nodes") == Some(0) {
+        return None;
+    }
+    let tree = ma.deref("nodetree", "bNodeTree")?;
+    let node = list(&tree, "nodes", "bNode")
+        .into_iter()
+        .find(|n| n.string("idname").as_deref() == Some("ShaderNodeBsdfPrincipled"))?;
+    let mut out = Principled {
+        base_color: [0.8, 0.8, 0.8, 1.0],
+        roughness: 0.5,
+        metallic: 0.0,
+        alpha: 1.0,
+    };
+    for socket in list(&node, "inputs", "bNodeSocket") {
+        let id = socket.string("identifier").unwrap_or_default();
+        let value = |ty: &str| {
+            socket
+                .deref("default_value", ty)
+                .and_then(|v| v.floats("value"))
+        };
+        match id.as_str() {
+            "Base Color" => {
+                if let Some([r, g, b, a, ..]) = value("bNodeSocketValueRGBA").as_deref() {
+                    out.base_color = [*r as f32, *g as f32, *b as f32, *a as f32];
+                }
+            }
+            "Roughness" | "Metallic" | "Alpha" => {
+                if let Some(v) = value("bNodeSocketValueFloat").and_then(|v| v.first().copied()) {
+                    let v = (v as f32).clamp(0.0, 1.0);
+                    match id.as_str() {
+                        "Roughness" => out.roughness = v,
+                        "Metallic" => out.metallic = v,
+                        _ => out.alpha = v,
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(out)
 }
 
 /// The ID name without its two-letter type prefix (`OBCube` -> `Cube`).

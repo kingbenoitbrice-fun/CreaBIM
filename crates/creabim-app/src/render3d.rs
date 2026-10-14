@@ -13,13 +13,20 @@ pub struct Vertex {
     pub pos: [f32; 3],
     pub normal: [f32; 3],
     pub color: [f32; 3],
+    /// The material's roughness, metallic and opacity.
+    pub surface: [f32; 3],
 }
+
+/// Roughness, metallic and opacity of a surface without a material, and
+/// of lines.
+pub const PLAIN: [f32; 3] = [0.8, 0.0, 1.0];
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
     view_proj: [[f32; 4]; 4],
     light: [f32; 4],
+    eye: [f32; 4],
 }
 
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -27,18 +34,21 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const SAMPLES: u32 = 4;
 
 const SHADER: &str = r#"
-struct U { view_proj: mat4x4<f32>, light: vec4<f32> };
+struct U { view_proj: mat4x4<f32>, light: vec4<f32>, eye: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) color: vec3<f32>,
+    @location(3) surface: vec3<f32>,
 };
 struct VOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) color: vec3<f32>,
+    @location(2) world: vec3<f32>,
+    @location(3) surface: vec3<f32>,
 };
 
 @vertex fn vs_main(v: VIn) -> VOut {
@@ -46,16 +56,42 @@ struct VOut {
     o.clip = u.view_proj * vec4<f32>(v.pos, 1.0);
     o.normal = v.normal;
     o.color = v.color;
+    o.world = v.pos;
+    o.surface = v.surface;
     return o;
 }
 
+// A simple studio look: the sky-and-sun lighting the view always had for
+// diffuse surfaces, plus a highlight and a reflection of a soft sky that
+// grow sharper as the surface gets smoother, tinted by the colour for
+// metals. Colours are given in sRGB and shaded in linear space. The
+// result is encoded back to sRGB: the offscreen image reaches the screen
+// through egui with its values as they are, so without this every lit
+// surface showed much darker than its colour.
 @fragment fn fs_shaded(i: VOut) -> @location(0) vec4<f32> {
-    let n = normalize(i.normal);
-    let diffuse = max(dot(n, normalize(u.light.xyz)), 0.0);
+    var n = normalize(i.normal);
+    let v = normalize(u.eye.xyz - i.world);
+    // two-sided: light the face that is seen
+    if (dot(n, v) < 0.0) { n = -n; }
+    let l = normalize(u.light.xyz);
+    let rough = clamp(i.surface.x, 0.04, 1.0);
+    let metal = clamp(i.surface.y, 0.0, 1.0);
+    let base = pow(i.color, vec3<f32>(2.2));
+    let diffuse = max(dot(n, l), 0.0);
     let sky = 0.5 + 0.5 * n.z;
-    // colours are given in sRGB; the target is sRGB, so shade in linear space
-    let c = pow(i.color, vec3<f32>(2.2)) * (0.30 + 0.25 * sky + 0.55 * diffuse);
-    return vec4<f32>(c, 1.0);
+    let lit = base * (1.0 - metal) * (0.30 + 0.25 * sky + 0.55 * diffuse);
+    let f0 = mix(vec3<f32>(0.04), base, metal);
+    let fres = pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    let f = f0 + (vec3<f32>(1.0) - f0) * fres * (1.0 - rough);
+    let h = normalize(l + v);
+    let a = rough * rough;
+    let shine = clamp(2.0 / (a * a) - 2.0, 1.0, 2048.0);
+    let highlight = f * pow(max(dot(n, h), 0.0), shine) * (shine + 2.0) / 8.0 * diffuse;
+    let r = reflect(-v, n);
+    let env = mix(vec3<f32>(0.30, 0.30, 0.32), vec3<f32>(0.95, 0.97, 1.0), 0.5 + 0.5 * r.z);
+    let reflection = f * env * (1.0 - 0.6 * rough);
+    let c = lit + min(highlight, vec3<f32>(4.0)) * (1.0 - 0.5 * rough) + reflection;
+    return vec4<f32>(pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2)), clamp(i.surface.z, 0.05, 1.0));
 }
 
 @fragment fn fs_flat(i: VOut) -> @location(0) vec4<f32> {
@@ -78,11 +114,14 @@ struct Targets {
 
 pub struct Viewport3d {
     shaded: wgpu::RenderPipeline,
+    /// See-through surfaces, blended over the rest after it is drawn.
+    glass: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
     overlay_lines: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     triangles: Option<Mesh>,
+    glass_mesh: Option<Mesh>,
     line_mesh: Option<Mesh>,
     overlay_mesh: Option<Mesh>,
     targets: Option<Targets>,
@@ -127,7 +166,7 @@ impl Viewport3d {
             bind_group_layouts: &[Some(&bgl)],
             immediate_size: 0,
         });
-        let pipeline = |topology, fragment: &str, depth_compare| {
+        let pipeline = |topology, fragment: &str, depth_compare, blend: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(fragment),
                 layout: Some(&layout),
@@ -137,7 +176,7 @@ impl Viewport3d {
                     buffers: &[Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<Vertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3],
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x3],
                     })],
                     compilation_options: Default::default(),
                 },
@@ -147,7 +186,7 @@ impl Viewport3d {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(depth_compare != wgpu::CompareFunction::Always),
+                    depth_write_enabled: Some(depth_compare != wgpu::CompareFunction::Always && !blend),
                     depth_compare: Some(depth_compare),
                     stencil: Default::default(),
                     bias: Default::default(),
@@ -161,7 +200,7 @@ impl Viewport3d {
                     entry_point: Some(fragment),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: COLOR_FORMAT,
-                        blend: None,
+                        blend: blend.then_some(wgpu::BlendState::ALPHA_BLENDING),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: Default::default(),
@@ -175,20 +214,30 @@ impl Viewport3d {
                 wgpu::PrimitiveTopology::TriangleList,
                 "fs_shaded",
                 wgpu::CompareFunction::Less,
+                false,
+            ),
+            glass: pipeline(
+                wgpu::PrimitiveTopology::TriangleList,
+                "fs_shaded",
+                wgpu::CompareFunction::Less,
+                true,
             ),
             lines: pipeline(
                 wgpu::PrimitiveTopology::LineList,
                 "fs_flat",
                 wgpu::CompareFunction::LessEqual,
+                false,
             ),
             overlay_lines: pipeline(
                 wgpu::PrimitiveTopology::LineList,
                 "fs_flat",
                 wgpu::CompareFunction::Always,
+                false,
             ),
             uniforms,
             bind_group,
             triangles: None,
+            glass_mesh: None,
             line_mesh: None,
             overlay_mesh: None,
             targets: None,
@@ -196,13 +245,15 @@ impl Viewport3d {
         }
     }
 
-    /// Replace the geometry: shaded triangles, depth-tested lines, and lines
+    /// Replace the geometry: shaded triangles (opaque ones, and see-through
+    /// ones indexing the same vertices), depth-tested lines, and lines
     /// drawn on top of everything (2D drawings shown in 3D space).
     pub fn set_geometry(
         &mut self,
         device: &wgpu::Device,
         vertices: &[Vertex],
         indices: &[u32],
+        see_through: &[u32],
         lines: &[Vertex],
         overlay: &[Vertex],
     ) {
@@ -213,14 +264,18 @@ impl Viewport3d {
                 usage,
             })
         };
-        self.triangles = (!indices.is_empty()).then(|| Mesh {
-            vertices: buffer(bytemuck::cast_slice(vertices), wgpu::BufferUsages::VERTEX),
-            indices: Some(buffer(
-                bytemuck::cast_slice(indices),
-                wgpu::BufferUsages::INDEX,
-            )),
-            count: indices.len() as u32,
-        });
+        let tri_mesh = |indices: &[u32]| {
+            (!indices.is_empty()).then(|| Mesh {
+                vertices: buffer(bytemuck::cast_slice(vertices), wgpu::BufferUsages::VERTEX),
+                indices: Some(buffer(
+                    bytemuck::cast_slice(indices),
+                    wgpu::BufferUsages::INDEX,
+                )),
+                count: indices.len() as u32,
+            })
+        };
+        self.triangles = tri_mesh(indices);
+        self.glass_mesh = tri_mesh(see_through);
         let line_mesh = |v: &[Vertex]| {
             (!v.is_empty()).then(|| Mesh {
                 vertices: buffer(bytemuck::cast_slice(v), wgpu::BufferUsages::VERTEX),
@@ -298,6 +353,7 @@ impl Viewport3d {
         rs: &egui_wgpu::RenderState,
         size: [u32; 2],
         view_proj: Mat4,
+        eye: [f32; 3],
         background: [f64; 3],
     ) -> egui::TextureId {
         let size = [size[0].max(1), size[1].max(1)];
@@ -305,6 +361,7 @@ impl Viewport3d {
         let u = Uniforms {
             view_proj: view_proj.to_cols_array_2d(),
             light: [0.4, -0.6, 0.85, 0.0],
+            eye: [eye[0], eye[1], eye[2], 1.0],
         };
         rs.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
@@ -342,6 +399,7 @@ impl Viewport3d {
             pass.set_bind_group(0, &self.bind_group, &[]);
             for (pipeline, mesh) in [
                 (&self.shaded, &self.triangles),
+                (&self.glass, &self.glass_mesh),
                 (&self.lines, &self.line_mesh),
                 (&self.overlay_lines, &self.overlay_mesh),
             ] {

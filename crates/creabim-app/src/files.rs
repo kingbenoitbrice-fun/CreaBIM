@@ -201,11 +201,18 @@ pub fn pick_open() -> Option<String> {
         .set_title("Open or link a file")
         .add_filter(
             "Everything CreaBIM reads",
-            &["creabim", "json", "ifc", "ifcx", "blend", "FCStd", "fcstd"],
+            &[
+                "creabim", "json", "ifc", "ifcx", "blend", "FCStd", "fcstd", "FCMat", "fcmat",
+                "gltf", "glb",
+            ],
         )
         .add_filter("CreaBIM project", &["creabim"])
         .add_filter("IFC", &["ifc", "ifcx"])
         .add_filter("Blender and FreeCAD (linked)", &["blend", "FCStd", "fcstd"])
+        .add_filter(
+            "Materials (FreeCAD cards, glTF)",
+            &["FCMat", "fcmat", "gltf", "glb"],
+        )
         .pick_file()
         .map(|p| p.display().to_string())
 }
