@@ -1183,25 +1183,24 @@ impl CreaBimApp {
                 let now = ui.input(|i| i.pointer.latest_pos()).unwrap_or(p0);
                 crate::boxsel::draw(&painter, p0, now);
                 if response.drag_stopped() || !response.dragged() {
-                    let parts = self.scene.iter().filter_map(|item| {
-                        let pts = &item.mesh.positions;
-                        let first = glam::Vec3::from(*pts.first()?);
-                        let (lo, hi) = pts.iter().fold((first, first), |(lo, hi), p| {
-                            let p = glam::Vec3::from(*p);
-                            (lo.min(p), hi.max(p))
-                        });
-                        let mut r = Rect::NOTHING;
-                        for k in 0..8 {
-                            let c = glam::Vec3::new(
-                                if k & 1 == 0 { lo.x } else { hi.x },
-                                if k & 2 == 0 { lo.y } else { hi.y },
-                                if k & 4 == 0 { lo.z } else { hi.z },
-                            );
-                            r.extend_with(project(c.as_dvec3())?);
-                        }
-                        Some((item.id, r))
+                    let tris = self.scene.iter().flat_map(|item| {
+                        let pts: Vec<Option<egui::Pos2>> = item
+                            .mesh
+                            .positions
+                            .iter()
+                            .map(|p| project(glam::Vec3::from(*p).as_dvec3()))
+                            .collect();
+                        item.mesh
+                            .indices
+                            .as_chunks::<3>()
+                            .0
+                            .iter()
+                            .filter_map(move |t| {
+                                let p = |i: u32| pts.get(i as usize).copied().flatten();
+                                Some((item.id, [p(t[0])?, p(t[1])?, p(t[2])?]))
+                            })
                     });
-                    let ids: Vec<ElementId> = crate::boxsel::pick(p0, now, parts)
+                    let ids: Vec<ElementId> = crate::boxsel::pick_triangles(p0, now, tris)
                         .into_iter()
                         .filter(|id| planview::box_selectable(&self.doc, *id))
                         .collect();

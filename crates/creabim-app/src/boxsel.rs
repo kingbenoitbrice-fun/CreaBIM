@@ -75,6 +75,82 @@ pub fn pick(
         .collect()
 }
 
+/// The ids a box takes in 3D, given each element's triangles on screen.
+/// Testing triangles rather than bounding boxes keeps a crossing box from
+/// picking a wall it only passes near.
+pub fn pick_triangles(
+    start: Pos2,
+    now: Pos2,
+    tris: impl IntoIterator<Item = (ElementId, [Pos2; 3])>,
+) -> Vec<ElementId> {
+    let r = Rect::from_two_pos(start, now);
+    let touch = crossing(start, now);
+    let mut seen: Vec<ElementId> = Vec::new();
+    let mut state: HashMap<ElementId, (bool, bool)> = HashMap::new();
+    for (id, t) in tris {
+        if id == ElementId::NIL {
+            continue;
+        }
+        let s = state.entry(id).or_insert_with(|| {
+            seen.push(id);
+            (false, true)
+        });
+        if !s.0 {
+            s.0 = touches(r, t);
+        }
+        s.1 &= t.iter().all(|p| r.contains(*p));
+    }
+    seen.into_iter()
+        .filter(|id| {
+            let (any, all) = state[id];
+            if touch {
+                any
+            } else {
+                all
+            }
+        })
+        .collect()
+}
+
+/// Does triangle `t` overlap rectangle `r`?
+fn touches(r: Rect, t: [Pos2; 3]) -> bool {
+    let tb = Rect::from_points(&t);
+    if !r.intersects(tb) {
+        return false;
+    }
+    if t.iter().any(|p| r.contains(*p)) {
+        return true;
+    }
+    let corners = [
+        r.left_top(),
+        r.right_top(),
+        r.right_bottom(),
+        r.left_bottom(),
+    ];
+    let cross = |a: Pos2, b: Pos2, p: Pos2| (b - a).x * (p - a).y - (b - a).y * (p - a).x;
+    let inside = |p: Pos2| {
+        let d = [
+            cross(t[0], t[1], p),
+            cross(t[1], t[2], p),
+            cross(t[2], t[0], p),
+        ];
+        d.iter().all(|v| *v >= 0.0) || d.iter().all(|v| *v <= 0.0)
+    };
+    if corners.iter().any(|c| inside(*c)) {
+        return true;
+    }
+    // an edge of the triangle crossing an edge of the rectangle
+    let hit = |a: Pos2, b: Pos2, c: Pos2, d: Pos2| {
+        let (d1, d2) = (cross(c, d, a), cross(c, d, b));
+        let (d3, d4) = (cross(a, b, c), cross(a, b, d));
+        d1 * d2 < 0.0 && d3 * d4 < 0.0
+    };
+    (0..3).any(|i| {
+        let (a, b) = (t[i], t[(i + 1) % 3]);
+        (0..4).any(|k| hit(a, b, corners[k], corners[(k + 1) % 4]))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +167,17 @@ mod tests {
         assert_eq!(window, vec![a]);
         let cross = pick(pos2(30.0, 30.0), pos2(0.0, 0.0), parts);
         assert_eq!(cross, vec![a, b]);
+    }
+
+    #[test]
+    fn a_crossing_box_in_the_corner_of_a_triangles_bounds_misses_it() {
+        let a = ElementId::new();
+        // a thin diagonal triangle from (0,0) to (100,100)
+        let t = [pos2(0.0, 0.0), pos2(100.0, 100.0), pos2(0.0, 5.0)];
+        assert!(pick_triangles(pos2(100.0, 0.0), pos2(80.0, 20.0), [(a, t)]).is_empty());
+        assert_eq!(
+            pick_triangles(pos2(60.0, 40.0), pos2(40.0, 60.0), [(a, t)]),
+            vec![a]
+        );
     }
 }
