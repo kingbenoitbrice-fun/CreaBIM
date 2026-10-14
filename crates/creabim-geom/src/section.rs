@@ -112,6 +112,25 @@ pub fn section_view(
         }
     }
 
+    // Guides drawn on the section plane
+    for e in model.iter() {
+        let ElementKind::Guide(g) = &e.kind else {
+            continue;
+        };
+        let (a, b) = (frame.project(g.a), frame.project(g.b));
+        if a.z.abs() > 0.01 || b.z.abs() > 0.01 {
+            continue;
+        }
+        if let Some((a, b)) = crate::plan::guide_span(a.truncate(), b.truncate()) {
+            items.push(PlanItem::Line {
+                id: e.id,
+                pen: Pen::Guide,
+                a,
+                b,
+            });
+        }
+    }
+
     // Level datums across what the drawing shows, a metre past each side.
     let span = PlanView {
         items: items.clone(),

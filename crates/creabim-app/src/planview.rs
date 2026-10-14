@@ -95,6 +95,7 @@ impl Tool {
             Tool::Section => "Click where the new section cuts, then click on the side it should look towards.",
             Tool::Elevation => "Click where the new elevation stands, then click on the side it should look towards.",
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to levels.",
+            Tool::Guide => "Click two points for a guide on the section plane. It shows here, in 3D and in any section on the same plane.",
             Tool::Sketch => "Click the corners of a sketch on the section plane. Click the first corner to close it, Enter or right-click to leave it open. L, A and C draw lines, arcs and circles. Then E extrudes it.",
             t => t.hint(),
         }
@@ -1199,6 +1200,24 @@ fn section_tool(
                 selection.only(e.id);
                 doc.commit(Transaction::new("Draw slab in section").insert(e))
             }
+        },
+        Tool::Guide => match state.pending.take() {
+            None => {
+                state.pending = Some(p);
+                Ok(())
+            }
+            Some(a) if a.distance(p) > 0.01 => {
+                let e = Element::new(
+                    "Guide",
+                    ElementKind::Guide(creabim_core::Guide {
+                        level: None,
+                        a: at(a).extend(a.y),
+                        b: at(p).extend(p.y),
+                    }),
+                );
+                doc.commit(Transaction::new("Add guide").insert(e))
+            }
+            Some(_) => Ok(()),
         },
         Tool::Section | Tool::Elevation => match state.pending.take() {
             None => {

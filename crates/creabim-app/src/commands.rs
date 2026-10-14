@@ -23,6 +23,9 @@ pub enum Command {
     Redo,
     /// Put the pivot cursor where the menu was opened.
     CursorHere,
+    /// Put the workplane on the face (in 3D) or level (in a plan) where the
+    /// menu was opened.
+    WorkplaneHere,
 }
 
 impl Command {
@@ -44,6 +47,7 @@ impl Command {
             Command::Undo => "Undo",
             Command::Redo => "Redo",
             Command::CursorHere => "Place pivot cursor here",
+            Command::WorkplaneHere => "Set workplane here",
         }
     }
 
@@ -65,6 +69,7 @@ impl Command {
             Command::Undo => "Ctrl+Z",
             Command::Redo => "Ctrl+Y",
             Command::CursorHere => "Shift+right-click",
+            Command::WorkplaneHere => "",
         }
     }
 
@@ -152,6 +157,7 @@ pub fn context_menu(ui: &mut egui::Ui, selected: usize) -> Option<Command> {
         item(ui, Command::SelectNone);
     }
     item(ui, Command::CursorHere);
+    item(ui, Command::WorkplaneHere);
     picked
 }
 
