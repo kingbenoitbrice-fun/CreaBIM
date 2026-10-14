@@ -81,6 +81,8 @@ impl Transaction {
         for id in ids {
             visit(model, *id, &mut order);
         }
+        // grid lines of a deleted grid group stay, out of the group
+        self.ops.extend(crate::grids::release_lines(model, &order));
         for id in order {
             if let Some(e) = model.get(id) {
                 self.ops.push(Op::Remove(e.clone()));

@@ -67,6 +67,7 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Tag => "tag",
         Tool::Sketch => "pen-tool",
         Tool::Guide => "slash",
+        Tool::Grid => "grid-3x3",
     }
 }
 
@@ -76,7 +77,7 @@ fn tool_group(t: Tool) -> u8 {
         Tool::Wall | Tool::Door | Tool::Window | Tool::Slab | Tool::Mass => 1,
         Tool::Section | Tool::Elevation => 2,
         Tool::Dimension | Tool::Tag => 3,
-        Tool::Sketch | Tool::Guide => 4,
+        Tool::Sketch | Tool::Guide | Tool::Grid => 4,
     }
 }
 
@@ -267,6 +268,7 @@ impl CreaBimApp {
                         items.extend(group.iter().map(|c| ctx(*c)));
                         items.push(Item::Separator);
                     }
+                    items.extend(self.hide_in_view_items(self.shell.context_3d));
                 }
                 items.extend([
                     ctx(Command::Paste),
@@ -335,7 +337,7 @@ impl CreaBimApp {
                 }
                 items
             }
-            _ => vec![],
+            key => self.grid_vis_menu(key).unwrap_or_default(),
         }
     }
 
@@ -456,6 +458,10 @@ impl CreaBimApp {
             Item::new("layout.swap", "2D view first").checked(self.layout.swapped),
             Item::Separator,
             Item::new("plan3d", "Show the 2D view in 3D space").checked(self.plan_in_3d),
+            Item::sub(
+                "3D view shows",
+                self.visibility_items(super::gridvis::VisTarget::Window3d),
+            ),
             Item::new("frame", "Frame all").icon("maximize-2"),
             Item::Separator,
             Item::Header("Interface".into()),
@@ -653,7 +659,9 @@ impl CreaBimApp {
                 }
             }
             "view.shaded" | "view.tag" => self.view_action(head),
-            _ => {}
+            _ => {
+                self.grid_vis_action(head, arg);
+            }
         }
     }
 
@@ -900,6 +908,7 @@ impl CreaBimApp {
                 "hint": "Tag every door and window in this view that has no tag yet",
             }));
         }
+        options.extend(self.grid_vis_options());
         if self.active_view.is_some_and(|id| self.is_sheet(id)) {
             options.push(json!({
                 "kind": "menu", "key": "placeview", "label": "", "value": "Place view…",

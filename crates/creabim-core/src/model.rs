@@ -58,6 +58,14 @@ impl Model {
         }
     }
 
+    /// Keep only the elements `keep` accepts, without checking references:
+    /// for read-only copies such as a view's model with what it hides left
+    /// out ([`crate::visibility::without`]). Never commit edits from one.
+    pub fn retain(&mut self, mut keep: impl FnMut(&Element) -> bool) {
+        self.elements.retain(|_, e| keep(e));
+        self.revision += 1;
+    }
+
     /// Elements that directly reference `id`.
     pub fn dependents(&self, id: ElementId) -> Vec<ElementId> {
         self.iter()
