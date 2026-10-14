@@ -4,7 +4,7 @@ CreaBIM is an open-source, BIM-native architectural modeler: one model for freef
 
 ![CreaBIM showing the sample house in 3D beside its generated ground-floor plan](docs/screenshot.png)
 
-**Status: Phase 1 in progress (modifier stack, sketches, move, rotate and stretch).** It proves the core architecture end to end. It is not yet a tool for real projects.
+**Status: Phase 1 in progress (everyday editing: multiple selection, copy and paste, sketch constraints).** It proves the core architecture end to end. It is not yet a tool for real projects.
 
 ## What works today
 
@@ -20,8 +20,11 @@ CreaBIM is an open-source, BIM-native architectural modeler: one model for freef
 - **BIM elements:** levels, grids, walls, slabs, doors and windows. Doors and windows are hosted by walls and cut real openings.
 - **Freeform meshes:** add a mass, click a face in 3D and extrude (E), taper, move or subdivide it (Catmull-Clark). Give any mesh an IFC class such as `IfcRoof` and it exports as that.
 - **Modifier stack:** give a mass array, mirror, solidify and subdivision modifiers. They change its shape without touching its mesh, so you can turn them off, reorder them or change their values at any time, and apply the top one to make it permanent. Faces stay clickable through the modifiers.
-- **Sketches on workplanes:** the Sketch tool draws lines on any face in 3D, on a level in a plan, or on the section plane in a section. A closed sketch extrudes (E) into a mass; an open one into a surface that Solidify thickens.
-- **Move, rotate, scale, duplicate and stretch:** G, R and S (and Shift+D to copy) work Blender-style on the selected element in 3D, plans and sections, with axis keys and typed values. In plans, drag a selected element to move it, or its square grips to stretch walls, slabs and grids; joined walls follow.
+- **Sketches on workplanes:** the Sketch tool draws lines on any face in 3D, on a level in a plan, or on the section plane in a section, with lines, arcs (A) and circles (C). Length, equal, parallel, perpendicular, horizontal, vertical, coincident and radius constraints drive its shape. A closed sketch extrudes (E) into a mass; an open one into a surface that Solidify thickens.
+- **Move, rotate, scale, duplicate and stretch:** G, R and S (and Shift+D to copy) work Blender-style on the selection in 3D, plans and sections, with axis keys and typed values. R then X or Y tilts; S then an axis scales along it only. Pick the pivot (median, bounds, each element's own, the active element or a 3D cursor placed with Shift+right-click).
+- **Selecting many:** Shift+click adds or removes, Ctrl+A selects everything, and a box picks what lies inside (drag left to right) or what it touches (right to left), on empty paper in plans and sections or after pressing B in 3D. Delete, move, copy and hide act on all of it.
+- **Copy, paste, hide:** Ctrl+C, Ctrl+X and Ctrl+V copy elements with their openings, also between two CreaBIM windows. H hides the selection, Shift+H shows only it, Alt+H shows everything again.
+- **Open and save with the system file picker,** with a list of recent files. In plans, drag a selected element to move it, or its square grips to stretch walls, slabs and grids; joined walls follow.
 - **Undo and redo** for every edit. Dragging a value in the properties panel undoes as one step.
 - **Plan drawings generated from the model:** walls cut at a set height, door swings, window symbols, slabs and masses in projection. Export as SVG at 1:100.
 - **Drag handles and snaps everywhere:** select a wall, slab, door or window and drag its handles in 3D or in plans to change length, height, thickness, width or sill. Snaps to ends, midpoints, intersections, edges, perpendiculars, guides and axes. Walls, slabs, doors, windows and masses can be drawn right in the 3D view.

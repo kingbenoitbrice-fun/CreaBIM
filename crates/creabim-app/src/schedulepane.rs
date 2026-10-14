@@ -1,6 +1,7 @@
 //! A schedule shown as a live, editable table. Changing a cell edits the
 //! model, so plans, sections, sheets and the 3D view update at once.
 
+use crate::selection::Selection;
 use creabim_core::{Document, ElementId, ElementKind, ScheduleCategory};
 use creabim_geom::schedule::{self, Field};
 use eframe::egui::{self, Color32, Rect};
@@ -16,7 +17,7 @@ pub fn show(
     doc: &mut Document,
     view: ElementId,
     category: ScheduleCategory,
-    selection: &mut Option<ElementId>,
+    selection: &mut Selection,
     csv_path: &str,
 ) -> Option<String> {
     let table = schedule::schedule(doc.model(), category);
@@ -118,10 +119,10 @@ pub fn show(
                             _ if i == 0 => {
                                 // the first column selects the row's element
                                 if ui
-                                    .selectable_label(*selection == Some(row.id), text)
+                                    .selectable_label(selection.contains(row.id), text)
                                     .clicked()
                                 {
-                                    *selection = Some(row.id);
+                                    selection.only(row.id);
                                 }
                             }
                             _ => {
@@ -138,7 +139,7 @@ pub fn show(
             });
     });
     if let Some((id, f)) = edit {
-        *selection = Some(id);
+        selection.only(id);
         if let Err(e) = doc.edit_merged(id, "Edit in schedule", f) {
             message = Some(format!("Couldn't do that: {e}"));
         }

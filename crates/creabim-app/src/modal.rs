@@ -84,6 +84,42 @@ impl Mode {
     }
 }
 
+/// What rotating and scaling turn about, as in Blender.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pivot {
+    /// The middle of the selected elements' own pivots.
+    #[default]
+    Median,
+    /// The centre of the box round them.
+    Bounds,
+    /// Each element about itself.
+    Individual,
+    /// The active element (the last one picked).
+    Active,
+    /// The pivot cursor, placed with Shift+right-click.
+    Cursor,
+}
+
+impl Pivot {
+    pub const ALL: [Pivot; 5] = [
+        Pivot::Median,
+        Pivot::Bounds,
+        Pivot::Individual,
+        Pivot::Active,
+        Pivot::Cursor,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Pivot::Median => "Median point",
+            Pivot::Bounds => "Bounding box centre",
+            Pivot::Individual => "Individual origins",
+            Pivot::Active => "Active element",
+            Pivot::Cursor => "Pivot cursor",
+        }
+    }
+}
+
 /// Where a pointer edit runs, which decides the plane things move in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Space {
@@ -103,6 +139,8 @@ pub struct PaneMap<'a> {
     pub to_model: &'a dyn Fn(Pos2, Option<Axis>, DVec3) -> Option<DVec3>,
     /// A model point on screen.
     pub project: &'a dyn Fn(DVec3) -> Option<Pos2>,
+    /// The direction the pane looks in, into the screen.
+    pub look: DVec3,
 }
 
 /// A keyboard move, rotate or scale in progress.
@@ -114,15 +152,21 @@ pub struct Modal {
     pub space: Space,
     /// The pane that runs it: a view, or `None` for the 3D view.
     pub pane: Option<ElementId>,
+    /// The point things turn and scale about.
     pivot: DVec3,
+    /// Each element's own pivot, for individual origins.
+    own: Vec<DVec3>,
+    individual: bool,
     grab: Pos2,
     pointer: Pos2,
     axis: Option<Axis>,
     typed: String,
     edit: LiveEdit,
-    /// Started by Shift+D: cancelling also takes the copy away.
+    /// Started by Shift+D: cancelling also takes the copies away.
     pub duplicated: bool,
     shown: String,
+    /// Elements left out because they can't take this edit.
+    skipped: usize,
 }
 
 pub enum Outcome {
@@ -132,71 +176,139 @@ pub enum Outcome {
 }
 
 impl Modal {
-    /// Start editing `id` (or one of its mesh faces) from pointer `grab`.
+    /// Start editing `ids` (the active one last), or one mesh face of a
+    /// single mass, from pointer `grab`.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         doc: &Document,
         mode: Mode,
-        id: ElementId,
+        ids: &[ElementId],
         face: Option<usize>,
         space: Space,
         pane: Option<ElementId>,
         grab: Pos2,
+        pivot: Pivot,
+        cursor: Option<DVec3>,
     ) -> Result<Modal, String> {
         let model = doc.model();
-        let e = model.get(id).ok_or("Select something first.")?;
-        if matches!(space, Space::Section { .. }) && mode == Mode::Rotate {
-            return Err("Rotate in a plan or the 3D view: things turn about the vertical.".into());
-        }
-        let pivot = match (face, &e.kind) {
-            (Some(f), ElementKind::FreeMesh(m)) if f < m.mesh.faces.len() => {
+        let mut elements: Vec<&Element> = ids.iter().filter_map(|id| model.get(*id)).collect();
+        // doors and windows go with their wall when it moves too
+        let hosts: Vec<ElementId> = elements.iter().map(|e| e.id).collect();
+        // so do cuts with what they cut
+        elements.retain(|e| match &e.kind {
+            ElementKind::Opening(o) => !hosts.contains(&o.host),
+            ElementKind::Cut(_) => false,
+            _ => true,
+        });
+        let first = *elements.last().ok_or("Select something first.")?;
+        let face =
+            face.filter(|_| elements.len() == 1 && matches!(first.kind, ElementKind::FreeMesh(_)));
+        if let (Some(f), ElementKind::FreeMesh(m)) = (face, &first.kind) {
+            if f < m.mesh.faces.len() {
                 let z = m
                     .level
                     .and_then(|l| model.level(l))
                     .map_or(0.0, |l| l.elevation);
-                m.origin + m.to_model(m.mesh.face_center(f)) + DVec3::Z * z
-            }
-            _ => {
-                transform::pivot(model, id).ok_or(format!("{} can't be moved this way.", e.name))?
-            }
-        };
-        let face = face.filter(|_| matches!(e.kind, ElementKind::FreeMesh(_)));
-        if face.is_none() {
-            let probe = match mode {
-                Mode::Move => Xform::Move(DVec3::X),
-                Mode::Rotate => Xform::Rotate {
-                    center: pivot.truncate(),
-                    degrees: 1.0,
-                },
-                Mode::Scale => Xform::Scale {
-                    center: pivot,
-                    factor: 1.1,
-                },
-            };
-            if transform::transformed(model, e, &probe).is_none() {
-                return Err(match mode {
-                    Mode::Move => format!("{} can't be moved this way.", e.name),
-                    Mode::Rotate => format!("{} can't be rotated on its own.", e.name),
-                    Mode::Scale => format!("{} can't be scaled.", e.name),
+                let c = m.origin + m.to_model(m.mesh.face_center(f)) + DVec3::Z * z;
+                let label = format!("{} face", mode.verb());
+                return Ok(Modal {
+                    mode,
+                    face,
+                    space,
+                    pane,
+                    pivot: c,
+                    own: vec![c],
+                    individual: false,
+                    grab,
+                    pointer: grab,
+                    axis: None,
+                    typed: String::new(),
+                    edit: LiveEdit::new(label, vec![first.clone()]),
+                    duplicated: false,
+                    shown: String::new(),
+                    skipped: 0,
                 });
             }
         }
-        let what = match face {
-            Some(_) => "face".to_string(),
-            None => e.name.clone(),
+        // keep what can take this kind of edit
+        let probe = |c: DVec3| match mode {
+            Mode::Move => Xform::Move(DVec3::X),
+            Mode::Rotate => match space {
+                Space::Section { .. } => Xform::Tilt {
+                    center: c,
+                    axis: DVec3::X,
+                    degrees: 1.0,
+                },
+                _ => Xform::Rotate {
+                    center: c.truncate(),
+                    degrees: 1.0,
+                },
+            },
+            Mode::Scale => Xform::Scale {
+                center: c,
+                factor: 1.1,
+            },
+        };
+        let mut kept: Vec<(Element, DVec3)> = Vec::new();
+        let mut skipped = 0;
+        for e in &elements {
+            let Some(c) = transform::pivot(model, e.id) else {
+                skipped += 1;
+                continue;
+            };
+            if transform::transformed(model, e, &probe(c)).is_some() {
+                kept.push(((*e).clone(), c));
+            } else {
+                skipped += 1;
+            }
+        }
+        if kept.is_empty() {
+            let name = &first.name;
+            return Err(match (mode, elements.len(), space) {
+                (Mode::Rotate, _, Space::Section { .. }) => {
+                    "Only masses, sketches and guides turn in a section; walls and slabs stay upright.".into()
+                }
+                (Mode::Move, 1, _) => format!("{name} can't be moved this way."),
+                (Mode::Rotate, 1, _) => format!("{name} can't be rotated on its own."),
+                (Mode::Scale, 1, _) => format!("{name} can't be scaled."),
+                (m, n, _) => format!("None of the {n} selected can take a {}.", m.verb().to_lowercase()),
+            });
+        }
+        let own: Vec<DVec3> = kept.iter().map(|k| k.1).collect();
+        let n = own.len() as f64;
+        let median = own.iter().copied().sum::<DVec3>() / n;
+        let lo = own.iter().copied().fold(DVec3::splat(f64::MAX), DVec3::min);
+        let hi = own.iter().copied().fold(DVec3::splat(f64::MIN), DVec3::max);
+        let center = match pivot {
+            Pivot::Median | Pivot::Individual => median,
+            Pivot::Bounds => (lo + hi) / 2.0,
+            Pivot::Active => *own.last().expect("kept is not empty"),
+            Pivot::Cursor => cursor.unwrap_or(median),
+        };
+        let what = if kept.len() == 1 {
+            kept[0].0.name.clone()
+        } else {
+            format!("{} elements", kept.len())
         };
         Ok(Modal {
             mode,
-            face,
+            face: None,
             space,
             pane,
-            pivot,
+            pivot: center,
+            own,
+            individual: pivot == Pivot::Individual && kept.len() > 1,
             grab,
             pointer: grab,
             axis: None,
             typed: String::new(),
-            edit: LiveEdit::new(format!("{} {what}", mode.verb()), vec![e.clone()]),
+            edit: LiveEdit::new(
+                format!("{} {what}", mode.verb()),
+                kept.into_iter().map(|k| k.0).collect(),
+            ),
             duplicated: false,
             shown: String::new(),
+            skipped,
         })
     }
 
@@ -253,12 +365,22 @@ impl Modal {
             self.shown = format!("Can't go there: {e}");
         }
         self.draw(painter, map);
+        let skipped = match self.skipped {
+            0 => String::new(),
+            1 => " (1 selected element can't take this and stays put)".into(),
+            n => format!(" ({n} selected elements can't take this and stay put)"),
+        };
         if enter || confirm {
-            let done = format!("{}. Ctrl+Z to undo.", self.shown);
+            let done = format!("{}{skipped}. Ctrl+Z to undo.", self.shown);
             return Outcome::Done(done);
         }
+        let keys = match self.mode {
+            Mode::Move => "X, Y or Z keeps to an axis",
+            Mode::Rotate => "X or Y tilts about that axis",
+            Mode::Scale => "X, Y or Z scales along one axis",
+        };
         Outcome::Running(format!(
-            "{}   ·   X, Y or Z keeps to an axis, type a value, click or Enter to finish, Esc to cancel{}",
+            "{}{skipped}   ·   {keys}, type a value, click or Enter to finish, Esc to cancel{}",
             self.shown,
             if self.mode == Mode::Rotate {
                 ", Ctrl snaps to 15°"
@@ -269,9 +391,10 @@ impl Modal {
     }
 
     fn toggle(&mut self, a: Axis) {
-        if self.mode == Mode::Move {
-            self.axis = if self.axis == Some(a) { None } else { Some(a) };
+        if self.mode == Mode::Rotate && self.face.is_some() {
+            return;
         }
+        self.axis = if self.axis == Some(a) { None } else { Some(a) };
     }
 
     /// Undo whatever this edit has done.
@@ -279,6 +402,18 @@ impl Modal {
         self.edit.cancel(doc);
         if self.duplicated && doc.undo_label().is_some_and(|l| l.starts_with("Duplicate")) {
             doc.discard_last();
+        }
+    }
+
+    /// The turn axis for a rotate: about the pane's view in plans and
+    /// sections, about the vertical in 3D, or about a chosen axis.
+    fn turn_axis(&self) -> Option<DVec3> {
+        match (self.axis, self.space) {
+            (Some(Axis::Z), _) | (None, Space::Model | Space::Plan) => None,
+            (Some(a), _) => Some(a.unit()),
+            (None, Space::Section { start, end }) => {
+                Some(-(end - start).normalize_or_zero().perp().extend(0.0))
+            }
         }
     }
 
@@ -318,18 +453,40 @@ impl Modal {
             }
             Mode::Rotate => {
                 let angle = |p: Pos2| (-(p.y - ps.y)).atan2(p.x - ps.x) as f64;
+                let turn = self.turn_axis();
                 let degrees = match typed {
                     Some(v) => v,
                     None => {
                         let d = (angle(self.pointer) - angle(self.grab)).to_degrees();
                         let d = (d + 180.0).rem_euclid(360.0) - 180.0;
-                        snap(d, if ctrl { 15.0 } else { 1.0 })
+                        // turning on screen anticlockwise turns about the
+                        // axis that points at the viewer
+                        let toward = match turn {
+                            Some(a) if a.dot(-map.look) < 0.0 => -1.0,
+                            _ => 1.0,
+                        };
+                        snap(d, if ctrl { 15.0 } else { 1.0 }) * toward
                     }
                 };
-                self.shown = format!("{}: {degrees:.1}°", self.edit.label);
-                Xform::Rotate {
-                    center: self.pivot.truncate(),
-                    degrees,
+                match turn {
+                    Some(axis) => {
+                        let about = self
+                            .axis
+                            .map_or(String::new(), |a| format!(" about {}", a.label()));
+                        self.shown = format!("{}: {degrees:.1}°{about}", self.edit.label);
+                        Xform::Tilt {
+                            center: self.pivot,
+                            axis,
+                            degrees,
+                        }
+                    }
+                    None => {
+                        self.shown = format!("{}: {degrees:.1}°", self.edit.label);
+                        Xform::Rotate {
+                            center: self.pivot.truncate(),
+                            degrees,
+                        }
+                    }
                 }
             }
             Mode::Scale => {
@@ -341,18 +498,50 @@ impl Modal {
                         snap(r1 / r0, if ctrl { 0.1 } else { 0.01 }).max(0.01)
                     }
                 };
-                self.shown = format!("{}: × {factor:.2}", self.edit.label);
-                Xform::Scale {
-                    center: self.pivot,
-                    factor,
+                match self.axis.filter(|_| self.face.is_none()) {
+                    Some(a) => {
+                        self.shown =
+                            format!("{}: × {factor:.2} along {}", self.edit.label, a.label());
+                        let mut f = DVec3::ONE;
+                        f[a.index()] = factor;
+                        Xform::Stretch {
+                            center: self.pivot,
+                            factor: f,
+                        }
+                    }
+                    None => {
+                        self.shown = format!("{}: × {factor:.2}", self.edit.label);
+                        Xform::Scale {
+                            center: self.pivot,
+                            factor,
+                        }
+                    }
                 }
             }
         })
     }
 
+    /// The same change about another centre, for individual origins.
+    fn about(t: &Xform, c: DVec3) -> Xform {
+        match *t {
+            Xform::Move(d) => Xform::Move(d),
+            Xform::Rotate { degrees, .. } => Xform::Rotate {
+                center: c.truncate(),
+                degrees,
+            },
+            Xform::Tilt { axis, degrees, .. } => Xform::Tilt {
+                center: c,
+                axis,
+                degrees,
+            },
+            Xform::Scale { factor, .. } => Xform::Scale { center: c, factor },
+            Xform::Stretch { factor, .. } => Xform::Stretch { center: c, factor },
+        }
+    }
+
     fn apply(&mut self, doc: &mut Document, t: &Xform) -> Result<(), String> {
-        let original = self.edit.originals()[0].clone();
-        let changed = match (self.face, &original.kind) {
+        let originals = self.edit.originals().to_vec();
+        let changed = match (self.face, &originals[0].kind) {
             (Some(f), ElementKind::FreeMesh(m)) => {
                 let mut m = m.clone();
                 let verts = m.mesh.faces[f].clone();
@@ -370,17 +559,29 @@ impl Modal {
                             *p = (c.truncate() + r.rotate(p.truncate() - c.truncate())).extend(p.z);
                         }
                     }
+                    Xform::Tilt { .. } | Xform::Stretch { .. } => {}
                 }
-                let mut e = original.clone();
+                let mut e = originals[0].clone();
                 e.kind = ElementKind::FreeMesh(m);
-                e
+                vec![e]
             }
-            _ => transform::transformed(doc.model(), &original, t)
-                .ok_or("this element can't take that change")?,
+            _ => {
+                let mut out = Vec::with_capacity(originals.len());
+                for (i, o) in originals.iter().enumerate() {
+                    let t = if self.individual {
+                        Self::about(t, self.own[i])
+                    } else {
+                        *t
+                    };
+                    out.push(
+                        transform::transformed(doc.model(), o, &t)
+                            .ok_or_else(|| format!("{} can't take that change", o.name))?,
+                    );
+                }
+                out
+            }
         };
-        self.edit
-            .update(doc, vec![changed])
-            .map_err(|e| e.to_string())
+        self.edit.update(doc, changed).map_err(|e| e.to_string())
     }
 
     fn draw(&self, painter: &egui::Painter, map: &PaneMap) {
@@ -399,7 +600,15 @@ impl Modal {
                 painter.line_segment([p, q], Stroke::new(1.5, color));
             }
         }
-        painter.circle_stroke(ps, 4.0, Stroke::new(1.5, accent));
+        if self.individual {
+            for c in &self.own {
+                if let Some(p) = (map.project)(*c) {
+                    painter.circle_stroke(p, 3.0, Stroke::new(1.0, accent));
+                }
+            }
+        } else {
+            painter.circle_stroke(ps, 4.0, Stroke::new(1.5, accent));
+        }
         if self.mode != Mode::Move {
             painter.add(egui::Shape::dashed_line(
                 &[ps, self.pointer],
@@ -411,23 +620,40 @@ impl Modal {
     }
 }
 
-/// The copies a Shift+D makes, inserted as one undo step. Returns the copy
-/// to keep moving.
-pub fn duplicate(doc: &mut Document, id: ElementId) -> Result<ElementId, String> {
-    let copies = transform::duplicate(doc.model(), id);
-    let first = copies
-        .first()
-        .map(|c| c.id)
-        .ok_or("That can't be duplicated.")?;
-    let name = doc
-        .model()
-        .get(id)
-        .map(|e| e.name.clone())
-        .unwrap_or_default();
+/// Copies of `ids` (with the doors in copied walls), inserted as one undo
+/// step. Returns the copies to keep moving.
+pub fn duplicate(doc: &mut Document, ids: &[ElementId]) -> Result<Vec<ElementId>, String> {
+    let model = doc.model();
+    let copies = if let [one] = ids {
+        // one element: a lone door's copy goes beside it on its wall
+        transform::duplicate(model, *one)
+    } else {
+        let set = transform::copy_set(model, ids);
+        let elements: Vec<Element> = set
+            .iter()
+            .filter_map(|id| model.get(*id))
+            .cloned()
+            .collect();
+        let (mut copies, _) = transform::fresh_copies(model, &elements);
+        for (c, o) in copies.iter_mut().zip(&elements) {
+            if ids.contains(&o.id) {
+                c.name = format!("{} copy", c.name);
+            }
+        }
+        copies
+    };
+    if copies.is_empty() {
+        return Err("That can't be duplicated.".into());
+    }
+    let name = match copies.len() {
+        1 => copies[0].name.clone(),
+        n => format!("{n} elements"),
+    };
+    let ids: Vec<ElementId> = copies.iter().map(|c| c.id).collect();
     let mut tx = Transaction::new(format!("Duplicate {name}"));
     for c in copies {
         tx = tx.insert(c);
     }
     doc.commit(tx).map_err(|e| e.to_string())?;
-    Ok(first)
+    Ok(ids)
 }

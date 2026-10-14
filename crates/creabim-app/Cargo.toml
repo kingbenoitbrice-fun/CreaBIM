@@ -15,3 +15,5 @@ creabim-exchange.workspace = true
 glam.workspace = true
 eframe = "0.36"
 bytemuck = { version = "1", features = ["derive"] }
+rfd = "0.15"
+serde_json.workspace = true

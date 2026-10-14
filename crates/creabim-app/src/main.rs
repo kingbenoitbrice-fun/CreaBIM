@@ -1,6 +1,7 @@
 //! CreaBIM desktop app.
 
 mod app;
+mod boxsel;
 mod camera;
 mod files;
 mod handles;
@@ -10,6 +11,7 @@ mod outline;
 mod planview;
 mod render3d;
 mod schedulepane;
+mod selection;
 mod sheetview;
 mod sketch;
 mod snaps;

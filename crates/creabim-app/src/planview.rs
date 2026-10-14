@@ -2,8 +2,10 @@
 //! drawing tools. Edits made here are ordinary model edits, so the 3D view
 //! and any other open view update at once.
 
+use crate::boxsel;
 use crate::handles::{self, PaneInput};
 use crate::modal::{self, Modal, Mode, Outcome, PaneMap, Space};
+use crate::selection::Selection;
 use crate::sketch::{level_below, Click, SketchDraft};
 use crate::snaps::{self, Snapper};
 use creabim_core::Workplane;
@@ -78,7 +80,7 @@ impl Tool {
             Tool::Elevation => "Click two points for the elevation line, outside the building. It looks to the left of the direction you draw.",
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to wall corners, door and window edges and levels, and stay attached to them.",
             Tool::Tag => "Click a door, window, wall or slab, then click where its tag goes.",
-            Tool::Sketch => "Click the corners of a sketch on this level. Click the first corner to close it, Enter or right-click to leave it open, Esc to cancel. Then E extrudes it.",
+            Tool::Sketch => "Click the corners of a sketch on this level. Click the first corner to close it, Enter or right-click to leave it open, Esc to cancel. L, A and C draw lines, arcs and circles. Then E extrudes it.",
             Tool::Guide => "Click two points for a guide through them. Or click an edge, then click where its parallel guide goes. Everything snaps to guides.",
         }
     }
@@ -86,13 +88,13 @@ impl Tool {
     /// The hint for this tool in a section or elevation.
     fn section_hint(self) -> &'static str {
         match self {
-            Tool::Select => "Click to select. Drag a selected element, tag or dimension to move it. G moves, S scales, Shift+D duplicates.",
+            Tool::Select => "Click to select, Shift+click to add, drag on empty paper for a box. G moves, R tilts, S scales, Shift+D duplicates.",
             Tool::Wall => "Click two points: the wall runs along the section line, as high as you draw it.",
             Tool::Slab => "Click two corners of the slab's edge. Its top snaps to the nearest level; it runs back as far as the walls.",
             Tool::Section => "Click where the new section cuts, then click on the side it should look towards.",
             Tool::Elevation => "Click where the new elevation stands, then click on the side it should look towards.",
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to levels.",
-            Tool::Sketch => "Click the corners of a sketch on the section plane. Click the first corner to close it, Enter or right-click to leave it open. Then E extrudes it.",
+            Tool::Sketch => "Click the corners of a sketch on the section plane. Click the first corner to close it, Enter or right-click to leave it open. L, A and C draw lines, arcs and circles. Then E extrudes it.",
             t => t.hint(),
         }
     }
@@ -178,6 +180,12 @@ pub struct PlanState {
     pub guide_edge: Option<(DVec2, DVec2)>,
     /// A slab outline or wall path being redrawn.
     pub outline: Option<crate::outline::Outline>,
+    /// Where a box selection began, on screen.
+    pub boxsel: Option<Pos2>,
+    /// What rotate and scale turn about.
+    pub pivot: modal::Pivot,
+    /// The pivot cursor, placed with Shift+right-click.
+    pub cursor: Option<DVec3>,
 }
 
 impl Default for PlanState {
@@ -198,6 +206,9 @@ impl Default for PlanState {
             status: None,
             guide_edge: None,
             outline: None,
+            boxsel: None,
+            pivot: modal::Pivot::default(),
+            cursor: None,
         }
     }
 }
@@ -251,7 +262,7 @@ pub fn show(
     kind: PaneKind,
     plan: &Drawing,
     state: &mut PlanState,
-    selection: &mut Option<ElementId>,
+    selection: &mut Selection,
     style: PaneStyle,
 ) -> Option<String> {
     let response = ui.interact(rect, ui.id().with(("view", view)), Sense::click_and_drag());
@@ -329,14 +340,18 @@ pub fn show(
         draw_metric_grid(&painter, &xf);
     }
     for item in &plan.items {
-        draw_item(&painter, &xf, item, *selection == Some(item.id()), mm);
+        draw_item(&painter, &xf, item, selection.contains(item.id()), mm);
     }
+    crate::sketch::draw_marks_in_pane(&painter, doc.model(), selection.active, kind, &xf);
 
     let shift = ui.input(|i| i.modifiers.shift);
     // snaps: the selection and what joins it are left out while selecting,
     // since dragging them must not snap to themselves
     let exclude = match tool {
-        Tool::Select => selection.map(|id| joined_with(doc, id)).unwrap_or_default(),
+        Tool::Select => selection
+            .active
+            .map(|id| joined_with(doc, id))
+            .unwrap_or_default(),
         _ => vec![],
     };
     if matches!(kind, PaneKind::Plan { .. } | PaneKind::Section { .. }) {
@@ -427,6 +442,12 @@ pub fn show(
         let map = PaneMap {
             to_model: &to_model,
             project: &project,
+            look: match space {
+                Space::Section { start, end } => {
+                    (end - start).normalize_or_zero().perp().extend(0.0)
+                }
+                _ => -DVec3::Z,
+            },
         };
         if let Some(r) = keyboard_edits(
             ui, doc, view, space, &painter, &response, state, selection, &map,
@@ -495,7 +516,7 @@ pub fn show(
                 doc,
                 &painter,
                 &response,
-                *selection,
+                selection.active,
                 None,
                 &mut state.grip,
                 &input,
@@ -512,7 +533,7 @@ pub fn show(
 
     // a selected section line in a plan can be dragged by its ends or middle
     if let (PaneKind::Plan { .. }, Tool::Select) = (kind, tool) {
-        if let Some(r) = drag_section_line(doc, &painter, &xf, &response, state, *selection) {
+        if let Some(r) = drag_section_line(doc, &painter, &xf, &response, state, selection.active) {
             return r;
         }
     }
@@ -520,6 +541,38 @@ pub fn show(
     if tool == Tool::Select {
         if let Some(r) = drag_annotation(doc, view, plan, &xf, &response, state, selection, mm) {
             return r;
+        }
+    }
+
+    // drag on empty paper to select with a box
+    if tool == Tool::Select && matches!(kind, PaneKind::Plan { .. } | PaneKind::Section { .. }) {
+        if response.drag_started_by(egui::PointerButton::Primary) {
+            let origin = ui.input(|i| i.pointer.press_origin());
+            if let Some(p0) = origin {
+                let on_item = hit_test(&plan.items, xf.to_world(p0), 6.0 / scale as f64, mm);
+                if on_item.is_none() {
+                    state.boxsel = Some(p0);
+                }
+            }
+        }
+        if let Some(p0) = state.boxsel {
+            let now = ui.input(|i| i.pointer.latest_pos()).unwrap_or(p0);
+            boxsel::draw(&painter, p0, now);
+            if response.drag_stopped() || !response.dragged() {
+                let parts = plan.items.iter().filter_map(|it| {
+                    let (lo, hi) = it.bounds()?;
+                    Some((
+                        it.id(),
+                        Rect::from_two_pos(xf.to_screen(lo), xf.to_screen(hi)),
+                    ))
+                });
+                let ids = boxsel::pick(p0, now, parts)
+                    .into_iter()
+                    .filter(|id| box_selectable(doc, *id));
+                selection.extend(ids, shift);
+                state.boxsel = None;
+            }
+            return None;
         }
     }
 
@@ -642,6 +695,30 @@ pub fn show(
         }
     }
 
+    // Shift+right-click places the pivot cursor
+    if let (Some(space), true, true, Some(p)) = (
+        space,
+        response.secondary_clicked(),
+        shift,
+        response.interact_pointer_pos(),
+    ) {
+        let level_z = match kind {
+            PaneKind::Plan { level } => doc.model().level(level).map_or(0.0, |l| l.elevation),
+            _ => 0.0,
+        };
+        let w = hover_world.unwrap_or_else(|| xf.to_world(p));
+        let c = pane_to_model(space, w, level_z);
+        state.cursor = Some(c);
+        state.pivot = modal::Pivot::Cursor;
+        state.status = Some(format!(
+            "Pivot cursor at {:.2}, {:.2}, {:.2}. Rotate and scale now turn about it.",
+            c.x, c.y, c.z
+        ));
+        return None;
+    }
+    if let (Some(space), Some(c)) = (space, state.cursor) {
+        draw_cursor(&painter, xf.to_screen(model_to_pane(space, c)));
+    }
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) || response.secondary_clicked() {
         state.cancel();
     }
@@ -662,7 +739,11 @@ pub fn show(
         };
         let result = match (kind, tool) {
             (_, Tool::Select) => {
-                *selection = picked();
+                match (picked(), shift) {
+                    (Some(id), true) => selection.toggle(id),
+                    (None, true) => {}
+                    (id, false) => selection.set(id),
+                }
                 Ok(())
             }
             (_, Tool::Dimension) => match (dim_hover, &view_def) {
@@ -703,7 +784,7 @@ pub fn show(
             egui::Align2::LEFT_BOTTOM,
             match (kind, tool) {
                 (PaneKind::Plan { .. }, Tool::Select) => {
-                    "Click to select. Drag a selected element to move it, or its square grips to stretch it. G move, R rotate, S scale, Shift+D duplicate."
+                    "Click to select, Shift+click to add, drag on empty paper for a box. Drag grips to stretch; double-click a slab edge grip to add a corner. G move, R rotate, S scale, Shift+D duplicate."
                 }
                 (PaneKind::Plan { .. }, t) => t.hint(),
                 (PaneKind::Section { .. }, t) => t.section_hint(),
@@ -758,7 +839,7 @@ pub fn plan_tool(
     tool: Tool,
     p: DVec2,
     state: &mut PlanState,
-    selection: &mut Option<ElementId>,
+    selection: &mut Selection,
 ) -> Result<(), creabim_core::ModelError> {
     match tool {
         Tool::Select => Ok(()),
@@ -791,7 +872,7 @@ pub fn plan_tool(
                         material: None,
                     }),
                 );
-                *selection = Some(e.id);
+                selection.only(e.id);
                 state.pending = Some(p);
                 doc.commit(Transaction::new("Draw wall").insert(e))
             }
@@ -815,7 +896,7 @@ pub fn plan_tool(
                         material: None,
                     }),
                 );
-                *selection = Some(e.id);
+                selection.only(e.id);
                 doc.commit(Transaction::new("Draw slab").insert(e))
             }
         },
@@ -851,7 +932,7 @@ pub fn plan_tool(
                     EditMesh::cuboid(DVec3::new(2.0, 2.0, 3.0)),
                 )),
             );
-            *selection = Some(e.id);
+            selection.only(e.id);
             doc.commit(Transaction::new("Add mass").insert(e))
         }
     }
@@ -893,7 +974,7 @@ fn section_tool(
     p: DVec2,
     picked: Option<ElementId>,
     state: &mut PlanState,
-    selection: &mut Option<ElementId>,
+    selection: &mut Selection,
 ) -> Result<(), creabim_core::ModelError> {
     let at = |p: DVec2| PaneKind::section_point(start, end, p);
     match tool {
@@ -931,7 +1012,7 @@ fn section_tool(
                         material: None,
                     }),
                 );
-                *selection = Some(e.id);
+                selection.only(e.id);
                 doc.commit(Transaction::new("Draw wall in section").insert(e))
             }
         },
@@ -981,7 +1062,7 @@ fn section_tool(
                     height,
                 }),
             );
-            *selection = Some(e.id);
+            selection.only(e.id);
             doc.commit(
                 Transaction::new(format!("Place {} in section", name.to_lowercase())).insert(e),
             )
@@ -999,7 +1080,7 @@ fn section_tool(
                     EditMesh::cuboid(DVec3::new(2.0, 2.0, 3.0)),
                 )),
             );
-            *selection = Some(e.id);
+            selection.only(e.id);
             doc.commit(Transaction::new("Add mass").insert(e))
         }
         Tool::Slab => match state.pending.take() {
@@ -1045,7 +1126,7 @@ fn section_tool(
                         material: None,
                     }),
                 );
-                *selection = Some(e.id);
+                selection.only(e.id);
                 doc.commit(Transaction::new("Draw slab in section").insert(e))
             }
         },
@@ -1139,7 +1220,7 @@ fn add_section_view(
     a: DVec2,
     b: DVec2,
     cut: bool,
-    selection: &mut Option<ElementId>,
+    selection: &mut Selection,
 ) -> Result<(), creabim_core::ModelError> {
     let n = doc
         .model()
@@ -1155,7 +1236,7 @@ fn add_section_view(
         name.clone(),
         ElementKind::View(View::section(a, b, 30.0, cut)),
     );
-    *selection = Some(e.id);
+    selection.only(e.id);
     doc.commit(Transaction::new(format!("Add {name}")).insert(e))
 }
 
@@ -1210,7 +1291,7 @@ fn keyboard_edits(
     painter: &egui::Painter,
     response: &egui::Response,
     state: &mut PlanState,
-    selection: &mut Option<ElementId>,
+    selection: &mut Selection,
     map: &PaneMap,
 ) -> Option<Option<String>> {
     if let Some(m) = state.modal.as_mut().filter(|m| m.pane == Some(view)) {
@@ -1226,13 +1307,26 @@ fn keyboard_edits(
     if state.modal.is_some() || !response.hovered() || ui.ctx().egui_wants_keyboard_input() {
         return None;
     }
-    let id = (*selection)?;
+    selection.active?;
     let mode = start_keys(ui.ctx())?;
     let grab = response.hover_pos()?;
     state.cancel();
-    match start_modal(doc, mode, id, None, space, Some(view), grab) {
-        Ok((m, copy)) => {
-            *selection = Some(copy);
+    let ids = selection.all();
+    match start_modal(
+        doc,
+        mode,
+        &ids,
+        None,
+        space,
+        Some(view),
+        grab,
+        state.pivot,
+        state.cursor,
+    ) {
+        Ok((m, copies)) => {
+            if copies != ids {
+                selection.extend(copies, false);
+            }
             state.status = Some(format!(
                 "{:?}: move the pointer, or type a value. X, Y or Z keeps to an axis.",
                 m.mode
@@ -1268,27 +1362,30 @@ pub fn start_keys(ctx: &egui::Context) -> Option<(Mode, bool)> {
     })
 }
 
-/// Start a keyboard edit, copying the element first for Shift+D. Returns
-/// the edit and the element it works on (the copy, if one was made).
+/// Start a keyboard edit on the selection, copying it first for Shift+D.
+/// Returns the edit and the elements it works on (the copies, if made).
+#[allow(clippy::too_many_arguments)]
 pub fn start_modal(
     doc: &mut Document,
     (mode, duplicate): (Mode, bool),
-    id: ElementId,
+    ids: &[ElementId],
     face: Option<usize>,
     space: Space,
     pane: Option<ElementId>,
     grab: Pos2,
-) -> Result<(Modal, ElementId), String> {
-    let target = if duplicate {
-        modal::duplicate(doc, id)?
+    pivot: modal::Pivot,
+    cursor: Option<DVec3>,
+) -> Result<(Modal, Vec<ElementId>), String> {
+    let targets = if duplicate {
+        modal::duplicate(doc, ids)?
     } else {
-        id
+        ids.to_vec()
     };
     let face = face.filter(|_| !duplicate);
-    match Modal::start(doc, mode, target, face, space, pane, grab) {
+    match Modal::start(doc, mode, &targets, face, space, pane, grab, pivot, cursor) {
         Ok(mut m) => {
             m.duplicated = duplicate;
-            Ok((m, target))
+            Ok((m, targets))
         }
         Err(e) => {
             if duplicate {
@@ -1311,13 +1408,17 @@ fn sketch_tool(
     painter: &egui::Painter,
     response: &egui::Response,
     state: &mut PlanState,
-    selection: &mut Option<ElementId>,
+    selection: &mut Selection,
     hover: Option<DVec3>,
     shift: bool,
 ) -> Option<Option<String>> {
     let project = |p: DVec3| Some(xf.to_screen(model_to_pane(space, p)));
     // a sketch being drawn in another pane is left alone
     let mine = state.sketch.as_ref().is_some_and(|d| d.pane == Some(view));
+    let draft = state.sketch.as_mut().filter(|d| d.pane == Some(view));
+    if let Some(hint) = crate::sketch::shape_controls(ui, response.rect, Some(view), draft) {
+        state.status = Some(hint);
+    }
     let tol = 10.0 / xf.scale as f64;
     let on_plane = match (&state.sketch, hover) {
         (Some(d), Some(m)) if mine => Some(d.snap(d.plane.to_plane(m), tol, shift)),
@@ -1335,21 +1436,20 @@ fn sketch_tool(
             i.key_pressed(egui::Key::Escape),
         )
     });
-    let finish =
-        |doc: &mut Document, state: &mut PlanState, selection: &mut Option<ElementId>, closed| {
-            let d = state.sketch.take()?;
-            match d.finish(doc, closed) {
-                Ok(Some(id)) => {
-                    *selection = Some(id);
-                    state.status = Some(
-                        "Sketch added. Press E to extrude it into a mass, or G to move it.".into(),
-                    );
-                    Some(None)
-                }
-                Ok(None) => Some(None),
-                Err(e) => Some(Some(e.to_string())),
+    let finish = |doc: &mut Document, state: &mut PlanState, selection: &mut Selection, closed| {
+        let d = state.sketch.take()?;
+        match d.finish(doc, closed) {
+            Ok(Some(id)) => {
+                selection.only(id);
+                state.status = Some(
+                    "Sketch added. Press E to extrude it into a mass, or G to move it.".into(),
+                );
+                Some(None)
             }
-        };
+            Ok(None) => Some(None),
+            Err(e) => Some(Some(e.to_string())),
+        }
+    };
     if escape && state.sketch.is_some() {
         state.sketch = None;
         return Some(None);
@@ -1377,12 +1477,19 @@ fn sketch_tool(
                     ..Workplane::ground(m.z)
                 },
             };
-            state.sketch = Some(SketchDraft::new(plane, Some(view)));
+            let draft = SketchDraft::new(plane, Some(view));
+            let shape = crate::sketch::shape(ui.ctx());
+            state.status = Some(crate::sketch::hint(shape, Some(&draft)));
+            state.sketch = Some(draft);
             Some(None)
         }
         Some(d) => match d.click(on_plane?) {
             Some(Click::Closed) => finish(doc, state, selection, true),
-            _ => Some(None),
+            Some(Click::Added) => {
+                state.status = Some(crate::sketch::hint(d.shape, Some(d)));
+                Some(None)
+            }
+            None => Some(None),
         },
     }
 }
@@ -1916,7 +2023,7 @@ fn dimension_tool(
     hit: (HostPoint, DVec2),
     raw: DVec2,
     state: &mut PlanState,
-    selection: &mut Option<ElementId>,
+    selection: &mut Selection,
 ) -> Result<(), creabim_core::ModelError> {
     match state.dim.len() {
         0 => {
@@ -1938,7 +2045,7 @@ fn dimension_tool(
                 "Dimension",
                 ElementKind::Dimension(Dimension { view, a, b, offset }),
             );
-            *selection = Some(e.id);
+            selection.only(e.id);
             doc.commit(Transaction::new("Add dimension").insert(e))
         }
     }
@@ -1952,7 +2059,7 @@ fn tag_tool(
     picked: Option<ElementId>,
     raw: DVec2,
     state: &mut PlanState,
-    selection: &mut Option<ElementId>,
+    selection: &mut Selection,
 ) -> Result<(), creabim_core::ModelError> {
     let Some(v) = v else { return Ok(()) };
     match state.tag_host.take() {
@@ -1986,7 +2093,7 @@ fn tag_tool(
                     offset: raw - proj.project(c),
                 }),
             );
-            *selection = Some(e.id);
+            selection.only(e.id);
             doc.commit(Transaction::new("Add tag").insert(e))
         }
     }
@@ -2077,7 +2184,7 @@ fn drag_annotation(
     xf: &Xf,
     response: &egui::Response,
     state: &mut PlanState,
-    selection: &mut Option<ElementId>,
+    selection: &mut Selection,
     mm: f64,
 ) -> Option<Option<String>> {
     if response.drag_started_by(egui::PointerButton::Primary) {
@@ -2109,7 +2216,7 @@ fn drag_annotation(
             Some((id, w, start))
         });
         if let Some((id, ..)) = state.anno_drag {
-            *selection = Some(id);
+            selection.only(id);
         }
     }
     let (id, grab, start) = state.anno_drag?;
@@ -2195,6 +2302,44 @@ fn fill_polygon(painter: &egui::Painter, xf: &Xf, points: &[DVec2], fill: Color3
         mesh.add_triangle(a as u32, b as u32, c as u32);
     }
     painter.add(egui::Shape::mesh(mesh));
+}
+
+/// The pivot cursor: a red and white ring with a cross, as in Blender.
+pub fn draw_cursor(painter: &egui::Painter, at: Pos2) {
+    let red = Color32::from_rgb(220, 50, 50);
+    painter.circle_stroke(at, 7.0, Stroke::new(2.0, Color32::WHITE));
+    painter.add(egui::Shape::dashed_line(
+        &[
+            at + Vec2::new(7.0, 0.0),
+            at + Vec2::new(0.0, 7.0),
+            at + Vec2::new(-7.0, 0.0),
+            at + Vec2::new(0.0, -7.0),
+            at + Vec2::new(7.0, 0.0),
+        ],
+        Stroke::new(2.0, red),
+        4.0,
+        4.0,
+    ));
+    for d in [Vec2::X, Vec2::Y, -Vec2::X, -Vec2::Y] {
+        painter.line_segment(
+            [at + d * 9.0, at + d * 14.0],
+            Stroke::new(1.0, Color32::BLACK),
+        );
+    }
+}
+
+/// Can a box take this element? Views and levels are left to clicks, so a
+/// box round the building doesn't pick up its section marks.
+pub fn box_selectable(doc: &Document, id: ElementId) -> bool {
+    doc.model().get(id).is_some_and(|e| {
+        !matches!(
+            e.kind,
+            ElementKind::View(_)
+                | ElementKind::Level(_)
+                | ElementKind::Sheet(_)
+                | ElementKind::Viewport(_)
+        )
+    })
 }
 
 pub fn hit_test(items: &[PlanItem], p: DVec2, tol: f64, mm: f64) -> Option<ElementId> {
@@ -2294,7 +2439,7 @@ fn place_opening(
     level: ElementId,
     p: DVec2,
     tool: Tool,
-    selection: &mut Option<ElementId>,
+    selection: &mut Selection,
 ) -> Result<(), creabim_core::ModelError> {
     let mut best: Option<(f64, ElementId, f64, f64)> = None;
     for e in doc.model().iter() {
@@ -2331,7 +2476,7 @@ fn place_opening(
             height,
         }),
     );
-    *selection = Some(e.id);
+    selection.only(e.id);
     doc.commit(Transaction::new(format!("Place {}", name.to_lowercase())).insert(e))
 }
 

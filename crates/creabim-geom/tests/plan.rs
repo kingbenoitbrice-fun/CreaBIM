@@ -59,17 +59,17 @@ fn door_splits_wall_into_two_cut_pieces_with_a_swing() {
 fn a_mass_pushed_out_of_a_wall_face_shows_in_the_plan() {
     let mut m = sample::sample_house();
     let level = m.levels().next().map(|(e, _)| e.id).unwrap();
-    let sketch = Sketch {
-        level: Some(level),
-        plane: Workplane::facing(glam::DVec3::new(-0.15, 1.35, 2.5), -glam::DVec3::X),
-        points: vec![
+    let sketch = Sketch::polyline(
+        Some(level),
+        Workplane::facing(glam::DVec3::new(-0.15, 1.35, 2.5), -glam::DVec3::X),
+        vec![
             DVec2::ZERO,
             DVec2::new(0.0, -2.0),
             DVec2::new(1.5, -2.0),
             DVec2::new(1.5, 0.0),
         ],
-        closed: true,
-    };
+        true,
+    );
     let mass = Element::new(
         "Mass",
         ElementKind::FreeMesh(FreeMesh::new(
@@ -156,4 +156,85 @@ fn a_box_subtracted_from_a_wall_leaves_a_gap_in_the_plan() {
         .filter(|i| matches!(i, PlanItem::Fill { id, .. } if *id == wid))
         .count();
     assert_eq!(fills, 1);
+}
+
+#[test]
+fn sketch_arcs_draw_as_arcs_in_plans_and_sections() {
+    let mut doc = Document::new();
+    let l = Element::new(
+        "L0",
+        ElementKind::Level(Level {
+            elevation: 0.0,
+            height: 3.0,
+        }),
+    );
+    let level = l.id;
+    // a circle on the floor, and a D standing on the section line y = 0
+    let circle = Element::new(
+        "Circle",
+        ElementKind::Sketch(Sketch::circle(
+            Some(level),
+            Workplane::ground(0.0),
+            DVec2::new(2.0, 1.0),
+            0.5,
+        )),
+    );
+    let mut d = Sketch::polyline(
+        Some(level),
+        Workplane::facing(glam::DVec3::new(0.0, 0.0, 0.0), -glam::DVec3::Y),
+        vec![DVec2::new(1.0, 0.0), DVec2::new(3.0, 0.0)],
+        true,
+    );
+    d.kinds = vec![SegmentKind::Line, SegmentKind::Arc { bulge: 1.0 }];
+    let d = Element::new("D", ElementKind::Sketch(d));
+    let (cid, did) = (circle.id, d.id);
+    doc.commit(Transaction::new("t").insert(l).insert(circle).insert(d))
+        .unwrap();
+
+    let plan = plan_view(doc.model(), level, 1.2);
+    let arc = plan.items.iter().find_map(|it| match it {
+        PlanItem::Arc {
+            id,
+            center,
+            radius,
+            start,
+            end,
+            ..
+        } if *id == cid => Some((*center, *radius, end - start)),
+        _ => None,
+    });
+    let (center, radius, sweep) = arc.expect("the circle is drawn as an arc");
+    assert!(center.distance(DVec2::new(2.0, 1.0)) < 1e-9 && (radius - 0.5).abs() < 1e-12);
+    assert!((sweep - std::f64::consts::TAU).abs() < 1e-9);
+    // the standing D is seen edge on: straight pieces along y = 0
+    assert!(plan
+        .items
+        .iter()
+        .any(|it| matches!(it, PlanItem::Line { id, a, b, .. }
+        if *id == did && a.y.abs() < 1e-9 && b.y.abs() < 1e-9)));
+
+    // a section along y = -1 looking north sees the D face on, its arc above
+    let section = creabim_geom::section::section_view(
+        doc.model(),
+        DVec2::new(0.0, -1.0),
+        DVec2::new(5.0, -1.0),
+        5.0,
+        true,
+        false,
+    );
+    let half = section.items.iter().find_map(|it| match it {
+        PlanItem::Arc {
+            id,
+            center,
+            radius,
+            start,
+            end,
+            ..
+        } if *id == did => Some((*center, *radius, *start, *end)),
+        _ => None,
+    });
+    let (center, radius, start, end) = half.expect("the D's arc is drawn in the section");
+    assert!(center.distance(DVec2::new(2.0, 0.0)) < 1e-9 && (radius - 1.0).abs() < 1e-9);
+    let top = center + DVec2::from_angle((start + end) / 2.0) * radius;
+    assert!(top.distance(DVec2::new(2.0, 1.0)) < 1e-9, "{top:?}");
 }

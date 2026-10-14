@@ -4,6 +4,7 @@ use crate::icons::{self, Icon};
 use crate::modal::{Outcome, PaneMap, Space};
 use crate::planview::{self, PaneStyle, PlanState, Tool};
 use crate::render3d::{Vertex, Viewport3d};
+use crate::selection::Selection;
 use crate::sheetview::{self, SheetState};
 use crate::sketch::{Click, SketchDraft};
 use crate::snaps::{self, SnapKind, Snapper};
@@ -22,10 +23,11 @@ use glam::{DVec2, DVec3, Vec2 as GVec2};
 use std::collections::HashMap;
 
 /// What the 3D geometry was last built from; rebuild when any of it changes.
-/// (model revision, selection, selected face, drawing shown in 3D, active view)
+/// ((model revision, hidden revision), selection, selected face, drawing
+/// shown in 3D, active view)
 type GeometryKey = (
-    u64,
-    Option<ElementId>,
+    (u64, u64),
+    Selection,
     Option<usize>,
     bool,
     Option<ElementId>,
@@ -67,7 +69,7 @@ impl Default for PaneLayout {
 
 pub struct CreaBimApp {
     doc: Document,
-    selection: Option<ElementId>,
+    selection: Selection,
     /// Selected face when a free mesh is selected (mesh edit mode).
     face: Option<usize>,
     /// What the 2D pane shows: a view (plan, section, elevation, 3D) or a sheet.
@@ -87,6 +89,9 @@ pub struct CreaBimApp {
     layout: PaneLayout,
     /// A handle or element being dragged in the 3D view.
     handle_drag: Option<handles::Drag>,
+    /// B pressed in 3D: the next drag draws a selection box; and where it began.
+    box_armed: bool,
+    box_3d: Option<egui::Pos2>,
     /// Snaps for the 3D view: built from the scene without the listed
     /// elements, at a model revision.
     snaps_3d: Option<(u64, Vec<ElementId>, Snapper)>,
@@ -99,6 +104,13 @@ pub struct CreaBimApp {
     watch: crate::files::Watch,
     /// Reload linked files as soon as they are saved.
     live_reload: bool,
+    /// Elements hidden from the 3D view and the 2D panes (not from sheets
+    /// or exports), and a count of changes to them.
+    hidden: std::collections::HashSet<ElementId>,
+    hidden_rev: u64,
+    /// What Ctrl+C copied, for pasting when the system clipboard has none.
+    clipboard: Vec<Element>,
+    recent: crate::files::Recent,
 }
 
 impl CreaBimApp {
@@ -110,7 +122,7 @@ impl CreaBimApp {
             .map(|rs| Viewport3d::new(&rs.device));
         let mut app = Self {
             doc: Document::new(),
-            selection: None,
+            selection: Selection::default(),
             face: None,
             active_view: None,
             sheet: SheetState::default(),
@@ -125,12 +137,18 @@ impl CreaBimApp {
             plan_in_3d: false,
             layout: PaneLayout::default(),
             handle_drag: None,
+            box_armed: false,
+            box_3d: None,
             snaps_3d: None,
             pending_3d: None,
             extrude_distance: 1.0,
             path: "project.creabim".into(),
             watch: Default::default(),
             live_reload: true,
+            hidden: Default::default(),
+            hidden_rev: 0,
+            clipboard: vec![],
+            recent: crate::files::Recent::load(),
             status: "Loaded the sample house. Orbit with left drag, pan with right drag, zoom with the wheel.".into(),
         };
         app.load_model(sample_house());
@@ -139,7 +157,9 @@ impl CreaBimApp {
 
     fn load_model(&mut self, model: Model) {
         self.doc = Document::from_model(with_plan_views(model));
-        self.selection = None;
+        self.selection.clear();
+        self.hidden.clear();
+        self.hidden_rev += 1;
         self.face = None;
         self.active_view = None;
         self.sheet = SheetState::default();
@@ -169,6 +189,7 @@ impl CreaBimApp {
                     let warnings = imported.warnings.len();
                     self.load_model(imported.model);
                     self.watch = Default::default();
+                    self.recent.add(path);
                     self.path = with_extension(path, "creabim");
                     self.status = format!(
                         "Opened {} ({}): {n} elements{}. Save keeps it as {}.",
@@ -202,6 +223,8 @@ impl CreaBimApp {
                     self.doc = doc;
                 }
                 self.watch = Default::default();
+                self.recent.add(path);
+                self.path = path.to_string();
                 self.status = format!("Opened {path}");
             }
             Err(e) => self.status = format!("Couldn't open {path}: {e}"),
@@ -218,7 +241,25 @@ impl CreaBimApp {
             self.path = with_extension(&self.path, "creabim");
         }
         let r = creabim_store::save(&self.path, &self.doc);
+        if r.is_ok() {
+            let path = self.path.clone();
+            self.recent.add(&path);
+        }
         self.report(r, format!("Saved {}", self.path));
+    }
+
+    fn open_dialog(&mut self) {
+        if let Some(path) = crate::files::pick_open() {
+            self.open_path(&path);
+        }
+    }
+
+    fn save_as(&mut self) {
+        let start = with_extension(&self.path, "creabim");
+        if let Some(path) = crate::files::pick_save(&start, "Save the project as", "creabim") {
+            self.path = path;
+            self.save();
+        }
     }
 
     /// Bring a file's objects in as linked elements.
@@ -443,6 +484,65 @@ impl CreaBimApp {
                 !cmd && i.key_pressed(egui::Key::E),
             )
         });
+        let (all, none, hide, isolate, show, events) = ctx.input(|i| {
+            let (cmd, alt, shift) = (i.modifiers.command, i.modifiers.alt, i.modifiers.shift);
+            let h = i.key_pressed(egui::Key::H);
+            (
+                cmd && i.key_pressed(egui::Key::A),
+                alt && i.key_pressed(egui::Key::A),
+                h && !cmd && !alt && !shift,
+                h && shift && !cmd && !alt,
+                h && alt,
+                i.events.clone(),
+            )
+        });
+        let (open, save) = ctx.input(|i| {
+            let cmd = i.modifiers.command;
+            (
+                cmd && i.key_pressed(egui::Key::O),
+                cmd && i.key_pressed(egui::Key::S),
+            )
+        });
+        if open {
+            self.open_dialog();
+        }
+        if save {
+            self.save();
+        }
+        if all {
+            self.select_all();
+        }
+        if none {
+            self.selection.clear();
+            self.face = None;
+        }
+        if hide {
+            self.hide_selected();
+        }
+        if isolate {
+            self.isolate_selected();
+        }
+        if show {
+            self.show_all();
+        }
+        for e in &events {
+            match e {
+                egui::Event::Copy | egui::Event::Cut => {
+                    if self.copy_selected() {
+                        let n = self.clipboard.len();
+                        ctx.copy_text(self.clipboard_text());
+                        if matches!(e, egui::Event::Cut) {
+                            self.delete_selected();
+                            self.status = format!("Cut {n} elements. Ctrl+V pastes them back.");
+                        } else {
+                            self.status = format!("Copied {n} elements. Ctrl+V pastes them.");
+                        }
+                    }
+                }
+                egui::Event::Paste(text) => self.paste_text(text),
+                _ => {}
+            }
+        }
         if undo {
             let label = self.doc.undo_label().map(str::to_owned);
             if self.doc.undo() {
@@ -461,6 +561,7 @@ impl CreaBimApp {
         if extrude {
             let sketch = self
                 .selection
+                .active
                 .and_then(|id| self.doc.model().get(id))
                 .is_some_and(|e| matches!(e.kind, ElementKind::Sketch(_)));
             if sketch {
@@ -473,11 +574,10 @@ impl CreaBimApp {
     }
 
     fn drop_stale_selection(&mut self) {
-        if self
-            .selection
-            .is_some_and(|id| self.doc.model().get(id).is_none())
-        {
-            self.selection = None;
+        let before = self.selection.active;
+        let model = self.doc.model();
+        self.selection.retain(|id| model.get(id).is_some());
+        if self.selection.active != before {
             self.face = None;
         }
         if self
@@ -489,21 +589,163 @@ impl CreaBimApp {
     }
 
     fn delete_selected(&mut self) {
-        let Some(id) = self.selection else { return };
-        let name = self
-            .doc
-            .model()
-            .get(id)
-            .map(|e| e.name.clone())
-            .unwrap_or_default();
-        let tx = Transaction::new(format!("Delete {name}")).remove_cascade(self.doc.model(), id);
+        let ids = self.selection.all();
+        let Some(&last) = ids.last() else {
+            return;
+        };
+        let name = match ids.len() {
+            1 => self
+                .doc
+                .model()
+                .get(last)
+                .map(|e| e.name.clone())
+                .unwrap_or_default(),
+            n => format!("{n} elements"),
+        };
+        let tx =
+            Transaction::new(format!("Delete {name}")).remove_all_cascade(self.doc.model(), &ids);
         let r = self.doc.commit(tx);
         self.report(r, format!("Deleted {name} and anything attached to it."));
         self.drop_stale_selection();
     }
 
+    /// Everything that can be picked: building elements, sketches, guides,
+    /// annotations, but not levels, views, sheets or materials.
+    fn select_all(&mut self) {
+        let ids: Vec<ElementId> = self
+            .doc
+            .model()
+            .iter()
+            .filter(|e| {
+                !self.hidden.contains(&e.id)
+                    && !matches!(
+                        e.kind,
+                        ElementKind::Level(_)
+                            | ElementKind::View(_)
+                            | ElementKind::Sheet(_)
+                            | ElementKind::Viewport(_)
+                            | ElementKind::Material(_)
+                    )
+            })
+            .map(|e| e.id)
+            .collect();
+        self.selection.extend(ids, false);
+        self.face = None;
+        self.status = format!("{} selected.", self.selection.len());
+    }
+
+    fn copy_selected(&mut self) -> bool {
+        let ids = self.selection.all();
+        if ids.is_empty() {
+            self.status = "Select something to copy first.".into();
+            return false;
+        }
+        let model = self.doc.model();
+        self.clipboard = creabim_core::transform::copy_set(model, &ids)
+            .into_iter()
+            .filter_map(|id| model.get(id).cloned())
+            .collect();
+        true
+    }
+
+    /// The clipboard as text, so a paste can reach another CreaBIM window.
+    fn clipboard_text(&self) -> String {
+        serde_json::json!({ "creabim_elements": self.clipboard }).to_string()
+    }
+
+    /// Paste copies of `elements` in place, as one undo step.
+    fn paste(&mut self, elements: Vec<Element>) {
+        if elements.is_empty() {
+            self.status = "Nothing to paste: copy something first (Ctrl+C).".into();
+            return;
+        }
+        let (copies, dropped) = creabim_core::transform::fresh_copies(self.doc.model(), &elements);
+        if copies.is_empty() {
+            self.status = "Nothing could be pasted here: what was copied needs elements this project doesn't have.".into();
+            return;
+        }
+        let ids: Vec<ElementId> = copies.iter().map(|c| c.id).collect();
+        let n = copies.len();
+        let mut tx = Transaction::new(format!("Paste {n} elements"));
+        for c in copies {
+            tx = tx.insert(c);
+        }
+        let r = self.doc.commit(tx);
+        if r.is_ok() {
+            self.selection.extend(ids, false);
+            self.face = None;
+        }
+        let left = match dropped {
+            0 => String::new(),
+            d => format!(" {d} left out: they hang on elements this project doesn't have."),
+        };
+        self.report(
+            r,
+            format!("Pasted {n} elements in place. Press G to move them.{left}"),
+        );
+    }
+
+    /// Paste from text another window (or this one) put on the clipboard.
+    fn paste_text(&mut self, text: &str) {
+        let parsed = serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .and_then(|v| v.get("creabim_elements").cloned())
+            .and_then(|v| serde_json::from_value::<Vec<Element>>(v).ok());
+        let elements = parsed.unwrap_or_else(|| self.clipboard.clone());
+        self.paste(elements);
+    }
+
+    fn hide_selected(&mut self) {
+        let ids = self.selection.all();
+        if ids.is_empty() {
+            return;
+        }
+        let n = ids.len();
+        // a wall's doors and windows go with it
+        let with = creabim_core::transform::copy_set(self.doc.model(), &ids);
+        self.hidden.extend(with);
+        self.hidden_rev += 1;
+        self.selection.clear();
+        self.face = None;
+        self.status = format!("Hid {n}. Alt+H shows everything again.");
+    }
+
+    /// Hide everything but the selection.
+    fn isolate_selected(&mut self) {
+        if self.selection.is_empty() {
+            return;
+        }
+        let keep = self.selection.all();
+        // keep what the selection needs to show: hosts, levels, cutters
+        let model = self.doc.model();
+        let mut needed = keep.clone();
+        for id in &keep {
+            if let Some(e) = model.get(*id) {
+                needed.extend(e.references());
+            }
+            needed.extend(model.dependents(*id));
+        }
+        self.hidden = model
+            .iter()
+            .map(|e| e.id)
+            .filter(|id| !needed.contains(id))
+            .collect();
+        self.hidden_rev += 1;
+        self.status = format!("Showing only {}. Alt+H shows everything again.", keep.len());
+    }
+
+    fn show_all(&mut self) {
+        let n = self.hidden.len();
+        self.hidden.clear();
+        self.hidden_rev += 1;
+        self.status = match n {
+            0 => "Nothing was hidden.".into(),
+            n => format!("Showing {n} hidden elements again."),
+        };
+    }
+
     fn extrude_face(&mut self) {
-        let (Some(id), Some(face)) = (self.selection, self.face) else {
+        let (Some(id), Some(face)) = (self.selection.active, self.face) else {
             return;
         };
         let d = self.extrude_distance;
@@ -521,11 +763,13 @@ impl CreaBimApp {
     }
 
     fn extrude_sketch(&mut self) {
-        let Some(id) = self.selection else { return };
+        let Some(id) = self.selection.active else {
+            return;
+        };
         let d = self.extrude_distance;
         match crate::sketch::extrude(&mut self.doc, id, d) {
             Ok((mass, cap)) => {
-                self.selection = Some(mass);
+                self.selection.only(mass);
                 self.face = cap;
                 self.status = match cap {
                     Some(_) => format!(
@@ -544,24 +788,25 @@ impl CreaBimApp {
 
     fn rebuild_geometry(&mut self, rs: &egui_wgpu::RenderState) {
         let key = (
-            self.doc.model().revision(),
-            self.selection,
+            (self.doc.model().revision(), self.hidden_rev),
+            self.selection.clone(),
             self.face,
             self.plan_in_3d,
             self.active_view,
         );
-        if self.geometry_key == Some(key) {
+        if self.geometry_key.as_ref() == Some(&key) {
             return;
         }
         self.geometry_key = Some(key);
         self.scene = build_scene(self.doc.model());
+        self.scene.retain(|i| !self.hidden.contains(&i.id));
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         let highlight = [0.95, 0.55, 0.20];
         let mut ghost_lines: Vec<(DVec3, DVec3, [f32; 3])> = Vec::new();
         for item in &self.scene {
-            let selected = Some(item.id) == self.selection;
+            let selected = self.selection.contains(item.id);
             if item.ghost {
                 // cutters show as their outline only
                 let c = if selected {
@@ -829,6 +1074,7 @@ impl CreaBimApp {
             let map = PaneMap {
                 to_model: &to_model,
                 project: &project,
+                look: ray(rect.center()).1,
             };
             let ctx = ui.ctx().clone();
             if let Some(m) = self.plan.modal.as_mut() {
@@ -845,22 +1091,27 @@ impl CreaBimApp {
         }
         if response.hovered() && self.plan.modal.is_none() && !ui.ctx().egui_wants_keyboard_input()
         {
-            if let (Some(keys), Some(id), Some(grab)) =
-                (planview::start_keys(ui.ctx()), self.selection, hover)
-            {
+            if let (Some(keys), true, Some(grab)) = (
+                planview::start_keys(ui.ctx()),
+                self.selection.is_some(),
+                hover,
+            ) {
                 self.plan.cancel();
+                let ids = self.selection.all();
                 match planview::start_modal(
                     &mut self.doc,
                     keys,
-                    id,
+                    &ids,
                     self.face,
                     Space::Model,
                     None,
                     grab,
+                    self.plan.pivot,
+                    self.plan.cursor,
                 ) {
-                    Ok((m, target)) => {
-                        if target != id {
-                            self.selection = Some(target);
+                    Ok((m, targets)) => {
+                        if targets != ids {
+                            self.selection.extend(targets, false);
                             self.face = None;
                         }
                         self.status = format!(
@@ -884,9 +1135,89 @@ impl CreaBimApp {
             return;
         }
 
+        // Shift+right-click places the pivot cursor where the pointer hits
+        if let Some(c) = self.plan.cursor {
+            if let Some(at) = project(c) {
+                planview::draw_cursor(&painter, at);
+            }
+        }
+        if response.secondary_clicked() && ui.input(|i| i.modifiers.shift) {
+            if let Some(p) = response.interact_pointer_pos() {
+                let (o, d) = ray(p);
+                let at = pick::pick(&self.scene, o.as_vec3(), d.as_vec3())
+                    .map(|h| o + d * h.t as f64)
+                    .or_else(|| Workplane::ground(0.0).intersect(o, d));
+                if let Some(c) = at {
+                    self.plan.cursor = Some(c);
+                    self.plan.pivot = crate::modal::Pivot::Cursor;
+                    self.status = format!(
+                        "Pivot cursor at {:.2}, {:.2}, {:.2}. Rotate and scale now turn about it.",
+                        c.x, c.y, c.z
+                    );
+                }
+            }
+            return;
+        }
+
+        // B, then drag: select with a box
+        if self.plan.tool == Tool::Select {
+            let (b, esc) = ui.input(|i| {
+                (
+                    i.key_pressed(egui::Key::B),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if response.hovered() && b && !ui.ctx().egui_wants_keyboard_input() {
+                self.box_armed = true;
+                self.status = "Drag a box: left to right takes what is inside, right to left what it touches. Shift adds.".into();
+            }
+            if esc {
+                self.box_armed = false;
+                self.box_3d = None;
+            }
+            if self.box_armed && response.drag_started_by(egui::PointerButton::Primary) {
+                self.box_3d = ui.input(|i| i.pointer.press_origin());
+                self.box_armed = false;
+            }
+            if let Some(p0) = self.box_3d {
+                let now = ui.input(|i| i.pointer.latest_pos()).unwrap_or(p0);
+                crate::boxsel::draw(&painter, p0, now);
+                if response.drag_stopped() || !response.dragged() {
+                    let tris = self.scene.iter().flat_map(|item| {
+                        let pts: Vec<Option<egui::Pos2>> = item
+                            .mesh
+                            .positions
+                            .iter()
+                            .map(|p| project(glam::Vec3::from(*p).as_dvec3()))
+                            .collect();
+                        item.mesh
+                            .indices
+                            .as_chunks::<3>()
+                            .0
+                            .iter()
+                            .filter_map(move |t| {
+                                let p = |i: u32| pts.get(i as usize).copied().flatten();
+                                Some((item.id, [p(t[0])?, p(t[1])?, p(t[2])?]))
+                            })
+                    });
+                    let ids: Vec<ElementId> = crate::boxsel::pick_triangles(p0, now, tris)
+                        .into_iter()
+                        .filter(|id| planview::box_selectable(&self.doc, *id))
+                        .collect();
+                    let shift = ui.input(|i| i.modifiers.shift);
+                    self.selection.extend(ids, shift);
+                    self.face = None;
+                    self.box_3d = None;
+                    self.status = format!("{} selected.", self.selection.len());
+                }
+                return;
+            }
+        }
+
         // handles on the selection, and dragging the selection itself
         let exclude = self
             .selection
+            .active
             .map(|id| planview::joined_with(&self.doc, id))
             .unwrap_or_default();
         self.refresh_snaps_3d(&exclude);
@@ -923,7 +1254,7 @@ impl CreaBimApp {
                     &mut self.doc,
                     &painter,
                     &response,
-                    self.selection,
+                    self.selection.active,
                     self.face,
                     &mut self.handle_drag,
                     &input,
@@ -970,8 +1301,14 @@ impl CreaBimApp {
                         (d < 6.0).then_some((id, d))
                     })
                     .min_by(|x, y| x.1.total_cmp(&y.1));
+                let shift = ui.input(|i| i.modifiers.shift);
+                let pick = |sel: &mut Selection, id: Option<ElementId>| match (id, shift) {
+                    (Some(id), true) => sel.toggle(id),
+                    (None, true) => {}
+                    (id, false) => sel.set(id),
+                };
                 if let Some((id, _)) = near_sketch {
-                    self.selection = Some(id);
+                    pick(&mut self.selection, Some(id));
                     self.face = None;
                     return;
                 }
@@ -980,12 +1317,16 @@ impl CreaBimApp {
                 // guides cross everything, so they only take clicks that miss
                 if hit.is_none() {
                     if let Some(id) = self.guide_near(p, &project) {
-                        self.selection = Some(id);
+                        pick(&mut self.selection, Some(id));
                         self.face = None;
                         return;
                     }
                 }
-                self.selection = hit.map(|h| h.id);
+                pick(&mut self.selection, hit.map(|h| h.id));
+                if shift {
+                    self.face = None;
+                    return;
+                }
                 self.face = hit.and_then(|h| match self.doc.model().get(h.id).map(|e| &e.kind) {
                     Some(ElementKind::FreeMesh(m)) => {
                         let ev = m.evaluated();
@@ -1009,6 +1350,7 @@ impl CreaBimApp {
         if !fresh {
             let mut snapper = Snapper::from_scene(&self.scene, exclude);
             snapper.add_guides(self.doc.model(), GUIDE_REACH_3D);
+            snapper.add_sketches(self.doc.model(), exclude);
             self.snaps_3d = Some((rev, exclude.to_vec(), snapper));
         }
     }
@@ -1025,6 +1367,7 @@ impl CreaBimApp {
             });
         let of_selection = self
             .selection
+            .active
             .and_then(|id| match m.get(id).map(|e| &e.kind) {
                 Some(ElementKind::Wall(w)) => Some(w.level),
                 Some(ElementKind::Slab(s)) => Some(s.level),
@@ -1097,7 +1440,7 @@ impl CreaBimApp {
                     painter.circle_stroke(c, 6.0, stroke);
                 }
                 if response.clicked() {
-                    let mut sel = self.selection;
+                    let mut sel = self.selection.clone();
                     let mut state = std::mem::take(&mut self.plan);
                     let r = planview::plan_tool(
                         &mut self.doc,
@@ -1214,7 +1557,7 @@ impl CreaBimApp {
             .map(|(a, b)| (a.truncate(), b.truncate()));
         }
         if response.clicked() {
-            let mut sel = self.selection;
+            let mut sel = self.selection.clone();
             let mut state = std::mem::take(&mut self.plan);
             state.pending = self.pending_3d.filter(|(_, l)| *l == level).map(|(p, _)| p);
             let r = planview::plan_tool(&mut self.doc, level, tool, p, &mut state, &mut sel);
@@ -1350,7 +1693,7 @@ impl CreaBimApp {
             let ElementKind::Guide(g) = &e.kind else {
                 continue;
             };
-            let stroke = if self.selection == Some(e.id) {
+            let stroke = if self.selection.contains(e.id) {
                 egui::Stroke::new(2.0, Color32::from_rgb(242, 140, 51))
             } else {
                 egui::Stroke::new(1.0, planview::GUIDE_COLOR)
@@ -1358,7 +1701,7 @@ impl CreaBimApp {
             draw_guide_3d(painter, project, g.a, g.b, stroke);
         }
         for (id, a, b) in creabim_geom::scene::sketch_lines(self.doc.model()) {
-            let selected = self.selection == Some(id);
+            let selected = self.selection.contains(id);
             let stroke = if selected {
                 egui::Stroke::new(2.5, Color32::from_rgb(242, 140, 51))
             } else {
@@ -1368,6 +1711,13 @@ impl CreaBimApp {
                 painter.line_segment([a, b], stroke);
             }
         }
+        crate::sketch::draw_marks(
+            painter,
+            self.doc.model(),
+            self.selection.active,
+            project,
+            &|_| true,
+        );
     }
 
     /// The Sketch tool in the 3D view: the first click sets the workplane on
@@ -1385,6 +1735,10 @@ impl CreaBimApp {
         let mine = self.plan.sketch.as_ref().is_some_and(|d| d.pane.is_none());
         if !mine && response.clicked() {
             self.plan.sketch = None;
+        }
+        let draft = self.plan.sketch.as_mut().filter(|d| d.pane.is_none());
+        if let Some(hint) = crate::sketch::shape_controls(ui, response.rect, None, draft) {
+            self.status = hint;
         }
         let (enter, escape, shift) = ui.input(|i| {
             (
@@ -1449,7 +1803,7 @@ impl CreaBimApp {
             };
             match d.finish(&mut app.doc, closed) {
                 Ok(Some(id)) => {
-                    app.selection = Some(id);
+                    app.selection.only(id);
                     app.face = None;
                     app.status =
                         "Sketch added. Press E to extrude it into a mass, or G to move it.".into();
@@ -1475,14 +1829,21 @@ impl CreaBimApp {
         match &mut self.plan.sketch {
             None => {
                 if let Some(plane) = hover.and_then(candidate) {
-                    self.plan.sketch = Some(SketchDraft::new(plane, None));
-                    self.status = "Workplane set. Click the corners; click the first one to close the sketch, Enter to leave it open.".into();
+                    let draft = SketchDraft::new(plane, None);
+                    let shape = crate::sketch::shape(ui.ctx());
+                    self.status = format!(
+                        "Workplane set. {}",
+                        crate::sketch::hint(shape, Some(&draft))
+                    );
+                    self.plan.sketch = Some(draft);
                 }
             }
             Some(d) => {
                 if let Some(p) = on_plane {
-                    if let Some(Click::Closed) = d.click(p) {
-                        finish(self, true);
+                    match d.click(p) {
+                        Some(Click::Closed) => finish(self, true),
+                        Some(Click::Added) => self.status = crate::sketch::hint(d.shape, Some(d)),
+                        None => {}
                     }
                 }
             }
@@ -1491,7 +1852,7 @@ impl CreaBimApp {
 
     fn show_plan(&mut self, ui: &mut egui::Ui, rect: Rect, background: Color32) {
         let Some(view) = self.active_view else { return };
-        let (before, revision) = (self.selection, self.doc.model().revision());
+        let (before, revision) = (self.selection.clone(), self.doc.model().revision());
         let schedule = match self.view(view).map(|v| &v.kind) {
             Some(ViewKind::Schedule { category }) => Some(*category),
             _ => None,
@@ -1532,9 +1893,12 @@ impl CreaBimApp {
             let Some(kind) = self.view(view).map(planview::pane_kind) else {
                 return;
             };
-            let Some(drawing) = self.drawing(view) else {
+            let Some(mut drawing) = self.drawing(view) else {
                 return;
             };
+            if !self.hidden.is_empty() {
+                drawing.items.retain(|it| !self.hidden.contains(&it.id()));
+            }
             let style = PaneStyle {
                 background: Some(background),
                 decorations: true,
@@ -1631,28 +1995,53 @@ impl CreaBimApp {
                 });
                 ui.separator();
                 if ui
-                    .button("Open")
-                    .on_hover_text("Open the .creabim, .ifc or .ifcx file named in the File box. Other files (.blend, .FCStd) are linked into this project.")
+                    .add(egui::Button::new("Open…").shortcut_text("Ctrl+O"))
+                    .on_hover_text("Open a .creabim, .ifc or .ifcx file. Other files (.blend, .FCStd) are linked into this project.")
+                    .clicked()
+                {
+                    self.open_dialog();
+                }
+                let recent = self.recent.files.clone();
+                ui.add_enabled_ui(!recent.is_empty(), |ui| {
+                    ui.menu_button("Open recent", |ui| {
+                        for f in &recent {
+                            if ui.button(file_label(f)).on_hover_text(f).clicked() {
+                                self.open_path(f);
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("Clear the list").clicked() {
+                            self.recent.clear();
+                        }
+                    });
+                });
+                if ui
+                    .button("Open the path in the File box")
+                    .on_hover_text("For typing or pasting a path instead of browsing.")
                     .clicked()
                 {
                     let path = self.path.clone();
                     self.open_path(&path);
                 }
                 if ui
-                    .button("Save")
+                    .add(egui::Button::new("Save").shortcut_text("Ctrl+S"))
                     .on_hover_text("Save as a .creabim project file, with its undo history.")
                     .clicked()
                 {
                     self.save();
                 }
+                if ui.button("Save as…").clicked() {
+                    self.save_as();
+                }
                 ui.separator();
                 if ui
                     .button("Import and link…")
-                    .on_hover_text("Bring in the objects of the .blend or .FCStd file named in the File box. Saving it in Blender or FreeCAD updates them here.")
+                    .on_hover_text("Bring in the objects of a .blend or .FCStd file. Saving it in Blender or FreeCAD updates them here.")
                     .clicked()
                 {
-                    let path = self.path.clone();
-                    self.link_file(&path);
+                    if let Some(path) = crate::files::pick_open() {
+                        self.link_file(&path);
+                    }
                 }
                 ui.checkbox(&mut self.live_reload, "Reload linked files when saved");
                 let linked = crate::files::linked_files(self.doc.model());
@@ -1769,15 +2158,73 @@ impl CreaBimApp {
                     self.drop_stale_selection();
                 }
                 ui.separator();
+                let some = self.selection.is_some();
+                if ui
+                    .add_enabled(some, egui::Button::new("Copy").shortcut_text("Ctrl+C"))
+                    .clicked()
+                    && self.copy_selected()
+                {
+                    ui.ctx().copy_text(self.clipboard_text());
+                    self.status = format!("Copied {} elements.", self.clipboard.len());
+                }
                 if ui
                     .add_enabled(
-                        self.selection.is_some(),
-                        egui::Button::new("Delete selected"),
+                        !self.clipboard.is_empty(),
+                        egui::Button::new("Paste in place").shortcut_text("Ctrl+V"),
                     )
+                    .clicked()
+                {
+                    self.paste(self.clipboard.clone());
+                }
+                ui.separator();
+                if ui
+                    .button("Select all")
+                    .on_hover_text("Ctrl+A. Alt+A selects nothing.")
+                    .clicked()
+                {
+                    self.select_all();
+                }
+                let delete = match self.selection.len() {
+                    0 | 1 => "Delete selected".to_string(),
+                    n => format!("Delete {n} selected"),
+                };
+                if ui
+                    .add_enabled(some, egui::Button::new(delete).shortcut_text("Del"))
                     .clicked()
                 {
                     self.delete_selected();
                 }
+                ui.separator();
+                if ui
+                    .add_enabled(some, egui::Button::new("Hide selected").shortcut_text("H"))
+                    .clicked()
+                {
+                    self.hide_selected();
+                }
+                if ui
+                    .add_enabled(some, egui::Button::new("Show only selected").shortcut_text("Shift+H"))
+                    .clicked()
+                {
+                    self.isolate_selected();
+                }
+                if ui
+                    .add_enabled(!self.hidden.is_empty(), egui::Button::new("Show everything").shortcut_text("Alt+H"))
+                    .clicked()
+                {
+                    self.show_all();
+                }
+                ui.separator();
+                ui.menu_button("Pivot for rotate and scale", |ui| {
+                    for p in crate::modal::Pivot::ALL {
+                        ui.radio_value(&mut self.plan.pivot, p, p.label());
+                    }
+                    if ui
+                        .add_enabled(self.plan.cursor.is_some(), egui::Button::new("Clear the pivot cursor"))
+                        .clicked()
+                    {
+                        self.plan.cursor = None;
+                    }
+                });
             });
             ui.menu_button("View", |ui| {
                 ui.label("2D view");
@@ -1826,6 +2273,18 @@ impl CreaBimApp {
                     self.plan.cancel();
                 }
             }
+            ui.separator();
+            ui.label("Pivot:").on_hover_text(
+                "What R and S turn and scale about. Shift+right-click places the pivot cursor.",
+            );
+            egui::ComboBox::from_id_salt("pivot")
+                .selected_text(self.plan.pivot.label())
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for p in crate::modal::Pivot::ALL {
+                        ui.selectable_value(&mut self.plan.pivot, p, p.label());
+                    }
+                });
             ui.separator();
             ui.label("View:");
             let current = self
@@ -1961,7 +2420,7 @@ impl CreaBimApp {
         let r = self
             .doc
             .commit(Transaction::new("Place view on sheet").insert(e));
-        self.selection = Some(id);
+        self.selection.only(id);
         self.report(
             r,
             "Placed the view. Drag it to where it belongs on the sheet.",
@@ -1981,7 +2440,7 @@ impl CreaBimApp {
         let id = e.id;
         let r = self.doc.commit(Transaction::new("New sheet").insert(e));
         self.active_view = Some(id);
-        self.selection = Some(id);
+        self.selection.only(id);
         self.report(
             r,
             "New A3 sheet. Use Place view… in the toolbar to put views on it.",
@@ -2084,8 +2543,12 @@ impl CreaBimApp {
                 .body(|ui| {
                     for (id, name) in items {
                         let icon = self.doc.model().get(id).map_or(Icon::Mass, Icon::of);
-                        if icons::row(ui, icon, self.selection == Some(id), &name).clicked() {
-                            self.selection = Some(id);
+                        let row = icons::row(ui, icon, self.selection.contains(id), &name);
+                        if row.clicked() && ui.input(|i| i.modifiers.shift || i.modifiers.command) {
+                            self.selection.toggle(id);
+                            self.face = None;
+                        } else if row.clicked() {
+                            self.selection.only(id);
                             self.face = None;
                             if opens {
                                 self.active_view = Some(id);
@@ -2187,13 +2650,13 @@ impl CreaBimApp {
             self.report(r, "Subtracted. Move the ghost to change the cut.");
         }
         if let Some(c) = select {
-            self.selection = Some(c);
+            self.selection.only(c);
         }
     }
 
     fn properties(&mut self, ui: &mut egui::Ui) {
         ui.heading("Properties");
-        let Some(id) = self.selection else {
+        let Some(id) = self.selection.active else {
             ui.label(
                 "Nothing selected. Click an element in the plan, the 3D view or the model list.",
             );
@@ -2202,6 +2665,38 @@ impl CreaBimApp {
         let Some(e) = self.doc.model().get(id).cloned() else {
             return;
         };
+        if self.selection.len() > 1 {
+            // how many of each kind, then the active element below
+            let mut kinds: Vec<(&str, usize)> = Vec::new();
+            for e in self
+                .selection
+                .all()
+                .iter()
+                .filter_map(|i| self.doc.model().get(*i))
+            {
+                let k = kind_word(&e.kind);
+                match kinds.iter_mut().find(|(l, _)| *l == k) {
+                    Some((_, n)) => *n += 1,
+                    None => kinds.push((k, 1)),
+                }
+            }
+            let list: Vec<String> = kinds
+                .iter()
+                .map(|(k, n)| format!("{n} {}", plural(k, *n)))
+                .collect();
+            ui.label(format!(
+                "{} selected: {}.",
+                self.selection.len(),
+                list.join(", ")
+            ));
+            ui.label(
+                egui::RichText::new(
+                    "G, R, S, Shift+D, Delete, Ctrl+C and H act on all of them. Below is the last one picked; Shift+click picks another.",
+                )
+                .weak(),
+            );
+            ui.separator();
+        }
         ui.label(egui::RichText::new(e.ifc_class()).weak());
         let mut name = e.name.clone();
         if ui.text_edit_singleline(&mut name).changed() {
@@ -2537,7 +3032,7 @@ impl CreaBimApp {
                     label = "Move tag"
                 }
                 if ui.button("Select the tagged element").clicked() {
-                    self.selection = Some(t.host);
+                    self.selection.only(t.host);
                 }
             }
             ElementKind::Grid(g) => {
@@ -2549,14 +3044,12 @@ impl CreaBimApp {
                 });
             }
             ElementKind::Sketch(sk) => {
-                ui.label(format!(
-                    "{} corners, {}",
-                    sk.points.len(),
-                    if sk.closed { "closed" } else { "open" }
-                ));
-                if sk.points.len() >= 3 && ui.checkbox(&mut sk.closed, "Closed").changed() {
-                    label = "Close sketch"
+                match crate::sketch::properties(ui, sk) {
+                    crate::sketch::Edit::Done(l) => label = l,
+                    crate::sketch::Edit::Refused(why) => self.status = why,
+                    crate::sketch::Edit::None => {}
                 }
+                ui.add_space(4.0);
                 if num(ui, "Plane X", &mut sk.plane.origin.x, -1e4, 1e4)
                     | num(ui, "Plane Y", &mut sk.plane.origin.y, -1e4, 1e4)
                     | num(ui, "Plane Z", &mut sk.plane.origin.z, -1e3, 1e3)
@@ -3159,6 +3652,40 @@ fn with_plan_views(model: Model) -> Model {
 }
 
 /// A file's name without its folders.
+/// What to call an element in a count.
+fn kind_word(k: &ElementKind) -> &'static str {
+    match k {
+        ElementKind::Level(_) => "level",
+        ElementKind::Grid(_) => "grid line",
+        ElementKind::Wall(_) => "wall",
+        ElementKind::Slab(_) => "slab",
+        ElementKind::Opening(o) => match o.kind {
+            creabim_core::OpeningKind::Door => "door",
+            creabim_core::OpeningKind::Window => "window",
+        },
+        ElementKind::FreeMesh(_) => "mass",
+        ElementKind::Sketch(_) => "sketch",
+        ElementKind::Guide(_) => "guide",
+        ElementKind::Cut(_) => "cut",
+        ElementKind::Dimension(_) => "dimension",
+        ElementKind::Tag(_) => "tag",
+        ElementKind::View(_) => "view",
+        ElementKind::Sheet(_) => "sheet",
+        ElementKind::Viewport(_) => "placed view",
+        ElementKind::Material(_) => "material",
+    }
+}
+
+/// "wall" or "walls", for counts in messages.
+fn plural(kind: &str, n: usize) -> String {
+    let k = kind.to_lowercase();
+    match (n, k.as_str()) {
+        (1, _) => k,
+        (_, "mass") => "masses".into(),
+        _ => format!("{k}s"),
+    }
+}
+
 fn file_label(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()

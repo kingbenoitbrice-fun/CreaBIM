@@ -468,6 +468,42 @@ const ACCENT: Color32 = Color32::from_rgb(230, 120, 30);
 /// Draw the selected element's handles and run a drag on them (or on the
 /// element itself). Returns `true` while a drag runs, so the pane leaves
 /// the pointer alone, and puts a message for the status bar in `status`.
+/// Add a corner in the middle of a slab edge, or take a corner away.
+pub fn edit_corners(doc: &mut Document, id: ElementId, kind: HandleKind) -> Result<String, String> {
+    let Some(ElementKind::Slab(s)) = doc.model().get(id).map(|e| &e.kind) else {
+        return Err("Only slab outlines have corners to add or remove.".into());
+    };
+    let n = s.boundary.len();
+    let (label, done) = match kind {
+        HandleKind::SlabEdge(i) if i < n => {
+            ("Add slab corner", "Added a corner: drag it into place.")
+        }
+        HandleKind::SlabCorner(i) if i < n => {
+            if n <= 3 {
+                return Err("A slab needs at least three corners.".into());
+            }
+            ("Remove slab corner", "Removed the corner.")
+        }
+        _ => return Err("That isn't a corner or an edge.".into()),
+    };
+    doc.edit(id, label, |e| {
+        if let ElementKind::Slab(s) = &mut e.kind {
+            match kind {
+                HandleKind::SlabEdge(i) => {
+                    let (a, b) = (s.boundary[i], s.boundary[(i + 1) % n]);
+                    s.boundary.insert(i + 1, (a + b) / 2.0);
+                }
+                HandleKind::SlabCorner(i) => {
+                    s.boundary.remove(i);
+                }
+                _ => {}
+            }
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(format!("{done} Ctrl+Z to undo."))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn interact(
     doc: &mut Document,
@@ -510,6 +546,41 @@ pub fn interact(
                 Stroke::new(1.5, ACCENT),
                 egui::StrokeKind::Middle,
             );
+        }
+    }
+
+    // a slab's outline: double-click an edge's square to add a corner
+    // there, or a corner to take it away
+    if drag.is_none() && response.double_clicked() {
+        if let Some(press) = response.interact_pointer_pos() {
+            let near = shown
+                .iter()
+                .filter(|h| matches!(h.kind, HandleKind::SlabCorner(_) | HandleKind::SlabEdge(_)))
+                .filter_map(|h| Some((h, (input.project)(h.at)?.distance(press))))
+                .filter(|(_, d)| *d < 10.0)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(h, _)| h.kind);
+            if let Some(k) = near {
+                *status = Some(match edit_corners(doc, id, k) {
+                    Ok(s) => s,
+                    Err(e) => e,
+                });
+                return true;
+            }
+        }
+    }
+
+    // a click on a handle keeps the selection (it may be the first half of
+    // a double-click), rather than picking what lies under it
+    if drag.is_none() && response.clicked() {
+        if let Some(p) = response.interact_pointer_pos() {
+            let on_handle = shown
+                .iter()
+                .filter_map(|h| (input.project)(h.at))
+                .any(|c| c.distance(p) < 10.0);
+            if on_handle {
+                return true;
+            }
         }
     }
 
@@ -615,7 +686,7 @@ pub fn interact(
         (Constraint::Line { point, dir }, Some((p, snap)))
             if matches!(
                 snap.kind,
-                SnapKind::Endpoint | SnapKind::Midpoint | SnapKind::Intersection
+                SnapKind::Endpoint | SnapKind::Midpoint | SnapKind::Center | SnapKind::Intersection
             ) =>
         {
             if let Some(at) = (input.project)(p) {
@@ -791,5 +862,32 @@ mod tests {
             panic!()
         };
         assert!((s.thickness - (t + 0.05)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn slab_corners_can_be_added_on_an_edge_and_taken_away() {
+        let m = creabim_core::sample::sample_house();
+        let (id, n) = m
+            .iter()
+            .find_map(|e| match &e.kind {
+                ElementKind::Slab(s) => Some((e.id, s.boundary.len())),
+                _ => None,
+            })
+            .unwrap();
+        let mut doc = Document::from_model(m);
+        edit_corners(&mut doc, id, HandleKind::SlabEdge(0)).unwrap();
+        let corners = |doc: &Document| match &doc.model().get(id).unwrap().kind {
+            ElementKind::Slab(s) => s.boundary.clone(),
+            _ => panic!(),
+        };
+        let b = corners(&doc);
+        assert_eq!(b.len(), n + 1);
+        assert!(b[1].distance((b[0] + b[2]) / 2.0) < 1e-9);
+        edit_corners(&mut doc, id, HandleKind::SlabCorner(1)).unwrap();
+        assert_eq!(corners(&doc).len(), n);
+        while corners(&doc).len() > 3 {
+            edit_corners(&mut doc, id, HandleKind::SlabCorner(0)).unwrap();
+        }
+        assert!(edit_corners(&mut doc, id, HandleKind::SlabCorner(0)).is_err());
     }
 }

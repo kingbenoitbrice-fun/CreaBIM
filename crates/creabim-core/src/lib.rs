@@ -4,6 +4,7 @@
 //! the model directly; they are expressed as a [`Transaction`] of [`Op`]s and
 //! committed through a [`Document`], which records them for undo and redo.
 
+pub mod constraint;
 pub mod csg;
 pub mod document;
 pub mod editmesh;
@@ -16,8 +17,10 @@ pub mod modifiers;
 pub mod ops;
 pub mod polygon;
 pub mod sample;
+pub mod sketch;
 pub mod transform;
 
+pub use constraint::{Constraint, SolveError};
 pub use csg::BoolOp;
 pub use document::{Document, Step, StepId};
 pub use editmesh::EditMesh;
@@ -32,6 +35,7 @@ pub use marks::{marks, material_of};
 pub use model::Model;
 pub use modifiers::{Axis, Modifier, ModifierKind};
 pub use ops::{Op, Transaction};
+pub use sketch::{bulge_through, Circle, Curve, SegmentKind};
 pub use transform::Xform;
 
 /// Errors raised when an edit would leave the model inconsistent.
