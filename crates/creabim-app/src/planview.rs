@@ -1412,6 +1412,7 @@ fn section_tool(
                     sill,
                     width,
                     height,
+                    material: None,
                 }),
             );
             selection.only(e.id);
@@ -2867,6 +2868,7 @@ fn place_opening(
             sill,
             width,
             height,
+            material: None,
         }),
     );
     selection.only(e.id);

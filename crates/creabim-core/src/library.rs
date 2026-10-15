@@ -685,6 +685,8 @@ pub fn material_slot(e: &Element) -> Option<Option<ElementId>> {
         ElementKind::Wall(w) => Some(w.material),
         ElementKind::Slab(s) => Some(s.material),
         ElementKind::FreeMesh(m) => Some(m.material),
+        ElementKind::Opening(o) => Some(o.material),
+        k if crate::members::is_member(k) => Some(crate::members::material(k)),
         _ => None,
     }
 }
@@ -695,7 +697,11 @@ pub fn set_material(e: &mut Element, material: Option<ElementId>) -> bool {
         ElementKind::Wall(w) => w.material = material,
         ElementKind::Slab(s) => s.material = material,
         ElementKind::FreeMesh(m) => m.material = material,
-        _ => return false,
+        ElementKind::Opening(o) => o.material = material,
+        k => match crate::members::material_mut(k) {
+            Some(m) => *m = material,
+            None => return false,
+        },
     }
     true
 }
@@ -872,6 +878,59 @@ mod tests {
         }
         doc.undo();
         assert_eq!(users(doc.model(), brick), used);
+    }
+
+    #[test]
+    fn doors_windows_and_members_take_a_material() {
+        use crate::members::{Column, Profile};
+        use crate::Model;
+        let mut model = crate::sample::sample_house();
+        let level = model
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::Level(_)))
+            .unwrap()
+            .id;
+        let column = Element::new(
+            "C1",
+            ElementKind::Column(Column::new(
+                level,
+                glam::DVec2::new(3.0, 3.0),
+                Profile::Round { diameter: 0.3 },
+            )),
+        );
+        model = Model::from_elements(model.iter().cloned().chain([column.clone()])).unwrap();
+        let (timber, _, _) = materials(&model)
+            .into_iter()
+            .find(|(_, n, _)| *n == "Timber")
+            .unwrap();
+        let door = model
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::Opening(_)))
+            .unwrap()
+            .clone();
+        let mut doc = Document::from_model(model);
+        for e in [door.clone(), column.clone()] {
+            assert_eq!(material_slot(&e), Some(None), "{}", e.name);
+            let mut after = e.clone();
+            assert!(set_material(&mut after, Some(timber)));
+            doc.commit(crate::Transaction::new("t").replace(e, after))
+                .unwrap();
+        }
+        let used = users(doc.model(), timber);
+        assert!(used.contains(&door.id) && used.contains(&column.id));
+        let e = doc.model().get(door.id).unwrap();
+        assert_eq!(
+            crate::material_of(doc.model(), e).map(|(m, _)| m.id),
+            Some(timber)
+        );
+        // deleting the material leaves them with none
+        let model = doc.model().clone();
+        doc.commit(delete(&model, timber, None)).unwrap();
+        assert_eq!(
+            material_slot(doc.model().get(column.id).unwrap()),
+            Some(None)
+        );
+        assert_eq!(material_slot(doc.model().get(door.id).unwrap()), Some(None));
     }
 
     #[test]

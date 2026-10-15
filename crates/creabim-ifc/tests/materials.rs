@@ -112,3 +112,37 @@ fn materials_of_ifcopenshell_files() {
     }
     assert!(import_ifc_materials("not an ifc").is_err());
 }
+
+#[test]
+fn a_door_keeps_its_material_through_ifc4_and_ifcx() {
+    let model = sample_house();
+    let timber = model.iter().find(|e| e.name == "Timber").unwrap().id;
+    let door = model
+        .iter()
+        .find(|e| e.name == "Front Door")
+        .cloned()
+        .unwrap();
+    let mut after = door.clone();
+    assert!(creabim_core::library::set_material(
+        &mut after,
+        Some(timber)
+    ));
+    let mut doc = creabim_core::Document::from_model(model);
+    doc.commit(creabim_core::Transaction::new("t").replace(door, after))
+        .unwrap();
+    let model = doc.model().clone();
+    let material_of_door = |m: &Model| {
+        let d = m.iter().find(|e| e.name == "Front Door").unwrap();
+        assert!(matches!(d.kind, ElementKind::Opening(_)));
+        creabim_core::material_of(m, d).map(|(e, _)| e.name.clone())
+    };
+    assert_eq!(material_of_door(&model).as_deref(), Some("Timber"));
+    let ifc4 = import_ifc(&export_ifc4(&model, &ExportOptions::default()))
+        .unwrap()
+        .model;
+    assert_eq!(material_of_door(&ifc4).as_deref(), Some("Timber"));
+    let ifcx = creabim_ifc::import_ifcx(&creabim_ifc::export_ifcx(&model))
+        .unwrap()
+        .model;
+    assert_eq!(material_of_door(&ifcx).as_deref(), Some("Timber"));
+}

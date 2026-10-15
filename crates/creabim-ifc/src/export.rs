@@ -448,6 +448,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         let fill = product(&mut c, class, e, fill_pl, fill_shape, &tail);
         let g = c.guid();
         c.w.add("IFCRELFILLSELEMENT", format!("{g},$,$,$,{opening},{fill}"));
+        if let Some((m, _)) = creabim_core::material_of(model, e) {
+            by_material.entry(m.id).or_default().push(fill);
+        }
         let level = match model.get(o.host).map(|h| &h.kind) {
             Some(ElementKind::Wall(w)) => w.level,
             _ => continue,
