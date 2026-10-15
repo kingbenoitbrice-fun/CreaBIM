@@ -97,5 +97,7 @@ window.ICONS = {
 "tent": "<path d=\"M3.5 21 14 3\" /> <path d=\"M20.5 21 10 3\" /> <path d=\"M15.5 21 12 15l-3.5 6\" /> <path d=\"M2 21h20\" />",
 "chart-no-axes-column-increasing": "<line x1=\"12\" x2=\"12\" y1=\"20\" y2=\"10\" /> <line x1=\"18\" x2=\"18\" y1=\"20\" y2=\"4\" /> <line x1=\"6\" x2=\"6\" y1=\"20\" y2=\"16\" />",
 "fence": "<path d=\"M4 3 2 5v15c0 .6.4 1 1 1h2c.6 0 1-.4 1-1V5Z\" /> <path d=\"M6 8h4\" /> <path d=\"M6 18h4\" /> <path d=\"m12 3-2 2v15c0 .6.4 1 1 1h2c.6 0 1-.4 1-1V5Z\" /> <path d=\"M14 8h4\" /> <path d=\"M14 18h4\" /> <path d=\"m20 3-2 2v15c0 .6.4 1 1 1h2c.6 0 1-.4 1-1V5Z\" />",
-"corner-down-right": "<polyline points=\"15 10 20 15 15 20\" /> <path d=\"M4 4v7a4 4 0 0 0 4 4h12\" />"
+"corner-down-right": "<polyline points=\"15 10 20 15 15 20\" /> <path d=\"M4 4v7a4 4 0 0 0 4 4h12\" />",
+"level": "<path d=\"M2 14h12\" stroke-dasharray=\"3 2\" /> <circle cx=\"18\" cy=\"14\" r=\"3.5\" /> <path d=\"M18 10.5V14h3.5M18 14v3.5h-3.5\" /> <path d=\"M3 7h9\" />",
+"plus": "<path d=\"M5 12h14M12 5v14\" />"
 };

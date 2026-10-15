@@ -54,11 +54,16 @@ impl Profile {
 
     /// "300 × 300" or "Ø 300", in millimetres.
     pub fn label(&self) -> String {
+        self.label_in(&crate::Units::metric())
+    }
+
+    /// The label in a project's units: "300 × 300", "1'-0\" × 1'-0\"".
+    pub fn label_in(&self, units: &crate::Units) -> String {
         match *self {
             Profile::Rectangle { width, depth } => {
-                format!("{:.0} × {:.0}", width * 1000.0, depth * 1000.0)
+                format!("{} × {}", units.dimension(width), units.dimension(depth))
             }
-            Profile::Round { diameter } => format!("Ø {:.0}", diameter * 1000.0),
+            Profile::Round { diameter } => format!("Ø {}", units.dimension(diameter)),
         }
     }
 

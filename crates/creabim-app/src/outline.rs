@@ -328,13 +328,13 @@ impl Outline {
                     let c = Curve::arc(last, end, bulge_through(last, end, h).clamp(-50.0, 50.0));
                     line(&c.points(), stroke);
                     text = Some(match c {
-                        Curve::Arc { radius, .. } => format!("R {radius:.2} m"),
-                        Curve::Line(..) => format!("{:.2} m", last.distance(end)),
+                        Curve::Arc { radius, .. } => format!("R {}", crate::units::len(radius)),
+                        Curve::Line(..) => crate::units::len(last.distance(end)),
                     });
                 }
                 None => {
                     line(&[last, h], stroke);
-                    text = Some(format!("{:.2} m", h.distance(last)));
+                    text = Some(crate::units::len(h.distance(last)));
                 }
             }
         }

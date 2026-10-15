@@ -18,6 +18,9 @@ CUSTOM={
  "snap-centre": '<circle cx="12" cy="12" r="7" /><circle cx="12" cy="12" r="1" />',
  "snap-quadrant": '<path d="M12 4.5 19.5 12 12 19.5 4.5 12z" />',
  "snap-axis": '<path d="M3 12h18M12 3v18" stroke-dasharray="2.5 2.5" />',
+ # the Level tool and the project browser's group buttons
+ "level": '<path d="M2 14h12" stroke-dasharray="3 2" /> <circle cx="18" cy="14" r="3.5" /> <path d="M18 10.5V14h3.5M18 14v3.5h-3.5" /> <path d="M3 7h9" />',
+ "plus": '<path d="M5 12h14M12 5v14" />',
 }
 out={}
 for n in names:
