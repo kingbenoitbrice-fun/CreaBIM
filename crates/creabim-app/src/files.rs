@@ -157,6 +157,13 @@ pub struct Settings {
     /// Width of the project browser and of the properties panel, in points.
     pub left_width: f32,
     pub right_width: f32,
+    /// One view at a time instead of the 3D view and a drawing side by
+    /// side, and which of the two it shows.
+    pub single_view: bool,
+    pub single_shows_3d: bool,
+    /// The ground grid in the 3D view, and its spacing in metres.
+    pub ground_grid: bool,
+    pub ground_grid_spacing: f64,
 }
 
 impl Default for Settings {
@@ -165,6 +172,10 @@ impl Default for Settings {
             theme: "dark".into(),
             left_width: 264.0,
             right_width: 290.0,
+            single_view: false,
+            single_shows_3d: true,
+            ground_grid: true,
+            ground_grid_spacing: 1.0,
         }
     }
 }
@@ -235,6 +246,16 @@ pub fn pick_save(current: &str, title: &str, ext: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_from_before_the_layout_options_still_read() {
+        let s: Settings = serde_json::from_str(r#"{"theme": "paper", "left_width": 300.0}"#)
+            .expect("old settings read");
+        assert_eq!(s.theme, "paper");
+        assert!(!s.single_view);
+        assert!(s.ground_grid);
+        assert_eq!(s.ground_grid_spacing, 1.0);
+    }
 
     #[test]
     fn recent_files_keep_the_newest_first_without_repeats() {

@@ -69,6 +69,8 @@
         return `<button class="toggle ${c.on ? "on" : ""}" data-act="${esc(c.id)}" title="${esc(c.hint)}">${c.icon ? icon(c.icon) : ""}${esc(c.label)}</button>`;
       case "label":
         return `<span class="ctl-label">${esc(c.label)}</span>`;
+      case "seg":
+        return `<span class="seg">` + c.items.map((i) => `<button class="${i.on ? "on" : ""}" data-act="${esc(i.id)}" title="${esc(i.hint)}">${esc(i.label)}</button>`).join("") + `</span>`;
       case "sep":
         return `<span class="vsep"></span>`;
       case "meta":
@@ -107,7 +109,13 @@
     root.innerHTML =
       `<div class="bar1"><div class="brand"><div class="logo">${icon("box")}</div>CreaBIM</div>${menus}<span class="vsep"></span>` +
       `<div class="quick">${quick}</div><span class="spacer"></span><div class="doc" title="${esc(S.doc.path)}"><b>${esc(S.doc.name)}</b>${S.doc.note ? " · " + esc(S.doc.note) : ""}</div><span class="spacer"></span>${S.right.map(control).join("")}</div>` +
-      `<div class="bar2"><div class="tools">${tools}</div><span class="spacer"></span><div class="options">${S.options.map(control).join("")}</div></div>`;
+      `<div class="bar2"><div class="tools">${tools}</div><span class="spacer"></span></div>` +
+      // the tool options strip: the tool in use and what it can be set to,
+      // then the active view's own settings at the right
+      `<div class="bar3"><div class="toolname">${S.tool.icon ? icon(S.tool.icon) : ""}<b>${esc(S.tool.label)}</b></div>` +
+      (S.tool_options.length ? `<div class="options">${S.tool_options.map(control).join("")}</div>` :
+        `<div class="tool-hint" title="${esc(S.tool.hint)}">${esc(S.tool.hint || "")}</div>`) +
+      `<span class="spacer"></span><div class="options">${S.options.map(control).join("")}</div></div>`;
   }
 
   // ---- left pane: project browser ----
@@ -191,11 +199,13 @@
     if (!S.items || S.items.length === 0) {
       root.innerHTML = "";
       local.stack = [];
+      local.key = null;
       return;
     }
     if (local.key !== S.key) {
       local.key = S.key;
       local.stack = [];
+      local.hot = -1;
     }
     // Follow the open submenu into fresh items, by label.
     let items = S.items;
@@ -206,26 +216,105 @@
       items = sub.items;
       title = label;
     }
-    let html = `<div class="menu">`;
-    if (title !== null) html += `<button class="head" data-back="1">${icon("arrow-left")}<span>${esc(title)}</span></button><div class="msep"></div>`;
-    items.forEach((i, n) => {
-      if (i.sep) html += `<div class="msep"></div>`;
-      else if (i.header) html += `<div class="mhead">${esc(i.header)}</div>`;
-      else if (i.items) html += `<button class="mi" data-sub="${esc(i.label)}" ${i.enabled ? "" : "disabled"}><span class="ck"></span><span class="label">${esc(i.label)}</span>${icon("chevron-right", "sub")}</button>`;
-      else html += `<button class="mi" data-act="${esc(i.id)}" data-keep="${i.keep ? 1 : 0}" title="${esc(i.hint)}" ${i.enabled ? "" : "disabled"}>` +
+    const row = (i) => {
+      if (i.sep) return `<div class="msep"></div>`;
+      if (i.header) return `<div class="mhead">${esc(i.header)}</div>`;
+      if (i.items) return `<button class="mi" data-sub="${esc(i.label)}" ${i.enabled ? "" : "disabled"}><span class="ck">${i.icon ? icon(i.icon) : ""}</span><span class="label">${esc(i.label)}</span>${icon("chevron-right", "sub")}</button>`;
+      return `<button class="mi" data-act="${esc(i.id)}" data-keep="${i.keep ? 1 : 0}" title="${esc(i.hint)}" ${i.enabled ? "" : "disabled"}>` +
         `<span class="ck">${i.checked ? icon("check") : (i.icon && i.checked !== false ? icon(i.icon) : "")}</span>` +
         (i.icon && i.checked != null ? `<span class="glyph">${icon(i.icon)}</span>` : "") + `<span class="label">${esc(i.label)}</span>${i.key ? `<span class="key">${esc(i.key)}</span>` : ""}</button>`;
-    });
-    html += `</div>`;
+    };
+    const cols = S.columns > 1 && title === null ? columns(items, S.columns) : null;
+    let html = `<div class="mwrap"><div class="menu ${cols ? "cols" : ""}" ${cols ? `style="--cols:${cols.length}"` : ""}>`;
+    if (title !== null) html += `<button class="head" data-back="1">${icon("arrow-left")}<span>${esc(title)}</span></button><div class="msep"></div>`;
+    if (cols) {
+      // a long menu with sections reads as a panel of columns
+      for (const col of cols) html += `<div class="col">${col.map(row).join("")}</div>`;
+    } else {
+      html += items.map(row).join("");
+    }
+    html += `</div><div class="more">${icon("chevron-down")}</div></div>`;
     root.innerHTML = html;
+    if (local.hot >= 0) {
+      const b = root.querySelectorAll(".menu .mi:not(:disabled), .menu .head")[local.hot];
+      if (b) b.classList.add("hot");
+    }
+    const m = root.querySelector(".menu");
+    m.addEventListener("scroll", showMore);
+    local.sentH = local.sentW = null;
     reportSize();
+    showMore();
   }
+
+  // Split a menu at its headers into `n` columns of about equal height,
+  // keeping the sections in order.
+  function columns(items, n) {
+    const sections = [];
+    for (const i of items) {
+      if (i.header || sections.length === 0) sections.push([]);
+      if (!i.sep) sections[sections.length - 1].push(i);
+    }
+    n = Math.min(n, sections.length);
+    const h = sections.map((s) => s.length);
+    let best = null;
+    // every way to cut the sections into n runs (menus are short)
+    (function cut(from, left, acc) {
+      if (left === 1) {
+        const runs = acc.concat([[from, sections.length]]);
+        const tall = Math.max(...runs.map(([a, b]) => h.slice(a, b).reduce((x, y) => x + y, 0)));
+        if (!best || tall < best.tall) best = { tall, runs };
+        return;
+      }
+      for (let k = from + 1; k <= sections.length - left + 1; k++) cut(k, left - 1, acc.concat([[from, k]]));
+    })(0, n, []);
+    return best.runs.map(([a, b]) => [].concat(...sections.slice(a, b)));
+  }
+
+  // A shadow and an arrow at the bottom while more of the menu is below.
+  function showMore() {
+    const m = root.querySelector(".menu");
+    const more = root.querySelector(".more");
+    if (!m || !more) return;
+    more.classList.toggle("on", m.scrollTop + m.clientHeight < m.scrollHeight - 2);
+  }
+
+  // the page's size changes as the app places it: measure again then
+  window.addEventListener("resize", () => {
+    if (pane !== "popup" || !root.querySelector(".menu")) return;
+    reportSize();
+    showMore();
+  });
 
   function reportSize() {
     const m = root.querySelector(".menu");
     if (!m) return;
-    // the page border adds 2px each way
-    post({ t: "size", w: Math.ceil(m.scrollWidth) + 2, h: Math.ceil(m.scrollHeight) + 2 });
+    if (m.scrollHeight === local.sentH && m.scrollWidth === local.sentW) return;
+    local.sentH = m.scrollHeight;
+    local.sentW = m.scrollWidth;
+    // the page border adds 2px each way; a scrollbar takes some width
+    const bar = m.scrollHeight > m.clientHeight + 1 ? 10 : 0;
+    post({ t: "size", w: Math.ceil(m.scrollWidth) + 2 + bar, h: Math.ceil(m.scrollHeight) + 2 });
+  }
+
+  // Arrow keys, Enter and Esc in an open menu, from this page or passed on
+  // from the views.
+  function menuKey(k) {
+    const buttons = [...root.querySelectorAll(".menu .mi:not(:disabled), .menu .head")];
+    if (buttons.length === 0) return;
+    if (k === "ArrowDown" || k === "ArrowUp") {
+      const n = buttons.length;
+      local.hot = local.hot < 0 ? (k === "ArrowDown" ? 0 : n - 1) : (local.hot + (k === "ArrowDown" ? 1 : -1) + n) % n;
+      buttons.forEach((b, i) => b.classList.toggle("hot", i === local.hot));
+      buttons[local.hot].scrollIntoView({ block: "nearest" });
+      showMore();
+    } else if (k === "Enter" || k === "ArrowRight") {
+      const b = buttons[local.hot];
+      if (b && (k === "Enter" || b.dataset.sub)) b.click();
+    } else if (k === "ArrowLeft" || k === "Backspace") {
+      if (local.stack.length) { local.stack.pop(); local.hot = -1; drawPopup(); }
+    } else if (k === "Escape") {
+      post({ t: "close" });
+    }
   }
 
   // ---- drawing and events ----
@@ -257,6 +346,9 @@
       if (s.theme) document.documentElement.dataset.theme = s.theme;
       keepFocus(draw);
     },
+    nav(k) {
+      if (S && S.key !== "palette") menuKey(k);
+    },
     feed(f) {
       if (!S || S.key !== "palette") return;
       if (f.text) { local.query = (local.query || "") + f.text; local.hot = 0; }
@@ -286,11 +378,14 @@
       else post({ t: "popup", key: t.dataset.popup, x: r.left, y: r.bottom + 4, w: r.width, up: pane === "status" ? r.top - 4 : null });
     } else if (t.dataset.back) {
       local.stack.pop();
+      local.hot = -1;
       drawPopup();
       return;
     } else if (t.dataset.sub) {
       local.stack.push(t.dataset.sub);
+      local.hot = -1;
       drawPopup();
+      root.querySelector(".menu").scrollTop = 0;
       return;
     } else if (t.dataset.act) {
       post({ t: "act", id: t.dataset.act, keep: t.dataset.keep === "1" });
@@ -358,7 +453,11 @@
       }
       return;
     }
-    if (pane === "popup" && e.key === "Escape") { post({ t: "close" }); return; }
+    if (pane === "popup" && ["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Enter", "Escape"].includes(e.key)) {
+      e.preventDefault();
+      menuKey(e.key);
+      return;
+    }
     // Anything else is a shortcut for the views.
     post({ t: "key", key: e.key, code: e.code, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey, alt: e.altKey, repeat: e.repeat });
     if (e.ctrlKey || e.metaKey || e.key === "F3" || e.key === "Tab") e.preventDefault();

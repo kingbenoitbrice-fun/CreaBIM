@@ -5,7 +5,7 @@
 use crate::boxsel;
 use crate::commands::Command;
 use crate::handles::{self, PaneInput};
-use crate::modal::{self, Modal, Mode, Outcome, PaneMap, Space};
+use crate::modal::{self, Flow, Modal, Mode, Outcome, PaneMap, Space, Stage};
 use crate::outline::Next;
 use crate::selection::Selection;
 use crate::sketch::{level_below, Click, SketchDraft};
@@ -114,7 +114,7 @@ impl Tool {
 
     pub fn hint(self) -> &'static str {
         match self {
-            Tool::Select => "Click an element to select it. With the pointer over a view, G moves it, R rotates, S scales and Shift+D duplicates.",
+            Tool::Select => "Click an element to select it. Drag a selected element to move it. M (Move) moves it by a base point; over a view, G moves it with the pointer, R rotates, S scales, Shift+D duplicates.",
             Tool::Wall => "Click to start, click again to place each wall. Esc or right-click ends the chain. Shift keeps it orthogonal.",
             Tool::Door => "Click on a wall to place a door.",
             Tool::Window => "Click on a wall to place a window.",
@@ -149,7 +149,7 @@ impl Tool {
     /// The hint for this tool in a section or elevation.
     fn section_hint(self) -> &'static str {
         match self {
-            Tool::Select => "Click to select, Shift+click to add, drag on empty paper for a box. G moves, R tilts, S scales, Shift+D duplicates.",
+            Tool::Select => "Click to select, Shift+click to add, drag on empty paper for a box. M moves by a base point, G with the pointer, R tilts, S scales, Shift+D duplicates.",
             Tool::Wall => "Click two points: the wall runs along the section line, as high as you draw it.",
             Tool::Slab => "Click two corners of the slab's edge. Its top snaps to the nearest level; it runs back as far as the walls.",
             Tool::Section => "Click where the new section cuts, then click on the side it should look towards.",
@@ -492,8 +492,14 @@ pub fn show(
     let snap_cfg = state.snap.live(alt);
     // snaps: the selection and what joins it are left out while selecting,
     // since dragging them must not snap to themselves
-    let exclude = match tool {
-        Tool::Select => selection
+    let moving = state
+        .modal
+        .as_ref()
+        .filter(|m| m.pane == Some(view))
+        .and_then(|m| m.snap_exclude(doc));
+    let exclude = match (moving, tool) {
+        (Some(ids), _) => ids,
+        (None, Tool::Select) => selection
             .active
             .map(|id| joined_with(doc, id))
             .unwrap_or_default(),
@@ -646,6 +652,21 @@ pub fn show(
             Some(pane_to_model(space, xf.to_world(pos), pivot.z))
         };
         let project = |p: DVec3| Some(xf.to_screen(model_to_pane(space, p)));
+        // the pane's snaps, lent out while a move or rotate runs here
+        let lent = std::mem::take(&mut state.snaps);
+        let plane_z = match kind {
+            PaneKind::Plan { level } => doc.model().level(level).map_or(0.0, |l| l.elevation),
+            _ => 0.0,
+        };
+        let snap_fn = |pos: Pos2, from: Option<DVec3>| {
+            let snapper = &lent.get(&view)?.2;
+            let to_pane = |p: DVec3| model_to_pane(space, p).extend(0.0);
+            let pane_project = |p: DVec3| Some(xf.to_screen(p.truncate()));
+            let free = Some(xf.to_world(pos).extend(0.0));
+            let s = snapper.snap(&snap_cfg, pos, &pane_project, from.map(to_pane), free)?;
+            let p = pane_to_model(space, s.p.truncate(), from.map_or(plane_z, |f| f.z));
+            Some((p, snaps::Snap { p, ..s }))
+        };
         let map = PaneMap {
             to_model: &to_model,
             project: &project,
@@ -655,10 +676,14 @@ pub fn show(
                 }
                 _ => -DVec3::Z,
             },
+            snap: &snap_fn,
         };
-        if let Some(r) = keyboard_edits(
-            ui, doc, view, space, &painter, &response, state, selection, &map,
-        ) {
+        let pick = |p: Pos2| hit_test(&plan.items, xf.to_world(p), 6.0 / xf.scale as f64, mm);
+        let edits = keyboard_edits(
+            ui, doc, view, space, &painter, &response, state, selection, &map, &pick,
+        );
+        state.snaps = lent;
+        if let Some(r) = edits {
             return r;
         }
         if tool == Tool::Sketch {
@@ -717,12 +742,25 @@ pub fn show(
                 (hit_test(&plan.items, w, 6.0 / xf.scale as f64, mm) == Some(id))
                     .then(|| pane_to_model(space, w, level_z))
             };
+            let grab_snap = |pos: Pos2, id: ElementId| {
+                let only: Vec<PlanItem> = plan
+                    .items
+                    .iter()
+                    .filter(|i| i.id() == id)
+                    .cloned()
+                    .collect();
+                let own = Snapper::from_drawing(&only, &[]);
+                let pane_project = |p: DVec3| Some(xf.to_screen(p.truncate()));
+                let s = own.snap(&snap_cfg.points_only(), pos, &pane_project, None, None)?;
+                Some(pane_to_model(space, s.p.truncate(), level_z))
+            };
             let input = PaneInput {
                 ray: &ray,
                 project: &project,
                 look,
                 snap: &snap,
                 grab_body: &grab_body,
+                grab_snap: &grab_snap,
                 body_normal: if matches!(space, Space::Section { .. }) {
                     look
                 } else {
@@ -1155,7 +1193,7 @@ pub fn show(
             egui::Align2::LEFT_BOTTOM,
             match (kind, tool) {
                 (PaneKind::Plan { .. }, Tool::Select) => {
-                    "Click to select, Shift+click to add, drag on empty paper for a box. Drag grips to stretch; double-click a slab edge grip to add a corner. G move, R rotate, S scale, Shift+D duplicate."
+                    "Click to select, Shift+click to add, drag on empty paper for a box. Drag grips to stretch; double-click a slab edge grip to add a corner. M move, G grab, R rotate, S scale, Shift+D duplicate."
                 }
                 (PaneKind::Plan { .. }, t) => t.hint(),
                 (PaneKind::Section { .. }, t) => t.section_hint(),
@@ -1793,8 +1831,10 @@ fn model_to_pane(space: Space, p: DVec3) -> DVec2 {
     }
 }
 
-/// G, R and S move, rotate and scale the selection, and Shift+D copies it,
-/// while the pointer is over this pane. Returns `Some` while one runs here.
+/// The Move and Rotate tools, and G, R and S (move, rotate and scale) and
+/// Shift+D (copy) while the pointer is over this pane. Returns `Some` while
+/// one runs here. `pick` finds the element under the pointer, for
+/// Shift+click while the base point is picked.
 #[allow(clippy::too_many_arguments)]
 fn keyboard_edits(
     ui: &egui::Ui,
@@ -1806,10 +1846,38 @@ fn keyboard_edits(
     state: &mut PlanState,
     selection: &mut Selection,
     map: &PaneMap,
+    pick: &dyn Fn(Pos2) -> Option<ElementId>,
 ) -> Option<Option<String>> {
+    let shift = ui.input(|i| i.modifiers.shift);
     if let Some(m) = state.modal.as_mut().filter(|m| m.pane == Some(view)) {
+        // Shift+click while the base point is picked adds or takes away
+        if m.stage() == Stage::Base && shift && response.clicked() {
+            if let Some(id) = response.interact_pointer_pos().and_then(pick) {
+                selection.toggle(id);
+                let grab = response.hover_pos().unwrap_or_default();
+                state.status = Some(restart_modal(
+                    doc,
+                    &mut state.modal,
+                    &selection.all(),
+                    grab,
+                    state.pivot,
+                    state.cursor,
+                ));
+            }
+            return Some(None);
+        }
         m.panel(ui.ctx(), response.rect);
-        match m.update(doc, ui.ctx(), painter, response.hover_pos(), map) {
+        let click = response.clicked();
+        let right = response.secondary_clicked() && !shift;
+        match m.update(
+            doc,
+            ui.ctx(),
+            painter,
+            response.hover_pos(),
+            click,
+            right,
+            map,
+        ) {
             Outcome::Running(s) => state.status = Some(s),
             Outcome::Done(s) | Outcome::Cancelled(s) => {
                 state.status = Some(s);
@@ -1822,7 +1890,13 @@ fn keyboard_edits(
         return None;
     }
     selection.active?;
-    let mode = start_keys(ui.ctx()).or(state.armed)?;
+    let keys = start_keys(ui.ctx());
+    let flow = if keys.is_some() {
+        Flow::Keys
+    } else {
+        Flow::Tool
+    };
+    let mode = keys.or(state.armed)?;
     let grab = response.hover_pos()?;
     state.armed = None;
     state.cancel();
@@ -1837,20 +1911,63 @@ fn keyboard_edits(
         grab,
         state.pivot,
         state.cursor,
+        flow,
     ) {
         Ok((m, copies)) => {
             if copies != ids {
                 selection.extend(copies, false);
             }
-            state.status = Some(format!(
-                "{:?}: move the pointer, or type a value. X, Y or Z keeps to an axis.",
-                m.mode
-            ));
+            state.status = Some(start_hint(&m));
             state.modal = Some(m);
         }
         Err(e) => state.status = Some(e),
     }
     Some(None)
+}
+
+/// What to do first, as a running edit begins.
+pub fn start_hint(m: &Modal) -> String {
+    match (m.stage(), m.mode) {
+        (Stage::Base, Mode::Rotate) => "Rotate: click the centre to turn about.".into(),
+        (Stage::Base, _) => {
+            "Move: click the base point, the point you move by. It snaps; Shift+click adds or takes away elements.".into()
+        }
+        (_, mode) => format!(
+            "{mode:?}: move the pointer, or type a value. X, Y or Z keeps to an axis."
+        ),
+    }
+}
+
+/// Start the running Move or Rotate tool again on a new selection, as it
+/// was changed with Shift+click before the base point. Returns a message.
+pub fn restart_modal(
+    doc: &mut Document,
+    modal: &mut Option<Modal>,
+    ids: &[ElementId],
+    grab: Pos2,
+    pivot: modal::Pivot,
+    cursor: Option<DVec3>,
+) -> String {
+    let Some(old) = modal.take() else {
+        return String::new();
+    };
+    let mut old = old;
+    old.cancel(doc);
+    if ids.is_empty() {
+        return "Nothing selected: click what to move.".into();
+    }
+    match Modal::start(
+        doc, old.mode, ids, None, old.space, old.pane, grab, pivot, cursor,
+    ) {
+        Ok(m) => {
+            let n = ids.len();
+            *modal = Some(m.with_flow(Flow::Tool));
+            format!(
+                "{n} selected. Shift+click adds or takes away more; click the base point to go on."
+            )
+        }
+        Err(e) => e,
+    }
 }
 
 /// Which keyboard edit the keys pressed this frame start, if any:
@@ -1890,6 +2007,7 @@ pub fn start_modal(
     grab: Pos2,
     pivot: modal::Pivot,
     cursor: Option<DVec3>,
+    flow: Flow,
 ) -> Result<(Modal, Vec<ElementId>), String> {
     let targets = if duplicate {
         modal::duplicate(doc, ids)?
@@ -1900,7 +2018,7 @@ pub fn start_modal(
     match Modal::start(doc, mode, &targets, face, space, pane, grab, pivot, cursor) {
         Ok(mut m) => {
             m.duplicated = duplicate;
-            Ok((m, targets))
+            Ok((m.with_flow(flow), targets))
         }
         Err(e) => {
             if duplicate {
@@ -2038,7 +2156,11 @@ fn refresh_snaps(
     plan: &Drawing,
     exclude: &[ElementId],
 ) {
-    let dragging = state.grip.is_some();
+    let dragging = state.grip.is_some()
+        || state
+            .modal
+            .as_ref()
+            .is_some_and(|m| m.pane == Some(view) && m.freezes_snaps());
     let fresh = state
         .snaps
         .get(&view)

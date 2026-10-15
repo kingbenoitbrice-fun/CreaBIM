@@ -73,7 +73,7 @@ impl Command {
 
     pub fn shortcut(self) -> &'static str {
         match self {
-            Command::Move => "G",
+            Command::Move => "M",
             Command::Rotate => "R",
             Command::Scale => "S",
             Command::Duplicate => "Shift+D",
@@ -93,13 +93,12 @@ impl Command {
         }
     }
 
-    /// Does it act on the selection, so it needs one?
+    /// Does it act on the selection, so it needs one? Move and Rotate ask
+    /// for what to work on when nothing is selected.
     pub fn needs_selection(self) -> bool {
         matches!(
             self,
-            Command::Move
-                | Command::Rotate
-                | Command::Scale
+            Command::Scale
                 | Command::Duplicate
                 | Command::Copy
                 | Command::Cut

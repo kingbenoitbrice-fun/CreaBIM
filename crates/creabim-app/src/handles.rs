@@ -575,6 +575,10 @@ pub struct PaneInput<'a> {
     /// The point of `id` under the pointer, if it is there: grabbing the
     /// selected element anywhere but a handle moves it.
     pub grab_body: &'a dyn Fn(Pos2, ElementId) -> Option<DVec3>,
+    /// A corner, middle or centre of `id` itself near the pointer: a drag
+    /// that starts there moves the element by that point, so it lands
+    /// exactly on what it snaps to.
+    pub grab_snap: &'a dyn Fn(Pos2, ElementId) -> Option<DVec3>,
     /// The plane a grabbed element slides on: level in plans and 3D, the
     /// section plane in sections.
     pub body_normal: DVec3,
@@ -589,6 +593,9 @@ pub struct Drag {
     edit: LiveEdit,
     joined: Vec<(usize, bool)>,
     grab: DVec3,
+    /// Where the press was on screen: nothing moves until the pointer
+    /// leaves it.
+    press: Pos2,
 }
 
 const ACCENT: Color32 = Color32::from_rgb(230, 120, 30);
@@ -629,6 +636,15 @@ pub fn edit_corners(doc: &mut Document, id: ElementId, kind: HandleKind) -> Resu
 
 /// What a selected section or elevation sees: its line, and the band
 /// as deep as it looks, so it can be found and its depth dragged.
+/// Whether `snapped` shows close to `free` on screen: in 3D a point that
+/// lies under the pointer can be far away along the line being slid on.
+fn near_on_screen(input: &PaneInput, snapped: DVec3, free: DVec3) -> bool {
+    match ((input.project)(snapped), (input.project)(free)) {
+        (Some(a), Some(b)) => a.distance(b) < 16.0,
+        _ => false,
+    }
+}
+
 fn draw_view_range(painter: &Painter, input: &PaneInput, a: DVec2, b: DVec2, depth: f64) {
     let look = (b - a).normalize_or_zero().perp();
     let corners = [a, b, b + look * depth, a + look * depth];
@@ -779,8 +795,19 @@ pub fn interact(
                     ) | None
                 );
                 (input.grab_body)(press, id).filter(|_| movable).map(|p| {
-                    let normal = input.body_normal;
-                    (None, Constraint::Plane { point: p, normal }, p)
+                    let p = (input.grab_snap)(press, id).unwrap_or(p);
+                    let c = match doc.model().get(id).map(|e| &e.kind) {
+                        // a grid line slides square to itself
+                        Some(ElementKind::Grid(g)) => Constraint::Line {
+                            point: p,
+                            dir: (g.end - g.start).normalize_or_zero().perp().extend(0.0),
+                        },
+                        _ => Constraint::Plane {
+                            point: p,
+                            normal: input.body_normal,
+                        },
+                    };
+                    (None, c, p)
                 })
             }
         };
@@ -800,6 +827,7 @@ pub fn interact(
                 edit: LiveEdit::new(label, originals),
                 joined,
                 grab,
+                press,
             });
         }
     }
@@ -823,6 +851,10 @@ pub fn interact(
     let Some(pos) = response.interact_pointer_pos() else {
         return true;
     };
+    // a click held a moment, or a shaky one, moves nothing
+    if pos.distance(d.press) < crate::modal::STILL && !d.edit.applied() {
+        return true;
+    }
     let Some(free) = (input.ray)(pos).and_then(|r| d.constraint.hit(r)) else {
         return true;
     };
@@ -848,7 +880,7 @@ pub fn interact(
             if matches!(
                 snap.kind,
                 SnapKind::Endpoint | SnapKind::Midpoint | SnapKind::Center | SnapKind::Intersection
-            ) =>
+            ) && near_on_screen(input, point + dir * (p - point).dot(dir), free) =>
         {
             if let Some(at) = (input.project)(p) {
                 crate::snaps::draw(painter, snap, at, None);
@@ -878,7 +910,19 @@ pub fn interact(
     };
     match result {
         Ok(changed) => {
-            *status = Some(format!("{}  {}", d.edit.label(), readout(&changed)));
+            *status = Some(match d.kind {
+                // a whole element moved: how far, and onto what
+                None => {
+                    let onto = match snapped.map(|(_, s)| s.kind) {
+                        Some(k) if k != SnapKind::Grid => {
+                            format!(" ({})", k.label().to_lowercase())
+                        }
+                        _ => String::new(),
+                    };
+                    format!("{}: {:.3} m{onto}", d.edit.label(), (now - d.grab).length())
+                }
+                Some(_) => format!("{}  {}", d.edit.label(), readout(&changed)),
+            });
             if let Err(e) = d.edit.update(doc, changed) {
                 *status = Some(format!("Can't go there: {e}"));
             }

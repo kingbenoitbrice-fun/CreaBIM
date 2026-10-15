@@ -8,11 +8,12 @@ use crate::ui_model::{self, Item};
 use crate::webui::{Msg, Pane, WebUi};
 use serde_json::{json, Value};
 
-/// Height of the top bar (menus and tools) and the status bar, in points.
-const TOP_H: f32 = 81.0;
+/// Height of the top bar (menus, tools and the tool options strip) and the
+/// status bar, in points.
+const TOP_H: f32 = 113.0;
 const STATUS_H: f32 = 30.0;
 /// Size of the 3D view's navigation buttons.
-const NAV_W: f32 = 262.0;
+const NAV_W: f32 = 292.0;
 const NAV_H: f32 = 34.0;
 
 pub(super) struct Shell {
@@ -617,6 +618,9 @@ impl CreaBimApp {
                 b("nav.ortho", if self.camera.ortho { "box" } else { "cuboid" },
                   if self.camera.ortho { "Orthographic: click for perspective" } else { "Perspective: click for orthographic" },
                   self.camera.ortho),
+                b("ground.grid", "grid-3x3",
+                  if self.shell.settings.ground_grid { "Ground grid shown: click to hide it" } else { "Ground grid hidden: click to show it" },
+                  self.shell.settings.ground_grid),
             ],
             "look": {"key": "look", "hint": "Look from the top, a side or the corner"},
         })
@@ -634,6 +638,13 @@ impl CreaBimApp {
             place(PlanPlacement::Hidden, 3, "Hidden"),
             Item::Separator,
             Item::Header("Docked layout".into()),
+            Item::new("layout.single", "One view at a time")
+                .checked(self.shell.settings.single_view)
+                .icon("square")
+                .hint("Show the 3D view or the drawing, with tabs to switch, instead of both"),
+            Item::new("layout.split", "Split: 3D and drawing")
+                .checked(!self.shell.settings.single_view)
+                .icon("columns-2"),
             Item::new("layout.side", "Side by side").checked(!self.layout.stacked),
             Item::new("layout.stacked", "One above the other").checked(self.layout.stacked),
             Item::new("layout.swap", "2D view first").checked(self.layout.swapped),
@@ -662,6 +673,22 @@ impl CreaBimApp {
             Item::new("nav.ortho", "Orthographic")
                 .checked(self.camera.ortho)
                 .hint("Parallel projection, without perspective"),
+            Item::new("ground.grid", "Ground grid")
+                .checked(self.shell.settings.ground_grid)
+                .hint("The grid on the working level (or the workplane), also on the 3D view's buttons"),
+            Item::sub(
+                "Ground grid spacing",
+                GROUND_SPACINGS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| {
+                        let now = ground_spacing(self.shell.settings.ground_grid_spacing);
+                        Item::new(format!("ground.spacing:{i}"), format!("{s} m"))
+                            .checked((now - s).abs() < 1e-9)
+                            .keep_open()
+                    })
+                    .collect(),
+            ),
             Item::sub("Look from", self.menu_items("look")),
             Item::Separator,
             Item::Header("Interface".into()),
@@ -715,15 +742,7 @@ impl CreaBimApp {
                     self.plan.menu_at
                 };
                 match (c, c.modal()) {
-                    (_, Some(m)) => {
-                        if self.selection.is_some() {
-                            self.plan.armed = Some(m);
-                            self.status = format!(
-                                "{}: move the pointer over a view, then click to finish. Right-click cancels.",
-                                c.label()
-                            );
-                        }
-                    }
+                    (_, Some(m)) => self.arm(c, m),
                     (Command::WorkplaneHere, None) if self.shell.context_3d => match self
                         .menu_plane_3d
                     {
@@ -745,6 +764,11 @@ impl CreaBimApp {
             "view" => {
                 if let Some(v) = by_uuid(self) {
                     self.active_view = Some(v);
+                    // with one view at a time, picking a drawing shows it
+                    if self.shell.settings.single_view {
+                        self.shell.settings.single_shows_3d = false;
+                        self.shell.settings.store();
+                    }
                 }
             }
             "place" => {
@@ -874,6 +898,33 @@ impl CreaBimApp {
                     _ => PlanPlacement::Docked,
                 }
             }
+            "layout.single" | "layout.split" => self.set_single_view(head == "layout.single"),
+            "layout.toggle" => self.set_single_view(!self.shell.settings.single_view),
+            "single.3d" | "single.2d" => {
+                self.shell.settings.single_shows_3d = head == "single.3d";
+                self.shell.settings.store();
+            }
+            "ground.grid" => {
+                let s = &mut self.shell.settings;
+                s.ground_grid = !s.ground_grid;
+                s.store();
+                self.geometry_key = None;
+                self.status = if self.shell.settings.ground_grid {
+                    "Ground grid shown. View > 3D view sets its spacing.".into()
+                } else {
+                    "Ground grid hidden.".into()
+                };
+            }
+            "ground.spacing" => {
+                if let Some(v) = index.and_then(|i| GROUND_SPACINGS.get(i)) {
+                    let s = &mut self.shell.settings;
+                    s.ground_grid_spacing = *v;
+                    s.ground_grid = true;
+                    s.store();
+                    self.geometry_key = None;
+                    self.status = format!("Ground grid every {v} m.");
+                }
+            }
             "layout.side" => self.layout.stacked = false,
             "layout.stacked" => self.layout.stacked = true,
             "layout.swap" => self.layout.swapped = !self.layout.swapped,
@@ -905,6 +956,17 @@ impl CreaBimApp {
             }
             "view.shaded" | "view.tag" => self.view_action(head),
             "member" => crate::memberstool::toggle_option(&mut self.plan, arg),
+            "slab.mode" => {
+                if let Some(m) = index.and_then(|i| crate::slabtool::SlabMode::ALL.get(i)) {
+                    crate::slabtool::pick(ctx, Some(*m), None);
+                }
+            }
+            "slab.arc" => crate::slabtool::pick(ctx, None, Some(arg == "1")),
+            "sketch.shape" => {
+                if let Some(s) = index.and_then(|i| crate::sketch::Shape::ALL.get(i)) {
+                    crate::sketch::pick_shape(ctx, *s);
+                }
+            }
             "note.leader" => self.plan.anno.leader = !self.plan.anno.leader,
             _ => {
                 if !self.materials_action(head, arg) {
@@ -1075,7 +1137,108 @@ impl CreaBimApp {
         }
     }
 
-    fn top_state(&self) -> Value {
+    /// The tool options strip: what the tool in use (or the running Move
+    /// or Rotate) can be set to. It has its own row under the tools, so it
+    /// never covers a view or its buttons.
+    fn tool_strip(&self, ctx: &egui::Context) -> (Value, Vec<Value>) {
+        let seg = |items: Vec<Value>| json!({"kind": "seg", "items": items});
+        let opt = |id: String, label: &str, on: bool, hint: &str| json!({"id": id, "label": label, "on": on, "hint": hint});
+        let mut options = vec![];
+        if let Some(m) = &self.plan.modal {
+            let verb = format!("{:?}", m.mode);
+            let icon = match m.mode {
+                crate::modal::Mode::Move => "move",
+                crate::modal::Mode::Rotate => "rotate-cw",
+                crate::modal::Mode::Scale => "scaling",
+            };
+            return (json!({"label": verb, "icon": icon}), options);
+        }
+        if let Some((m, _)) = self.plan.armed {
+            let verb = format!("{m:?}");
+            return (
+                json!({"label": verb, "icon": "move", "hint": self.status}),
+                options,
+            );
+        }
+        let tool = self.plan.tool;
+        if tool == Tool::Wall {
+            options.push(json!({
+                "kind": "number", "key": "wall.thickness", "label": "Thickness",
+                "value": self.plan.wall_thickness, "unit": "m", "step": 0.01, "min": 0.05, "max": 1.0,
+                "hint": "Thickness of new walls. Drag the label or type a value.",
+            }));
+        }
+        let redrawing = self.plan.outline.as_ref().is_some_and(|o| !o.is_wall());
+        if tool.draws_outline() || redrawing {
+            use crate::slabtool::SlabMode;
+            if tool.draws_outline() {
+                options.push(seg(SlabMode::ALL
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| {
+                        opt(
+                            format!("slab.mode:{i}"),
+                            m.label(),
+                            self.plan.slab_mode == *m,
+                            m.hint(),
+                        )
+                    })
+                    .collect()));
+            }
+            if !tool.draws_outline() || self.plan.slab_mode == SlabMode::Polygon {
+                options.push(seg(vec![
+                    opt(
+                        "slab.arc:0".into(),
+                        "Line (L)",
+                        !self.plan.slab_arc,
+                        "Straight sides",
+                    ),
+                    opt(
+                        "slab.arc:1".into(),
+                        "Arc (A)",
+                        self.plan.slab_arc,
+                        "The next side is an arc: click its end, then a point on it",
+                    ),
+                ]));
+            }
+        }
+        if tool == Tool::Sketch {
+            let now = crate::sketch::shape(ctx);
+            options.push(seg(crate::sketch::Shape::ALL
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    opt(
+                        format!("sketch.shape:{i}"),
+                        s.label(),
+                        now == *s,
+                        "What the next clicks draw",
+                    )
+                })
+                .collect()));
+        }
+        options.extend(crate::memberstool::tool_options(&self.plan));
+        if tool == Tool::Note {
+            options.push(json!({
+                "kind": "toggle", "id": "note.leader", "label": "Leader",
+                "on": self.plan.anno.leader, "icon": "arrow-up-right",
+                "hint": "Draw an arrow to what the note is about: click its point first, then the text",
+            }));
+        }
+        // the Grid tool's grid system
+        options.extend(
+            self.grid_vis_options()
+                .into_iter()
+                .filter(|o| o["key"] == "gridgroups"),
+        );
+        while options.last().is_some_and(|o| o["kind"] == "sep") {
+            options.pop();
+        }
+        let head = json!({"label": tool.label(), "icon": tool_icon(tool), "hint": tool.hint()});
+        (head, options)
+    }
+
+    fn top_state(&self, ctx: &egui::Context) -> Value {
         let quick: Vec<Value> = [
             Some(Command::Undo),
             Some(Command::Redo),
@@ -1120,24 +1283,8 @@ impl CreaBimApp {
                 })
             })
             .collect();
+        let (tool_head, tool_options) = self.tool_strip(ctx);
         let mut options = vec![];
-        if self.plan.tool == Tool::Wall {
-            options.push(json!({
-                "kind": "number", "key": "wall.thickness", "label": "Thickness",
-                "value": self.plan.wall_thickness, "unit": "m", "step": 0.01, "min": 0.05, "max": 1.0,
-                "hint": "Thickness of new walls. Drag the label or type a value.",
-            }));
-            options.push(json!({"kind": "sep"}));
-        }
-        options.extend(crate::memberstool::tool_options(&self.plan));
-        if self.plan.tool == Tool::Note {
-            options.push(json!({
-                "kind": "toggle", "id": "note.leader", "label": "Leader",
-                "on": self.plan.anno.leader, "icon": "arrow-up-right",
-                "hint": "Draw an arrow to what the note is about: click its point first, then the text",
-            }));
-            options.push(json!({"kind": "sep"}));
-        }
         if let Some((label, value, unit, _)) = self.view_number() {
             let (step, min, max) = if unit == "°" {
                 (1.0, -89.0, 89.0)
@@ -1178,7 +1325,11 @@ impl CreaBimApp {
                 "icon": "layers", "hint": "Show another level faintly under this plan, to trace and snap to",
             }));
         }
-        options.extend(self.grid_vis_options());
+        options.extend(
+            self.grid_vis_options()
+                .into_iter()
+                .filter(|o| o["key"] != "gridgroups" && o["kind"] != "sep"),
+        );
         // lengths show and take the project's units; what is typed is read here
         for o in &mut options {
             if o["kind"] == "number" && o["unit"] == "m" {
@@ -1208,10 +1359,21 @@ impl CreaBimApp {
                 },
             },
             "right": [{
+                "kind": "toggle", "id": "layout.toggle", "label": "",
+                "on": self.shell.settings.single_view,
+                "icon": if self.shell.settings.single_view { "square" } else { "columns-2" },
+                "hint": if self.shell.settings.single_view {
+                    "One view at a time: click to show the 3D view and the drawing side by side"
+                } else {
+                    "3D view and drawing side by side: click to show one view at a time"
+                },
+            }, {
                 "kind": "menu", "key": "views", "label": "", "value": self.active_view_label(),
                 "icon": "map", "big": true, "hint": "The view or sheet the 2D pane shows",
             }],
             "tools": tools,
+            "tool": tool_head,
+            "tool_options": tool_options,
             "options": options,
         })
     }
@@ -1323,10 +1485,39 @@ impl CreaBimApp {
     /// While the palette is open, the keys typed in the views go to it: its
     /// page doesn't always get the keyboard when opened from a shortcut.
     pub(super) fn palette_keys(&mut self, raw: &mut egui::RawInput) {
-        if self.popup_key().as_deref() != Some("palette") {
+        let Some(key) = self.popup_key() else { return };
+        let Some(web) = &self.shell.web else { return };
+        if key != "palette" {
+            // arrows and Enter walk an open menu
+            let mut keys = vec![];
+            raw.events.retain(|e| match e {
+                egui::Event::Key {
+                    key, pressed: true, ..
+                } if matches!(
+                    key,
+                    egui::Key::ArrowDown
+                        | egui::Key::ArrowUp
+                        | egui::Key::ArrowLeft
+                        | egui::Key::ArrowRight
+                        | egui::Key::Enter
+                ) =>
+                {
+                    keys.push(match key {
+                        egui::Key::ArrowDown => "ArrowDown",
+                        egui::Key::ArrowUp => "ArrowUp",
+                        egui::Key::ArrowLeft => "ArrowLeft",
+                        egui::Key::ArrowRight => "ArrowRight",
+                        _ => "Enter",
+                    });
+                    false
+                }
+                _ => true,
+            });
+            for k in keys {
+                web.run(Pane::Popup, &format!("window.CB && CB.nav({})", json!(k)));
+            }
             return;
         }
-        let Some(web) = &self.shell.web else { return };
         let mut text = String::new();
         let mut keys = vec![];
         raw.events.retain(|e| match e {
@@ -1468,6 +1659,11 @@ impl CreaBimApp {
                     self.selection.only(id);
                     if opens {
                         self.active_view = Some(id);
+                        // with one view at a time, opening a drawing shows it
+                        if self.shell.settings.single_view && self.shell.settings.single_shows_3d {
+                            self.shell.settings.single_shows_3d = false;
+                            self.shell.settings.store();
+                        }
                     }
                 }
                 self.face = None;
@@ -1591,7 +1787,7 @@ impl CreaBimApp {
         // drawn last frame)
         let nav = self
             .rect_3d
-            .filter(|r| r.width() > 260.0 && r.height() > 120.0)
+            .filter(|r| r.width() > NAV_W + 40.0 && r.height() > 120.0)
             .map(|r| {
                 // the overlaid 2D view takes the top-right corner
                 let x = if self.placement == PlanPlacement::Overlay {
@@ -1602,27 +1798,33 @@ impl CreaBimApp {
                 egui::Rect::from_min_size(egui::pos2(x, r.top() + 8.0), egui::vec2(NAV_W, NAV_H))
             });
         let states = [
-            (Pane::Top, top, self.top_state()),
+            (Pane::Top, top, self.top_state(&ctx)),
             (Pane::Left, left, self.left_state()),
             (Pane::Status, status, self.status_state()),
         ];
         let nav_state = self.nav_state();
         let screen = ctx.content_rect();
         let popup = self.shell.popup.as_ref().map(|p| {
+            let size = popup_size(p, screen);
             let mut at = p.at;
             if let Some(bottom) = p.up {
-                at.y = bottom - p.size.y;
+                at.y = bottom - size.y;
             }
             at.x =
-                at.x.min(screen.right() - p.size.x - 4.0)
+                at.x.min(screen.right() - size.x - 4.0)
                     .max(screen.left() + 4.0);
             at.y =
-                at.y.min(screen.bottom() - p.size.y - 4.0)
+                at.y.min(screen.bottom() - size.y - 4.0)
                     .max(screen.top() + 4.0);
             let items = self.menu_items(&p.key);
+            // the Create menu lists every tool: its sections side by side
+            let columns = match p.key.as_str() {
+                "menu:Create" => 3,
+                _ => 1,
+            };
             (
-                egui::Rect::from_min_size(at, p.size),
-                json!({"theme": self.theme(), "key": p.key, "items": ui_model::list(&items)}),
+                egui::Rect::from_min_size(at, size),
+                json!({"theme": self.theme(), "key": p.key, "items": ui_model::list(&items), "columns": columns}),
                 items.is_empty(),
             )
         });
@@ -1654,6 +1856,77 @@ impl CreaBimApp {
         // Pages run on their own; keep frames coming so their messages are read.
         ctx.request_repaint_after(std::time::Duration::from_millis(30));
         true
+    }
+
+    /// Show one view at a time, or the 3D view and the drawing side by side.
+    fn set_single_view(&mut self, on: bool) {
+        if on && self.placement != PlanPlacement::Docked {
+            self.placement = PlanPlacement::Docked;
+        }
+        self.shell.settings.single_view = on;
+        self.shell.settings.store();
+        self.status = if on {
+            "One view at a time: the tabs above the view switch between the 3D view and the drawing.".into()
+        } else {
+            "The 3D view and the drawing side by side.".into()
+        };
+    }
+
+    /// The tabs over the single view: the 3D view, the drawing (its tab
+    /// opens the list of views when it is already showing), and a way back
+    /// to the split.
+    pub(super) fn view_tabs(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let p = self.shell.theme.palette();
+        ui.painter().rect_filled(rect, 0.0, p.panel);
+        ui.painter().line_segment(
+            [rect.left_bottom(), rect.right_bottom()],
+            egui::Stroke::new(1.0, p.border),
+        );
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.shrink2(egui::vec2(8.0, 3.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let three = self.shell.settings.single_shows_3d;
+        let mut pick = None;
+        if child
+            .selectable_label(three, "3D view")
+            .on_hover_text("The model in 3D")
+            .clicked()
+        {
+            pick = Some(true);
+        }
+        let drawing = format!("{}  ⏷", self.active_view_label());
+        let r = child.selectable_label(!three, drawing).on_hover_text(
+            "The plan, section, sheet or schedule. Click again for the list of views.",
+        );
+        if r.clicked() {
+            if !three && self.shell.web.is_some() {
+                self.shell.popup = Some(Popup {
+                    key: "views".into(),
+                    at: r.rect.left_bottom() + egui::vec2(0.0, 4.0),
+                    up: None,
+                    size: egui::vec2(260.0, 300.0),
+                });
+            }
+            pick = Some(false);
+        }
+        child.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button("Split")
+                .on_hover_text("Show the 3D view and the drawing side by side")
+                .clicked()
+            {
+                pick = None;
+                self.set_single_view(false);
+            }
+        });
+        if let Some(t) = pick {
+            if t != three {
+                self.shell.settings.single_shows_3d = t;
+                self.shell.settings.store();
+            }
+        }
     }
 
     /// Open the right-click menu a view asked for this frame.
@@ -1695,6 +1968,26 @@ impl CreaBimApp {
             self.run_action(&ctx, &id);
         }
     }
+}
+
+/// How big a popup is shown: as its page asks, but never past the window.
+/// A menu opening down keeps to the room below where it opens (or the
+/// whole window height when that is too little); the page scrolls the rest.
+fn popup_size(p: &Popup, screen: egui::Rect) -> egui::Vec2 {
+    let margin = 6.0;
+    let room = match p.up {
+        Some(bottom) => bottom - screen.top() - margin,
+        None => screen.bottom() - p.at.y - margin,
+    };
+    let room = if room < 240.0 {
+        screen.height() - 2.0 * margin
+    } else {
+        room
+    };
+    egui::vec2(
+        p.size.x.min(screen.width() - 2.0 * margin),
+        p.size.y.min(room).max(40.0),
+    )
 }
 
 /// egui's spacing and type, roomier than its defaults.
