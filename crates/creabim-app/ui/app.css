@@ -590,9 +590,9 @@ html[data-pane="popup"] body {
 /* A menu as tall as the window allows; longer ones scroll inside. */
 .menu {
   padding: 5px;
-  display: inline-block;
-  min-width: 100%;
-  max-height: 100vh;
+  display: block;
+  width: 100%;
+  max-height: 100%;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -715,3 +715,13 @@ html[data-pane="nav"] body { background: var(--panel); border: 1px solid var(--b
 .group .gact ~ .n { margin-left: 4px; }
 .group .gact:hover { background: var(--raise-2); color: var(--text); }
 .group .gact svg.i { width: 14px; height: 14px; }
+
+/* how a view group is ordered ("By level", "Your order"), before its buttons */
+.group .gnote { margin-left: auto; font-size: 10.5px; font-weight: 500; color: var(--faint); white-space: nowrap; }
+.group .gnote ~ .gact:first-of-type { margin-left: 2px; }
+.group .gnote ~ .n { margin-left: 4px; }
+
+/* a view being dragged to another place in its group */
+.row.dragging { opacity: 0.45; }
+.row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }

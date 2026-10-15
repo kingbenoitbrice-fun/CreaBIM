@@ -3,6 +3,7 @@
 mod annotate;
 mod app;
 mod boxsel;
+mod browser;
 mod camera;
 mod commands;
 mod files;

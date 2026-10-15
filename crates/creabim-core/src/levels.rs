@@ -185,7 +185,18 @@ pub fn duplicate(
     Some((tx, id))
 }
 
-/// Rename a level and the plan views named after it.
+/// Is `view` a name made from the level name `level`: the name itself, or
+/// it followed by more words ("Level 2 plan", "Level 2 plan - furniture")?
+/// Those follow the level when it is renamed; a name the user typed for the
+/// plan ("Roof terrace", or "Level 20 plan" for "Level 2") is left alone.
+pub fn named_after(view: &str, level: &str) -> bool {
+    !level.is_empty()
+        && view
+            .strip_prefix(level)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+}
+
+/// Rename a level and the plan views named after it (see [`named_after`]).
 pub fn rename(model: &Model, level: ElementId, name: &str) -> Transaction {
     let mut tx = Transaction::new("Rename level");
     let Some(e) = model.get(level) else {
@@ -200,9 +211,9 @@ pub fn rename(model: &Model, level: ElementId, name: &str) -> Transaction {
     tx = tx.replace(e.clone(), after);
     for v in plan_views(model, level) {
         let Some(ve) = model.get(v) else { continue };
-        if let Some(rest) = ve.name.strip_prefix(&old) {
+        if named_after(&ve.name, &old) {
             let mut after = ve.clone();
-            after.name = format!("{name}{rest}");
+            after.name = format!("{name}{}", &ve.name[old.len()..]);
             tx = tx.replace(ve.clone(), after);
         }
     }
@@ -388,5 +399,30 @@ mod tests {
         );
         doc.commit(set(doc.model(), ground, -0.5, 3.5)).unwrap();
         assert_eq!(doc.model().level(ground).unwrap().elevation, -0.5);
+    }
+
+    #[test]
+    fn plans_the_user_named_keep_their_names_when_the_level_is_renamed() {
+        let mut doc = Document::from_model(sample_house());
+        let (tx, level, plan) = add(doc.model(), "Level 2", 6.0, 3.0, true);
+        doc.commit(tx).unwrap();
+        let plan = plan.unwrap();
+        // a second plan the user named, and one that only starts alike
+        let own = Element::new("Terrace layout", ElementKind::View(View::plan(level)));
+        let alike = Element::new("Level 20 plan", ElementKind::View(View::plan(level)));
+        let (own_id, alike_id) = (own.id, alike.id);
+        doc.commit(Transaction::new("Add plans").insert(own).insert(alike))
+            .unwrap();
+        let tx = rename(doc.model(), level, "Roof");
+        assert_eq!(tx.ops.len(), 2, "the level and its derived plan only");
+        doc.commit(tx).unwrap();
+        let name = |id: ElementId| doc.model().get(id).unwrap().name.clone();
+        assert_eq!(name(plan), "Roof plan");
+        assert_eq!(name(own_id), "Terrace layout");
+        assert_eq!(name(alike_id), "Level 20 plan");
+        assert!(named_after("Level 2 plan", "Level 2"));
+        assert!(named_after("Level 2", "Level 2"));
+        assert!(!named_after("Level 20 plan", "Level 2"));
+        assert!(!named_after("anything", ""));
     }
 }

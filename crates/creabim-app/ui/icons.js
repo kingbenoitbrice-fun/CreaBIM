@@ -100,5 +100,7 @@ window.ICONS = {
 "snap-quadrant": "<path d=\"M12 4.5 19.5 12 12 19.5 4.5 12z\" />",
 "snap-axis": "<path d=\"M3 12h18M12 3v18\" stroke-dasharray=\"2.5 2.5\" />",
 "level": "<path d=\"M2 14h12\" stroke-dasharray=\"3 2\" /> <circle cx=\"18\" cy=\"14\" r=\"3.5\" /> <path d=\"M18 10.5V14h3.5M18 14v3.5h-3.5\" /> <path d=\"M3 7h9\" />",
-"plus": "<path d=\"M5 12h14M12 5v14\" />"
+"plus": "<path d=\"M5 12h14M12 5v14\" />",
+"sort-by-level": "<path d=\"M3 6h8M3 12h6M3 18h4\" /> <path d=\"M17 4v16M13 16l4 4 4-4\" />",
+"snap-track": "<path d=\"M3 8h18M16 3v18\" stroke-dasharray=\"2.5 2.5\" /> <circle cx=\"16\" cy=\"8\" r=\"2\" />"
 };

@@ -232,14 +232,18 @@ impl CreaBimApp {
                 .map(|(i, l)| Item::new(format!("nav.look:{i}"), l.label()))
                 .collect(),
             "views" => {
-                let mut items = vec![Item::Header("Views".into())];
-                for (id, name, _) in self.views() {
-                    let icon = self.doc.model().get(id).map_or(Icon::Plan, Icon::of);
-                    items.push(
-                        Item::new(format!("view:{}", id.0), name)
-                            .checked(self.active_view == Some(id))
-                            .icon(icon_name(icon)),
-                    );
+                let mut items = vec![];
+                let model = self.doc.model();
+                for (g, ids) in crate::browser::view_groups(model) {
+                    items.push(Item::Header(g.title().into()));
+                    for id in ids {
+                        let Some(e) = model.get(id) else { continue };
+                        items.push(
+                            Item::new(format!("view:{}", id.0), e.name.clone())
+                                .checked(self.active_view == Some(id))
+                                .icon(icon_name(Icon::of(e))),
+                        );
+                    }
                 }
                 let sheets = self.sheet_list();
                 if !sheets.is_empty() {
@@ -374,7 +378,7 @@ impl CreaBimApp {
                     Item::new("snap.none", "Turn all off").keep_open(),
                     Item::Separator,
                 ];
-                const ICONS: [&str; 11] = [
+                const ICONS: [&str; 12] = [
                     "snap-endpoint",
                     "snap-midpoint",
                     "snap-intersection",
@@ -385,6 +389,7 @@ impl CreaBimApp {
                     "hash",
                     "slash",
                     "snap-axis",
+                    "snap-track",
                     "ruler",
                 ];
                 for (i, (label, v)) in s.switches().into_iter().enumerate() {
@@ -626,18 +631,13 @@ impl CreaBimApp {
         })
     }
 
+    /// The View menu: where the 2D view goes and how the 3D view looks,
+    /// with the longer lists in submenus so it stays short.
     fn view_menu(&self) -> Vec<Item> {
         let place = |p: PlanPlacement, i: u8, label: &str| {
             Item::new(format!("placement:{i}"), label).checked(self.placement == p)
         };
-        vec![
-            Item::Header("2D view".into()),
-            place(PlanPlacement::Docked, 0, "Docked beside 3D"),
-            place(PlanPlacement::Window, 1, "In its own window"),
-            place(PlanPlacement::Overlay, 2, "Overlaid in the 3D workspace"),
-            place(PlanPlacement::Hidden, 3, "Hidden"),
-            Item::Separator,
-            Item::Header("Docked layout".into()),
+        let layout = vec![
             Item::new("layout.single", "One view at a time")
                 .checked(self.shell.settings.single_view)
                 .icon("square")
@@ -645,26 +645,25 @@ impl CreaBimApp {
             Item::new("layout.split", "Split: 3D and drawing")
                 .checked(!self.shell.settings.single_view)
                 .icon("columns-2"),
+            Item::Separator,
             Item::new("layout.side", "Side by side").checked(!self.layout.stacked),
             Item::new("layout.stacked", "One above the other").checked(self.layout.stacked),
             Item::new("layout.swap", "2D view first").checked(self.layout.swapped),
-            Item::Separator,
-            Item::new("plan3d", "Show the 2D view in 3D space").checked(self.plan_in_3d),
-            Item::sub("Underlay", self.underlay_items()).enabled(self.active_plan().is_some()),
-            Item::new("levels", "Levels…").icon("level"),
-            Item::Separator,
-            Item::Header("3D view".into()),
-            Item::sub(
-                "3D view shows",
-                self.visibility_items(super::gridvis::VisTarget::Window3d),
-            ),
-            Item::new("frame", "Frame all")
-                .key("Home")
-                .icon("maximize-2"),
-            Item::new("nav.fitsel", "Frame the selection")
-                .key(".")
-                .icon("scan")
-                .enabled(self.selection.is_some()),
+        ];
+        let now = ground_spacing(self.shell.settings.ground_grid_spacing);
+        let mut ground = vec![Item::new("ground.grid", "Show the ground grid")
+            .checked(self.shell.settings.ground_grid)
+            .hint(
+                "The grid on the working level (or the workplane), also on the 3D view's buttons",
+            )];
+        ground.push(Item::Separator);
+        ground.push(Item::Header("Spacing".into()));
+        ground.extend(GROUND_SPACINGS.iter().enumerate().map(|(i, s)| {
+            Item::new(format!("ground.spacing:{i}"), format!("{s} m"))
+                .checked((now - s).abs() < 1e-9)
+                .keep_open()
+        }));
+        let mut camera = vec![
             Item::new("nav.orbitsel", "Orbit around the selection")
                 .checked(self.orbit_selection)
                 .hint(
@@ -673,39 +672,54 @@ impl CreaBimApp {
             Item::new("nav.ortho", "Orthographic")
                 .checked(self.camera.ortho)
                 .hint("Parallel projection, without perspective"),
-            Item::new("ground.grid", "Ground grid")
-                .checked(self.shell.settings.ground_grid)
-                .hint("The grid on the working level (or the workplane), also on the 3D view's buttons"),
-            Item::sub(
-                "Ground grid spacing",
-                GROUND_SPACINGS
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| {
-                        let now = ground_spacing(self.shell.settings.ground_grid_spacing);
-                        Item::new(format!("ground.spacing:{i}"), format!("{s} m"))
-                            .checked((now - s).abs() < 1e-9)
-                            .keep_open()
-                    })
-                    .collect(),
-            ),
-            Item::sub("Look from", self.menu_items("look")),
             Item::Separator,
-            Item::Header("Interface".into()),
-            Item::sub(
-                "Theme",
-                Theme::ALL
-                    .into_iter()
-                    .map(|t| {
-                        Item::new(format!("theme:{}", t.id()), t.label())
-                            .checked(self.shell.theme == t)
-                            .keep_open()
-                    })
-                    .collect(),
-            ),
+            Item::Header("Look from".into()),
+        ];
+        camera.extend(self.menu_items("look"));
+        let mut themes: Vec<Item> = Theme::ALL
+            .into_iter()
+            .map(|t| {
+                Item::new(format!("theme:{}", t.id()), t.label())
+                    .checked(self.shell.theme == t)
+                    .keep_open()
+            })
+            .collect();
+        themes.push(Item::Separator);
+        themes.push(
             Item::new("theme.next", "Next theme")
                 .key("Ctrl+Shift+T")
                 .icon("palette"),
+        );
+        vec![
+            Item::Header("2D view".into()),
+            place(PlanPlacement::Docked, 0, "Docked beside 3D"),
+            place(PlanPlacement::Window, 1, "In its own window"),
+            place(PlanPlacement::Overlay, 2, "Overlaid in the 3D workspace"),
+            place(PlanPlacement::Hidden, 3, "Hidden"),
+            Item::sub("Docked layout", layout),
+            Item::new("plan3d", "Show the 2D view in 3D space").checked(self.plan_in_3d),
+            Item::sub("Underlay", self.underlay_items()).enabled(self.active_plan().is_some()),
+            Item::new("levels", "Levels…").icon("level").hint(
+                "Add, rename, move and delete levels, and make their floor plans, from any view",
+            ),
+            Item::Separator,
+            Item::Header("3D view".into()),
+            Item::new("frame", "Frame all")
+                .key("Home")
+                .icon("maximize-2"),
+            Item::new("nav.fitsel", "Frame the selection")
+                .key(".")
+                .icon("scan")
+                .enabled(self.selection.is_some()),
+            Item::sub(
+                "3D view shows",
+                self.visibility_items(super::gridvis::VisTarget::Window3d),
+            ),
+            Item::sub("Camera", camera),
+            Item::sub("Ground grid", ground),
+            Item::Separator,
+            Item::Header("Interface".into()),
+            Item::sub("Theme", themes),
             Item::new("palette", "Command palette")
                 .key("Ctrl+K")
                 .icon("search"),
@@ -759,6 +773,12 @@ impl CreaBimApp {
                     self.plan.tool = *t;
                     self.plan.cancel();
                     self.status = t.hint().into();
+                    if *t == Tool::Level && !self.shows_section() {
+                        // level lines need a section or elevation; anywhere
+                        // else the levels are edited in their window
+                        self.open_levels();
+                        self.status = "Levels window: add, rename and move levels here. To draw a level line, open a section or elevation.".into();
+                    }
                 }
             }
             "view" => {
@@ -843,6 +863,21 @@ impl CreaBimApp {
             "new.sheet" => self.new_sheet(),
             "levels" => self.open_levels(),
             "level.add" => self.add_level_above(),
+            "browser.sort" => {
+                if let Some(g) = crate::browser::ViewGroup::from_key(arg) {
+                    let tx = crate::browser::sort_auto(self.doc.model(), g);
+                    let r = self.doc.commit(tx);
+                    self.report(
+                        r,
+                        match g {
+                            crate::browser::ViewGroup::Plans => {
+                                "Floor plans sorted by level again; new plans take their place by level.".to_string()
+                            }
+                            g => format!("{} back in their automatic order.", g.title()),
+                        },
+                    );
+                }
+            }
             "units" => self.levels.units_open = true,
             "underlay" => {
                 if let Some((view, level)) = self.active_plan() {
@@ -1380,9 +1415,52 @@ impl CreaBimApp {
 
     fn left_state(&self) -> Value {
         let model = self.doc.model();
+        let row = |e: &Element, opens: bool| {
+            json!({
+                "id": e.id.0.to_string(), "name": e.name, "icon": icon_name(Icon::of(e)),
+                "sel": self.selection.contains(e.id),
+                "active": opens && self.active_view == Some(e.id),
+                "hint": if opens { format!("{}: click to open", e.name) } else { e.name.clone() },
+            })
+        };
+        // views by kind, plans in their levels' order; drag a row to move it
+        let mut out: Vec<Value> = crate::browser::view_groups(model)
+            .into_iter()
+            .map(|(g, ids)| {
+                let rows: Vec<Value> = ids
+                    .iter()
+                    .filter_map(|id| model.get(*id))
+                    .map(|e| row(e, true))
+                    .collect();
+                let manual = crate::browser::is_manual(model, g);
+                let icon = match g {
+                    crate::browser::ViewGroup::Plans => "map",
+                    crate::browser::ViewGroup::Views3d => "axis-3d",
+                    crate::browser::ViewGroup::Sections => "scissors-line-dashed",
+                    crate::browser::ViewGroup::Elevations => "building-2",
+                    crate::browser::ViewGroup::Schedules => "table-2",
+                };
+                let mut acts = vec![];
+                if manual {
+                    acts.push(json!({
+                        "id": format!("browser.sort:{}", g.key()),
+                        "icon": "sort-by-level",
+                        "hint": match g {
+                            crate::browser::ViewGroup::Plans => "Sort by level: put the plans back in the order of their levels, lowest first".to_string(),
+                            _ => format!("{}: undo the order you dragged them into", g.auto_label()),
+                        },
+                    }));
+                }
+                json!({
+                    "key": g.key(), "title": g.title(), "icon": icon, "open": true,
+                    "rows": rows, "acts": acts, "sortable": true,
+                    "note": if manual { "Your order" } else if g == crate::browser::ViewGroup::Plans { "By level" } else { "" },
+                })
+            })
+            .collect();
         let mut groups: Vec<(String, Vec<&Element>)> = vec![];
         for e in model.iter() {
-            if matches!(e.kind, ElementKind::Units(_)) {
+            if matches!(e.kind, ElementKind::Units(_) | ElementKind::View(_)) {
                 continue;
             }
             let class = e.ifc_class().to_string();
@@ -1401,23 +1479,19 @@ impl CreaBimApp {
         let groups: Vec<Value> = groups
             .into_iter()
             .map(|(class, items)| {
-                let opens = class == "View" || class == "Sheet";
-                let rows: Vec<Value> = items
-                    .iter()
-                    .map(|e| {
-                        json!({
-                            "id": e.id.0.to_string(), "name": e.name, "icon": icon_name(Icon::of(e)),
-                            "sel": self.selection.contains(e.id),
-                            "active": opens && self.active_view == Some(e.id),
-                            "hint": if opens { format!("{}: click to open", e.name) } else { e.name.clone() },
-                        })
-                    })
-                    .collect();
+                let opens = class == "Sheet";
+                let mut items = items;
+                if class == "IfcBuildingStorey" {
+                    // levels from the top down, as in a section
+                    let z = |e: &Element| model.level(e.id).map_or(0.0, |l| l.elevation);
+                    items.sort_by(|a, b| z(b).total_cmp(&z(a)));
+                }
+                let rows: Vec<Value> = items.iter().map(|e| row(e, opens)).collect();
                 // levels are managed from their group
                 let act = (class == "IfcBuildingStorey").then(|| {
                     json!([
                         {"id": "level.add", "icon": "plus", "hint": "Add a level above the top one, with its floor plan"},
-                        {"id": "levels", "icon": "ellipsis", "hint": "Levels: add, duplicate, rename, move, delete"},
+                        {"id": "levels", "icon": "ellipsis", "hint": "Levels window: add, duplicate, rename, move and delete levels, and make their plans"},
                     ])
                 });
                 json!({
@@ -1426,6 +1500,8 @@ impl CreaBimApp {
                 })
             })
             .collect();
+        out.extend(groups);
+        let groups = out;
         json!({
             "theme": self.theme(),
             "count": format!("{} elements", model.len()),
@@ -1585,6 +1661,30 @@ impl CreaBimApp {
                 }
             }
             "close" => self.close_popup(),
+            "reorder" => {
+                let id = |k: &str| {
+                    let s = b[k].as_str()?;
+                    self.doc
+                        .model()
+                        .iter()
+                        .find(|e| e.id.0.to_string() == s)
+                        .map(|e| e.id)
+                };
+                if let Some(moved) = id("id") {
+                    let tx = crate::browser::reorder(self.doc.model(), moved, id("before"));
+                    let r = self.doc.commit(tx);
+                    let name = self
+                        .doc
+                        .model()
+                        .get(moved)
+                        .map(|e| e.name.clone())
+                        .unwrap_or_default();
+                    self.report(
+                        r,
+                        format!("Moved {name}. The group keeps your order; its sort button puts it back."),
+                    );
+                }
+            }
             "act" => {
                 let id = b["id"].as_str().unwrap_or("").to_string();
                 let keep = b["keep"].as_bool().unwrap_or(false);

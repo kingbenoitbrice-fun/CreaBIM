@@ -131,10 +131,13 @@
       any = true;
       const open = f ? true : (local.open[g.key] !== undefined ? local.open[g.key] : g.open);
       const acts = (g.acts || []).map((a) => `<button class="gact" data-act="${esc(a.id)}" title="${esc(a.hint)}">${icon(a.icon)}</button>`).join("");
-      html += `<div class="group ${open ? "open" : ""}" data-group="${esc(g.key)}">${icon("chevron-right", "chev")}${icon(g.icon)}<span>${esc(g.title)}</span>${acts}<span class="n">${g.rows.length}</span></div>`;
+      const note = g.note ? `<span class="gnote">${esc(g.note)}</span>` : "";
+      html += `<div class="group ${open ? "open" : ""}" data-group="${esc(g.key)}">${icon("chevron-right", "chev")}${icon(g.icon)}<span>${esc(g.title)}</span>${note}${acts}<span class="n">${g.rows.length}</span></div>`;
       if (open) {
+        // rows of a sortable group can be dragged to another place in it
+        const sort = g.sortable && !f ? ` data-sort="${esc(g.key)}"` : "";
         for (const r of rows) {
-          html += `<div class="row ${r.sel ? "sel" : ""}" data-id="${r.id}" title="${esc(r.hint || r.name)}">${icon(r.icon)}<span>${esc(r.name)}</span>${r.active ? `<span class="dot"></span>` : ""}</div>`;
+          html += `<div class="row ${r.sel ? "sel" : ""}" data-id="${r.id}"${sort} title="${esc(r.hint || r.name)}${sort ? " · drag to reorder" : ""}">${icon(r.icon)}<span>${esc(r.name)}</span>${r.active ? `<span class="dot"></span>` : ""}</div>`;
         }
       }
     }
@@ -145,6 +148,52 @@
     keepFocus(() => { root.innerHTML = html; });
     const t2 = root.querySelector(".tree");
     if (t2) t2.scrollTop = scroll;
+    showDrag();
+  }
+
+  // ---- dragging a view to another place in its group ----
+
+  // The row being dragged and where it would land: {id, group, y, on, over, after}.
+  function showDrag() {
+    const d = local.drag;
+    root.querySelectorAll(".row.dragging, .row.drop-before, .row.drop-after").forEach((r) => r.classList.remove("dragging", "drop-before", "drop-after"));
+    if (!d || !d.on) return;
+    const me = root.querySelector(`.row[data-id="${CSS.escape(d.id)}"]`);
+    if (me) me.classList.add("dragging");
+    const over = d.over && root.querySelector(`.row[data-id="${CSS.escape(d.over)}"]`);
+    if (over) over.classList.add(d.after ? "drop-after" : "drop-before");
+  }
+
+  function dragMove(e) {
+    const d = local.drag;
+    if (!d) return;
+    if (!d.on && Math.abs(e.clientY - d.y) < 5) return;
+    d.on = true;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const row = el && el.closest(".row");
+    if (row && row.dataset.sort === d.group) {
+      const r = row.getBoundingClientRect();
+      d.over = row.dataset.id;
+      d.after = e.clientY > r.top + r.height / 2;
+    }
+    showDrag();
+  }
+
+  function dragEnd() {
+    const d = local.drag;
+    local.drag = null;
+    document.removeEventListener("mousemove", dragMove);
+    document.removeEventListener("mouseup", dragEnd);
+    if (!d || !d.on) return showDrag();
+    // a click follows the mouse-up on the same row: it isn't a pick
+    local.dragged = true;
+    setTimeout(() => { local.dragged = false; }, 0);
+    showDrag();
+    if (!d.over || d.over === d.id) return;
+    const rows = [...root.querySelectorAll(`.row[data-sort="${CSS.escape(d.group)}"]`)].map((r) => r.dataset.id);
+    let i = rows.indexOf(d.over) + (d.after ? 1 : 0);
+    if (rows[i] === d.id) i += 1;
+    post({ t: "reorder", id: d.id, before: rows[i] || null });
   }
 
   // ---- status pane ----
@@ -285,15 +334,33 @@
     showMore();
   });
 
+  // The size the menu wants: its content's own width and height, measured
+  // apart from the page it is shown in. (Measuring it as placed fed the
+  // page's width back into the menu's, so a menu with a scrollbar grew
+  // wider every time it was placed.)
+  function naturalSize(m) {
+    const keep = [m.style.minWidth, m.style.width, m.style.maxHeight, m.style.overflowY];
+    m.style.minWidth = "0";
+    m.style.width = "max-content";
+    m.style.maxHeight = "none";
+    m.style.overflowY = "hidden";
+    const r = m.getBoundingClientRect();
+    [m.style.minWidth, m.style.width, m.style.maxHeight, m.style.overflowY] = keep;
+    return { w: Math.ceil(r.width), h: Math.ceil(r.height) };
+  }
+
   function reportSize() {
     const m = root.querySelector(".menu");
     if (!m) return;
-    if (m.scrollHeight === local.sentH && m.scrollWidth === local.sentW) return;
-    local.sentH = m.scrollHeight;
-    local.sentW = m.scrollWidth;
-    // the page border adds 2px each way; a scrollbar takes some width
-    const bar = m.scrollHeight > m.clientHeight + 1 ? 10 : 0;
-    post({ t: "size", w: Math.ceil(m.scrollWidth) + 2 + bar, h: Math.ceil(m.scrollHeight) + 2 });
+    const { w, h } = naturalSize(m);
+    // taller than the page it was given: it scrolls, and the scrollbar
+    // needs room beside the items
+    const bar = h > window.innerHeight - 2 + 1 ? 10 : 0;
+    const want = { w: w + 2 + bar, h: h + 2 };
+    if (want.w === local.sentW && want.h === local.sentH) return;
+    local.sentW = want.w;
+    local.sentH = want.h;
+    post({ t: "size", w: want.w, h: want.h });
   }
 
   // Arrow keys, Enter and Esc in an open menu, from this page or passed on
@@ -367,9 +434,16 @@
     post({ t: "down" });
     const g = e.target.closest("[data-scrub]");
     if (g) startScrub(e, g);
+    const row = e.button === 0 && e.target.closest(".row[data-sort]");
+    if (row) {
+      local.drag = { id: row.dataset.id, group: row.dataset.sort, y: e.clientY, on: false };
+      document.addEventListener("mousemove", dragMove);
+      document.addEventListener("mouseup", dragEnd);
+    }
   });
 
   document.addEventListener("click", (e) => {
+    if (local.dragged) return;
     const t = e.target.closest("button, .row, .group");
     if (!t || t.disabled) return focusViews(e);
     if (t.dataset.popup) {
