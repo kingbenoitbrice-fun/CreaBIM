@@ -311,17 +311,17 @@ impl SketchDraft {
                     start: 0.0,
                     sweep: std::f64::consts::TAU,
                 };
-                (c, format!("R {r:.2} m"))
+                (c, format!("R {}", crate::units::len(r)))
             }
             (Shape::Arc, Some(end)) => {
                 let c = Curve::arc(last, end, bulge_through(last, end, h).clamp(-50.0, 50.0));
                 let r = match c {
-                    Curve::Arc { radius, .. } => format!("R {radius:.2} m"),
-                    Curve::Line(..) => format!("{:.2} m", last.distance(end)),
+                    Curve::Arc { radius, .. } => format!("R {}", crate::units::len(radius)),
+                    Curve::Line(..) => crate::units::len(last.distance(end)),
                 };
                 (c, r)
             }
-            _ => (Curve::Line(last, h), format!("{:.2} m", h.distance(last))),
+            _ => (Curve::Line(last, h), crate::units::len(h.distance(last))),
         });
         if let Some((c, _)) = &ghost {
             line(&c.points());
@@ -446,9 +446,9 @@ struct AddForm {
 /// A segment's name in pickers: its number, shape and size.
 fn segment_label(sk: &Sketch, i: usize) -> String {
     match (sk.circle, sk.radius(i)) {
-        (Some(c), _) => format!("Circle, R {:.2} m", c.radius),
-        (None, Some(r)) => format!("{} · arc, R {r:.2} m", i + 1),
-        (None, None) => format!("{} · {:.2} m", i + 1, sk.chord(i)),
+        (Some(c), _) => format!("Circle, R {}", crate::units::len(c.radius)),
+        (None, Some(r)) => format!("{} · arc, R {}", i + 1, crate::units::len(r)),
+        (None, None) => format!("{} · {}", i + 1, crate::units::len(sk.chord(i))),
     }
 }
 
@@ -486,13 +486,8 @@ pub fn properties(ui: &mut egui::Ui, sk: &mut Sketch) -> Edit {
         let changed = ui
             .horizontal(|ui| {
                 ui.label("Radius");
-                ui.add(
-                    egui::DragValue::new(&mut r)
-                        .speed(0.01)
-                        .range(0.001..=1e4)
-                        .suffix(" m"),
-                )
-                .changed()
+                ui.add(crate::units::drag(&mut r).range(0.001..=1e4))
+                    .changed()
             })
             .inner;
         if changed {
@@ -540,12 +535,7 @@ pub fn properties(ui: &mut egui::Ui, sk: &mut Sketch) -> Edit {
                     };
                     ui.label(what);
                     let mut value = v;
-                    let r = ui.add(
-                        egui::DragValue::new(&mut value)
-                            .speed(0.01)
-                            .range(0.001..=1e4)
-                            .suffix(" m"),
-                    );
+                    let r = ui.add(crate::units::drag(&mut value).range(0.001..=1e4));
                     if r.changed() {
                         match sk.set_dimension(i, value) {
                             Ok(()) => edit = Edit::Done("Dimension"),

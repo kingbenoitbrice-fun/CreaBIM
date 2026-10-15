@@ -521,7 +521,11 @@ impl Modal {
                 let axis = self
                     .axis
                     .map_or(String::new(), |a| format!(" along {}", a.label()));
-                self.shown = format!("{}: {:.3} m{axis}", self.edit.label, d.length());
+                self.shown = format!(
+                    "{}: {}{axis}",
+                    self.edit.label,
+                    crate::units::len(d.length())
+                );
                 Xform::Move(d)
             }
             Mode::Rotate => {

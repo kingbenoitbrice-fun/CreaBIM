@@ -147,6 +147,7 @@ pub fn pen_stroke(pen: Pen) -> Stroke {
         Pen::Symbol => SYMBOL,
         Pen::Grid | Pen::Guide => GRID,
         Pen::Hidden => HIDDEN,
+        Pen::Underlay => HATCH,
     }
 }
 
@@ -164,9 +165,13 @@ pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
     let to = |p: DVec2| map.to_paper(p);
     for it in &drawing.items {
         match it {
-            // guides are for working, not for print
+            // guides and underlays are for working, not for print
             PlanItem::Line {
-                pen: Pen::Guide, ..
+                pen: Pen::Guide | Pen::Underlay,
+                ..
+            }
+            | PlanItem::Arc {
+                pen: Pen::Underlay, ..
             } => {}
             PlanItem::Fill { points, hatch, .. } => {
                 let pts: Vec<DVec2> = points.iter().map(|p| to(*p)).collect();

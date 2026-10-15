@@ -47,10 +47,11 @@ pub enum Tool {
     Roof,
     Stair,
     Railing,
+    Level,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 23] = [
+    pub const ALL: [Tool; 24] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
@@ -74,6 +75,7 @@ impl Tool {
         Tool::Sketch,
         Tool::Guide,
         Tool::Grid,
+        Tool::Level,
     ];
 
     /// Dimensions, tags and notes: tools that annotate a view.
@@ -106,6 +108,7 @@ impl Tool {
             Tool::Roof => "Roof",
             Tool::Stair => "Stair",
             Tool::Railing => "Railing",
+            Tool::Level => "Level",
         }
     }
 
@@ -134,6 +137,7 @@ impl Tool {
             Tool::Roof => "Draw the roof's outline like a slab (1–4: Polygon, Rectangle, Fill room, From sketch). Pick Flat, Mono-pitch, Gable or Hip in the bar first.",
             Tool::Stair => "Click where the stair starts, then click the way it climbs. It rises to the next level in equal risers.",
             Tool::Railing => "Click inside a stair to rail both its sides, or click the points of a path; click the last point again to finish.",
+            Tool::Level => "Levels are drawn in a section or elevation: click where the level line starts (its height), then where it ends. Its floor plan is made with it.",
         }
     }
 
@@ -152,6 +156,7 @@ impl Tool {
             Tool::Elevation => "Click where the new elevation stands, then click on the side it should look towards.",
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to levels.",
             Tool::Guide => "Click two points for a guide on the section plane. It shows here, in 3D and in any section on the same plane.",
+            Tool::Level => "Click where the new level line starts (it sets the height; it snaps to model points), then where it ends. Its floor plan is made with it.",
             Tool::Sketch => "Click the corners of a sketch on the section plane. Click the first corner to close it, Enter or right-click to leave it open. L, A and C draw lines, arcs and circles. Then E extrudes it.",
             t => t.hint(),
         }
@@ -270,6 +275,9 @@ pub struct PlanState {
     pub snap: snaps::SnapSettings,
     /// The grid system the Grid tool puts new lines in.
     pub grid_group: Option<ElementId>,
+    /// A level being dragged in a section or elevation, and how far above
+    /// the pointer its line was when the drag began.
+    level_drag: Option<(ElementId, f64)>,
     /// Sizes for new columns, beams, roofs, stairs and railings, and a
     /// railing path being clicked.
     pub members: crate::memberstool::MemberSettings,
@@ -307,6 +315,7 @@ impl Default for PlanState {
             menu_request: None,
             snap: snaps::SnapSettings::default(),
             grid_group: None,
+            level_drag: None,
             members: Default::default(),
         }
     }
@@ -668,6 +677,13 @@ pub fn show(
                 return r;
             }
         }
+        // a level line or head in a section drags the level up and down
+        if let (PaneKind::Section { .. }, Tool::Select) = (kind, tool) {
+            let snapped = tool_snap.filter(|s| !shift && s.kind != SnapKind::Grid);
+            if let Some(r) = drag_level(doc, plan, &xf, &response, state, selection, mm, snapped) {
+                return r;
+            }
+        }
         if tool == Tool::Select {
             let level_z = match kind {
                 PaneKind::Plan { level } => doc.model().level(level).map_or(0.0, |l| l.elevation),
@@ -788,6 +804,9 @@ pub fn show(
             boxsel::draw(&painter, p0, now);
             if response.drag_stopped() || !response.dragged() {
                 let parts = plan.items.iter().filter_map(|it| {
+                    if creabim_geom::plan::is_underlay(it) {
+                        return None;
+                    }
                     let (lo, hi) = it.bounds()?;
                     Some((
                         it.id(),
@@ -882,6 +901,22 @@ pub fn show(
     if let (Some(a), Some(b)) = (state.pending, hover_world) {
         let accent = Stroke::new(1.5, Color32::from_rgb(230, 120, 30));
         match tool {
+            Tool::Level => {
+                let end = DVec2::new(b.x, a.y);
+                painter.extend(egui::Shape::dashed_line(
+                    &[xf.to_screen(a), xf.to_screen(end)],
+                    accent,
+                    10.0,
+                    4.0,
+                ));
+                painter.text(
+                    xf.to_screen(end) + Vec2::new(8.0, -6.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    crate::units::elevation(a.y),
+                    egui::FontId::proportional(13.0),
+                    accent.color,
+                );
+            }
             Tool::Wall
             | Tool::Section
             | Tool::Elevation
@@ -908,7 +943,7 @@ pub fn show(
                 painter.text(
                     xf.to_screen((a + b) / 2.0) + Vec2::new(0.0, -12.0),
                     egui::Align2::CENTER_BOTTOM,
-                    format!("{len:.2} m"),
+                    crate::units::len(len),
                     egui::FontId::proportional(13.0),
                     accent.color,
                 );
@@ -926,7 +961,7 @@ pub fn show(
                     Some((e0, e1)) => {
                         let d = (e1 - e0).normalize_or_zero();
                         let off = (b - e0).perp_dot(d).abs();
-                        (b, d, format!("{off:.2} m"))
+                        (b, d, crate::units::len(off))
                     }
                     None => {
                         let d = (b - a).normalize_or_zero();
@@ -1140,6 +1175,64 @@ pub fn show(
     error
 }
 
+/// Underlays (another level traced under a plan) are drawn in this colour.
+pub const UNDERLAY_COLOR: Color32 = Color32::from_rgb(178, 184, 196);
+
+/// Drag a level's line or head in a section or elevation: the level (and
+/// everything on it) follows the pointer up and down, onto model points it
+/// snaps to, else to the nearest centimetre (half inch). Returns `None`
+/// when the pointer isn't dragging a level.
+#[allow(clippy::too_many_arguments)]
+fn drag_level(
+    doc: &mut Document,
+    plan: &Drawing,
+    xf: &Xf,
+    response: &egui::Response,
+    state: &mut PlanState,
+    selection: &mut Selection,
+    mm: f64,
+    snapped: Option<snaps::Snap>,
+) -> Option<Option<String>> {
+    if response.drag_started_by(egui::PointerButton::Primary) {
+        let press = response.ctx.input(|i| i.pointer.press_origin())?;
+        let w = xf.to_world(press);
+        let id = hit_test(&plan.items, w, 6.0 / xf.scale as f64, mm)?;
+        let l = doc.model().level(id)?;
+        state.level_drag = Some((id, l.elevation - w.y));
+        selection.only(id);
+    }
+    let (id, off) = state.level_drag?;
+    if response.drag_stopped() || !response.dragged() {
+        state.level_drag = None;
+        return Some(None);
+    }
+    let p = response.interact_pointer_pos()?;
+    let step = if crate::units::get().is_imperial() {
+        0.0127
+    } else {
+        0.01
+    };
+    let z = match snapped {
+        Some(s) => s.p.y,
+        None => ((xf.to_world(p).y + off) / step).round() * step,
+    };
+    let name = doc
+        .model()
+        .get(id)
+        .map(|e| e.name.clone())
+        .unwrap_or_default();
+    let r = doc.edit_merged(id, "Move level", |e| {
+        if let ElementKind::Level(l) = &mut e.kind {
+            l.elevation = z;
+        }
+    });
+    state.status = Some(format!(
+        "{name} at {}. Everything on it moves with it.",
+        crate::units::elevation(z)
+    ));
+    Some(r.err().map(|e| e.to_string()))
+}
+
 /// Guides are drawn in this colour, in every pane.
 pub const GUIDE_COLOR: Color32 = Color32::from_rgb(190, 60, 170);
 
@@ -1180,6 +1273,12 @@ pub fn plan_tool(
 ) -> Result<(), creabim_core::ModelError> {
     match tool {
         Tool::Select => Ok(()),
+        Tool::Level => {
+            state.status = Some(
+                "Levels are drawn in a section or elevation. Or use Create › Level above the top one, or the Levels manager.".into(),
+            );
+            Ok(())
+        }
         Tool::Section | Tool::Elevation => match state.pending.take() {
             None => {
                 state.pending = Some(p);
@@ -1330,6 +1429,47 @@ fn section_tool(
 ) -> Result<(), creabim_core::ModelError> {
     let at = |p: DVec2| PaneKind::section_point(start, end, p);
     match tool {
+        Tool::Level => match state.pending.take() {
+            None => {
+                state.pending = Some(p);
+                state.status = Some(format!(
+                    "New level at {}. Click where its line ends.",
+                    crate::units::elevation(p.y)
+                ));
+                Ok(())
+            }
+            Some(a) => {
+                let model = doc.model();
+                let z = a.y;
+                if model.levels().any(|(_, l)| (l.elevation - z).abs() < 1e-4) {
+                    state.status = Some("There is a level at that height already.".into());
+                    return Ok(());
+                }
+                // up to the next level, or as tall as the one below
+                let list = creabim_core::levels::sorted(model);
+                let height = list
+                    .iter()
+                    .find(|(_, _, l)| l.elevation > z + 1e-6)
+                    .map(|(_, _, l)| l.elevation - z)
+                    .or_else(|| {
+                        list.iter()
+                            .rev()
+                            .find(|(_, _, l)| l.elevation < z)
+                            .map(|(_, _, l)| l.height)
+                    })
+                    .unwrap_or(3.0)
+                    .max(0.5);
+                let name = creabim_core::levels::next_name(model);
+                let (mut tx, id, _) = creabim_core::levels::add(model, &name, z, height, true);
+                tx.label = "Draw level".into();
+                selection.only(id);
+                state.status = Some(format!(
+                    "Added {name} at {} with its floor plan. Drag its line to move it.",
+                    crate::units::elevation(z)
+                ));
+                doc.commit(tx)
+            }
+        },
         Tool::Wall => match state.pending.take() {
             None => {
                 state.pending = Some(p);
@@ -2129,12 +2269,20 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
                     }
                 }
                 Pen::Grid => {
+                    let (w, c) = if selected {
+                        (2.0, highlight)
+                    } else {
+                        (1.0, Color32::from_rgb(120, 140, 170))
+                    };
                     painter.extend(egui::Shape::dashed_line(
                         &[a, b],
-                        Stroke::new(1.0, Color32::from_rgb(120, 140, 170)),
+                        Stroke::new(w, c),
                         12.0,
                         4.0,
                     ));
+                }
+                Pen::Underlay => {
+                    painter.line_segment([a, b], Stroke::new(1.0, UNDERLAY_COLOR));
                 }
                 Pen::Projection => {
                     let (w, c) = if selected {
@@ -2170,8 +2318,14 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
             radius,
             start,
             end,
+            pen,
             ..
         } => {
+            let ink = if *pen == Pen::Underlay {
+                UNDERLAY_COLOR
+            } else {
+                ink
+            };
             let n = 24;
             let pts: Vec<Pos2> = (0..=n)
                 .map(|i| {
@@ -2325,7 +2479,7 @@ fn preview_dimension(
     mm: f64,
     accent: Color32,
 ) {
-    let text = annotate::dimension_text(a, b);
+    let text = annotate::dimension_text(&crate::units::get(), a, b);
     let look = TextLook::default();
     draw_dimension(painter, xf, a, b, offset, &text, &look, mm, accent);
 }
@@ -2773,8 +2927,14 @@ pub fn hit_test(items: &[PlanItem], p: DVec2, tol: f64, mm: f64) -> Option<Eleme
                 b,
             } if near_line(*a, *b) => return Some(*id),
             PlanItem::Arc {
-                id, center, radius, ..
-            } if (p.distance(*center) - radius).abs() < tol => return Some(*id),
+                id,
+                center,
+                radius,
+                pen,
+                ..
+            } if *pen != Pen::Underlay && (p.distance(*center) - radius).abs() < tol => {
+                return Some(*id)
+            }
             // view marks and grid ends: their arrow or their bubble
             PlanItem::Polygon {
                 id,
@@ -2797,7 +2957,9 @@ pub fn hit_test(items: &[PlanItem], p: DVec2, tol: f64, mm: f64) -> Option<Eleme
     }
     for it in items.iter().rev() {
         match it {
-            PlanItem::Line { id, a, b, .. } if near_line(*a, *b) => return Some(*id),
+            PlanItem::Line { id, a, b, pen } if *pen != Pen::Underlay && near_line(*a, *b) => {
+                return Some(*id)
+            }
             PlanItem::Polygon { id, points, .. } => {
                 let n = points.len();
                 if (0..n).any(|i| near_line(points[i], points[(i + 1) % n])) {

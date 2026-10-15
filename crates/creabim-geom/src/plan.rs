@@ -19,6 +19,9 @@ pub enum Pen {
     Guide,
     /// Above the cut plane (beams, the stair past its break): dashed.
     Hidden,
+    /// Another level traced under a plan: halftone, never printed, not
+    /// picked, but snapped to.
+    Underlay,
 }
 
 pub use creabim_core::Hatch;
@@ -805,6 +808,75 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
         }
     }
     PlanView { items }
+}
+
+/// The plan of `level` as an underlay: its linework (cut outlines,
+/// projection, symbols) as halftone lines and arcs, without fills, text,
+/// grids, guides or view marks.
+pub fn underlay_items(model: &Model, level: ElementId, cut_height: f64) -> Vec<PlanItem> {
+    let skip = |id: ElementId| {
+        matches!(
+            model.get(id).map(|e| &e.kind),
+            Some(ElementKind::View(_) | ElementKind::Grid(_) | ElementKind::GridGroup(_))
+        )
+    };
+    let mut out = Vec::new();
+    for it in plan_view(model, level, cut_height).items {
+        match it {
+            PlanItem::Line { id, pen, a, b } if pen != Pen::Guide && pen != Pen::Grid => {
+                if !skip(id) {
+                    out.push(PlanItem::Line {
+                        id,
+                        pen: Pen::Underlay,
+                        a,
+                        b,
+                    });
+                }
+            }
+            PlanItem::Polygon { id, points, .. } if !skip(id) => {
+                let n = points.len();
+                for i in 0..n {
+                    out.push(PlanItem::Line {
+                        id,
+                        pen: Pen::Underlay,
+                        a: points[i],
+                        b: points[(i + 1) % n],
+                    });
+                }
+            }
+            PlanItem::Arc {
+                id,
+                center,
+                radius,
+                start,
+                end,
+                ..
+            } if !skip(id) => out.push(PlanItem::Arc {
+                id,
+                pen: Pen::Underlay,
+                center,
+                radius,
+                start,
+                end,
+            }),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Is this the linework of an underlay (drawn faintly, never picked)?
+pub fn is_underlay(item: &PlanItem) -> bool {
+    matches!(
+        item,
+        PlanItem::Line {
+            pen: Pen::Underlay,
+            ..
+        } | PlanItem::Arc {
+            pen: Pen::Underlay,
+            ..
+        }
+    )
 }
 
 /// How far guides reach each way from their points: endless for any

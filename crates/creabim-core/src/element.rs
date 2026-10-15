@@ -89,6 +89,7 @@ impl Element {
                 .collect(),
             // a missing style falls back to the default look, like materials
             ElementKind::TextStyle(_) => vec![],
+            ElementKind::Units(_) => vec![],
             ElementKind::Sketch(s) => s.level.into_iter().collect(),
             ElementKind::Cut(c) => vec![c.target, c.cutter],
             ElementKind::Guide(g) => g.level.into_iter().collect(),
@@ -120,6 +121,7 @@ impl Element {
             ElementKind::Tag(_) => "Tag",
             ElementKind::Note(_) => "Note",
             ElementKind::TextStyle(_) => "TextStyle",
+            ElementKind::Units(_) => "ProjectUnits",
             ElementKind::Sketch(_) => "Sketch",
             ElementKind::Cut(_) => "Cut",
             ElementKind::Guide(_) => "Guide",
@@ -257,6 +259,7 @@ impl Element {
             }
             ElementKind::Note(n) => n.validate(),
             ElementKind::TextStyle(s) => s.validate(),
+            ElementKind::Units(_) => Ok(()),
             ElementKind::Sketch(s) => s.check(),
             ElementKind::Cut(c) => {
                 if c.target == c.cutter {
@@ -306,6 +309,8 @@ pub enum ElementKind {
     Stair(Stair),
     Railing(Railing),
     GridGroup(GridGroup),
+    /// The project's units: one per project, read through [`crate::Model::units`].
+    Units(crate::units::Units),
 }
 
 impl ElementKind {
@@ -335,6 +340,7 @@ impl ElementKind {
             ElementKind::Note(_) => "Note",
             ElementKind::TextStyle(_) => "TextStyle",
             ElementKind::GridGroup(_) => "GridGroup",
+            ElementKind::Units(_) => "Units",
         }
     }
 }
@@ -950,6 +956,46 @@ pub struct View {
     /// Categories, elements and grid groups this view leaves out.
     #[serde(default, skip_serializing_if = "ViewHidden::is_empty")]
     pub hidden: ViewHidden,
+    /// Another level drawn faintly under a plan, to trace and snap to.
+    #[serde(default, skip_serializing_if = "Underlay::is_none")]
+    pub underlay: Underlay,
+}
+
+/// What a plan shows faintly under its own level (Revit's underlay).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Underlay {
+    #[default]
+    None,
+    /// The next level down.
+    Below,
+    /// The next level up.
+    Above,
+    /// A chosen level. Not a hard reference: deleting the level just turns
+    /// the underlay off.
+    Level(ElementId),
+}
+
+impl Underlay {
+    pub fn is_none(&self) -> bool {
+        *self == Underlay::None
+    }
+
+    /// The level this underlay shows for a plan of `level`, if any.
+    pub fn level(&self, model: &crate::Model, level: ElementId) -> Option<ElementId> {
+        let here = model.level(level)?.elevation;
+        let mut others: Vec<(ElementId, f64)> = model
+            .levels()
+            .filter(|(e, _)| e.id != level)
+            .map(|(e, l)| (e.id, l.elevation))
+            .collect();
+        others.sort_by(|a, b| a.1.total_cmp(&b.1));
+        match self {
+            Underlay::None => None,
+            Underlay::Below => others.iter().rev().find(|o| o.1 <= here).map(|o| o.0),
+            Underlay::Above => others.iter().find(|o| o.1 >= here).map(|o| o.0),
+            Underlay::Level(id) => (*id != level && model.level(*id).is_some()).then_some(*id),
+        }
+    }
 }
 
 /// How a section, elevation or 3D view draws what is beyond the cut.
@@ -1026,6 +1072,7 @@ impl View {
             scale: 100.0,
             style: ViewStyle::HiddenLine,
             hidden: ViewHidden::default(),
+            underlay: Underlay::None,
         }
     }
 
@@ -1040,6 +1087,7 @@ impl View {
             scale: 100.0,
             style: ViewStyle::HiddenLine,
             hidden: ViewHidden::default(),
+            underlay: Underlay::None,
         }
     }
 }
@@ -1051,6 +1099,7 @@ impl View {
             scale: 100.0,
             style: ViewStyle::Shaded,
             hidden: ViewHidden::default(),
+            underlay: Underlay::None,
         }
     }
 
@@ -1060,6 +1109,7 @@ impl View {
             scale: 1000.0,
             style: ViewStyle::HiddenLine,
             hidden: ViewHidden::default(),
+            underlay: Underlay::None,
         }
     }
 

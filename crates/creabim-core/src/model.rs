@@ -58,6 +58,17 @@ impl Model {
         }
     }
 
+    /// The project's units: from its units element, millimetres when it
+    /// has none (as every file from before units were added).
+    pub fn units(&self) -> crate::Units {
+        self.iter()
+            .find_map(|e| match e.kind {
+                ElementKind::Units(u) => Some(u),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
     /// Keep only the elements `keep` accepts, without checking references:
     /// for read-only copies such as a view's model with what it hides left
     /// out ([`crate::visibility::without`]). Never commit edits from one.

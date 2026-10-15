@@ -632,3 +632,25 @@ html[data-pane="nav"] body { background: var(--panel); border: 1px solid var(--b
 .nav .ibtn { width: 28px; height: 26px; }
 .nav .dd { height: 26px; background: transparent; box-shadow: none; padding: 0 6px; }
 .nav .dd:hover { background: var(--raise); }
+
+/* lengths in feet and inches need more room */
+.field input.len { width: 78px; }
+
+/* buttons on a project browser group (Levels: add, manage) */
+.group .gact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.group .gact:first-of-type { margin-left: auto; }
+.group .gact ~ .n { margin-left: 4px; }
+.group .gact:hover { background: var(--raise-2); color: var(--text); }
+.group .gact svg.i { width: 14px; height: 14px; }

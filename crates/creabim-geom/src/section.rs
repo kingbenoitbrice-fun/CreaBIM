@@ -58,6 +58,20 @@ pub fn section_view(
     cut: bool,
     shaded: bool,
 ) -> Drawing {
+    section_view_at(model, start, end, depth, cut, shaded, 100.0)
+}
+
+/// [`section_view`] drawn for `scale` (100 for 1:100), which sizes the
+/// level heads.
+pub fn section_view_at(
+    model: &Model,
+    start: DVec2,
+    end: DVec2,
+    depth: f64,
+    cut: bool,
+    shaded: bool,
+    scale: f64,
+) -> Drawing {
     let frame = SectionFrame::new(start, end, depth);
     let scene = crate::scene::drawn_scene(model);
     let mut items = Vec::new();
@@ -137,6 +151,17 @@ pub fn section_view(
     }
     .bounds()
     .map_or((0.0, frame.length), |(lo, hi)| (lo.x, hi.x));
+    items.extend(level_datums(model, span, scale));
+    PlanView { items }
+}
+
+/// Level lines across a section or elevation spanning `span` along it, a
+/// metre past each side, each with its head (name and elevation in the
+/// project's units) at the right-hand end. `scale` sizes the heads.
+pub fn level_datums(model: &Model, span: (f64, f64), scale: f64) -> Vec<PlanItem> {
+    let units = model.units();
+    let look = crate::annotate::look_of(model, None, None);
+    let mut items = Vec::new();
     for (e, l) in model.levels() {
         let (x0, x1) = (span.0 - 1.0, span.1 + 1.0);
         items.push(PlanItem::Line {
@@ -145,13 +170,20 @@ pub fn section_view(
             a: DVec2::new(x0, l.elevation),
             b: DVec2::new(x1, l.elevation),
         });
-        items.push(PlanItem::Label {
+        items.push(PlanItem::Annotation {
             id: e.id,
-            at: DVec2::new(x1 + 1.6, l.elevation),
-            text: format!("{} {:+.2}", e.name, l.elevation),
+            item: Box::new(crate::annotation::Annotation {
+                shape: crate::annotation::Shape::Level {
+                    at: DVec2::new(x1, l.elevation),
+                    elevation: units.elevation(l.elevation),
+                },
+                text: e.name.clone(),
+                look,
+                mm: scale / 1000.0,
+            }),
         });
     }
-    PlanView { items }
+    items
 }
 
 /// Section of a view element, if it is a section or elevation.
@@ -290,14 +322,21 @@ pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
     };
     let mut d = match &v.kind {
         creabim_core::ViewKind::Plan { level, cut_height } => {
-            crate::plan_view(model, *level, *cut_height)
+            let mut d = crate::plan_view(model, *level, *cut_height);
+            // another level traced underneath, drawn first so it stays below
+            if let Some(under) = v.underlay.level(model, *level) {
+                let mut items = crate::plan::underlay_items(model, under, *cut_height);
+                items.append(&mut d.items);
+                d.items = items;
+            }
+            d
         }
         creabim_core::ViewKind::Section {
             start,
             end,
             depth,
             cut,
-        } => section_view(model, *start, *end, *depth, *cut, shaded),
+        } => section_view_at(model, *start, *end, *depth, *cut, shaded, v.scale),
         creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
             axonometric_view(model, *azimuth, *altitude, shaded)
         }
