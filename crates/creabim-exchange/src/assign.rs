@@ -72,10 +72,7 @@ pub fn shape_of(model: &Model, id: ElementId) -> Option<TriMesh> {
     if let Some(m) = shape::world_mesh(model, id) {
         return Some(shape::tri(&m));
     }
-    creabim_geom::scene::build_scene(model)
-        .into_iter()
-        .find(|i| i.id == id)
-        .map(|i| i.mesh)
+    creabim_geom::scene::element_meshes(&creabim_geom::scene::build_scene(model)).remove(&id)
 }
 
 /// Turn element `id` into `kind`, fitted to its current shape. It keeps its
@@ -192,6 +189,7 @@ pub fn fit(
                 width: u1 - u0,
                 height: (hi.z - base - sill).min(w.height - sill),
                 material,
+                frame: Default::default(),
             }))
         }
         Assign::Class(_) => Err("A class is not a shape.".into()),

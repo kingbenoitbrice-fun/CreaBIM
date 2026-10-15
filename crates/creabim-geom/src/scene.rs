@@ -16,6 +16,9 @@ pub struct SceneItem {
     /// A cutter: drawn as a see-through outline in 3D, left out of
     /// drawings and exports, but still clickable.
     pub ghost: bool,
+    /// A look of its own over the element's material, by name: a
+    /// window's glass, a door's handle.
+    pub finish: Option<&'static str>,
 }
 
 /// The lines of every sketch, in model coordinates: (sketch, from, to).
@@ -75,7 +78,8 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                 let Some(level) = model.level(w.level) else {
                     continue;
                 };
-                (opening_panel(o, w, level.elevation), opening_color(o))
+                out.extend(opening_items(model, e, o, w, level.elevation));
+                continue;
             }
             ElementKind::FreeMesh(f) => {
                 let z = f
@@ -120,6 +124,7 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             color,
             surface,
             ghost: false,
+            finish: None,
         });
     }
     apply_cuts(model, &mut out);
@@ -221,11 +226,58 @@ fn newell(p: &[DVec3]) -> DVec3 {
     n
 }
 
-fn opening_color(o: &Opening) -> [f32; 3] {
-    match o.kind {
-        creabim_core::OpeningKind::Door => [0.55, 0.38, 0.24],
-        creabim_core::OpeningKind::Window => [0.55, 0.75, 0.90],
+/// A door's or window's parts, each in its own colour: the frame and leaf
+/// in the opening's material (or a painted default), glass see-through.
+/// An element can so have several items, all with its id.
+fn opening_items(
+    model: &Model,
+    e: &creabim_core::Element,
+    o: &Opening,
+    w: &creabim_core::Wall,
+    level_z: f64,
+) -> Vec<SceneItem> {
+    use crate::opening::Part;
+    use creabim_core::OpeningKind;
+    let material = creabim_core::material_of(model, e).map(|(_, m)| (m.color, m.surface()));
+    crate::opening::opening_meshes(o, w, level_z)
+        .into_iter()
+        .map(|(part, mesh)| {
+            let (color, surface) = match (part, o.kind, material) {
+                (Part::Glass, ..) => (GLASS_COLOR, GLASS_SURFACE),
+                (Part::Handle, ..) => ([0.72, 0.73, 0.75], [0.3, 1.0, 1.0]),
+                (_, _, Some(m)) => m,
+                (Part::Frame, OpeningKind::Window, None) => ([0.93, 0.93, 0.91], PLAIN_SURFACE),
+                (Part::Frame, OpeningKind::Door, None) => ([0.50, 0.35, 0.22], PLAIN_SURFACE),
+                (Part::Leaf, _, None) => ([0.62, 0.45, 0.30], PLAIN_SURFACE),
+            };
+            SceneItem {
+                id: e.id,
+                mesh,
+                color,
+                surface,
+                ghost: false,
+                finish: match part {
+                    Part::Glass => Some("Glass"),
+                    Part::Handle => Some("Metal"),
+                    Part::Frame | Part::Leaf => None,
+                },
+            }
+        })
+        .collect()
+}
+
+/// Glass in doors and windows: pale blue, smooth and mostly see-through.
+pub const GLASS_COLOR: [f32; 3] = [0.62, 0.78, 0.88];
+pub const GLASS_SURFACE: [f32; 3] = [0.05, 0.0, 0.3];
+
+/// Each element's whole mesh: the items of one element (a window's frame
+/// and glass) merged.
+pub fn element_meshes(scene: &[SceneItem]) -> std::collections::HashMap<ElementId, TriMesh> {
+    let mut out: std::collections::HashMap<ElementId, TriMesh> = Default::default();
+    for i in scene {
+        out.entry(i.id).or_default().append(&i.mesh);
     }
+    out
 }
 
 /// Extruded slab: top face at `top_z`, `thickness` downwards.
@@ -258,39 +310,6 @@ pub fn slab_mesh(boundary: &[DVec2], top_z: f64, thickness: f64) -> TriMesh {
             out.extend(0.0),
         );
     }
-    m
-}
-
-/// A thin panel filling the opening, so doors and windows show in 3D.
-fn opening_panel(o: &Opening, w: &creabim_core::Wall, level_z: f64) -> TriMesh {
-    let d = w.direction();
-    let n = DVec2::new(-d.y, d.x);
-    let half = 0.025;
-    let z0 = level_z + w.base_offset + o.sill;
-    let u0 = o.offset.max(0.0);
-    let u1 = (o.offset + o.width).min(w.length());
-    let mut m = TriMesh::default();
-    let p = |u: f64, z: f64, s: f64| (w.start + d * u + n * s).extend(z);
-    let (za, zb) = (z0, z0 + o.height);
-    let across = n.extend(0.0);
-    m.add_quad(
-        [
-            p(u0, za, half),
-            p(u1, za, half),
-            p(u1, zb, half),
-            p(u0, zb, half),
-        ],
-        across,
-    );
-    m.add_quad(
-        [
-            p(u0, za, -half),
-            p(u1, za, -half),
-            p(u1, zb, -half),
-            p(u0, zb, -half),
-        ],
-        -across,
-    );
     m
 }
 

@@ -60,6 +60,56 @@ fn ray_triangle(o: Vec3, d: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     (t > 1e-4).then_some(t)
 }
 
+/// The flat face a ray hits: the hit, where on it, its outward normal and
+/// every triangle of the element's mesh in the same plane (for a highlight).
+#[derive(Clone, Debug)]
+pub struct FaceHit {
+    pub hit: Hit,
+    pub point: glam::DVec3,
+    pub normal: glam::DVec3,
+    pub triangles: Vec<[glam::DVec3; 3]>,
+}
+
+/// The face under a ray, as [`FaceHit`].
+pub fn pick_face(scene: &[SceneItem], origin: Vec3, dir: Vec3) -> Option<FaceHit> {
+    let hit = pick(scene, origin, dir)?;
+    // the item the hit came from: the closest of the element's items there
+    let item = scene
+        .iter()
+        .filter(|i| i.id == hit.id && hit.triangle < i.mesh.triangle_count())
+        .find(|i| {
+            let p = &i.mesh.positions;
+            let idx = &i.mesh.indices[hit.triangle * 3..hit.triangle * 3 + 3];
+            let v = |k: usize| Vec3::from(p[idx[k] as usize]);
+            ray_triangle(origin, dir, v(0), v(1), v(2)).is_some_and(|t| (t - hit.t).abs() < 1e-5)
+        })?;
+    let m = &item.mesh;
+    let tri = |t: usize| -> [glam::DVec3; 3] {
+        let i = &m.indices[t * 3..t * 3 + 3];
+        [0, 1, 2].map(|k| Vec3::from(m.positions[i[k] as usize]).as_dvec3())
+    };
+    let [a, b, c] = tri(hit.triangle);
+    let mut n = (b - a).cross(c - a).normalize_or_zero();
+    let stored = Vec3::from(m.normals[m.indices[hit.triangle * 3] as usize]).as_dvec3();
+    if n.dot(stored) < 0.0 {
+        n = -n;
+    }
+    let point = (origin + dir * hit.t).as_dvec3();
+    let triangles = (0..m.triangle_count())
+        .map(tri)
+        .filter(|[p, q, r]| {
+            let tn = (*q - *p).cross(*r - *p).normalize_or_zero();
+            tn.dot(n) > 0.999 && [p, q, r].iter().all(|v| (**v - a).dot(n).abs() < 1e-4)
+        })
+        .collect();
+    Some(FaceHit {
+        hit,
+        point,
+        normal: n,
+        triangles,
+    })
+}
+
 /// Which polygon face of an edit mesh a triangle from
 /// [`crate::scene::edit_mesh_to_tri`] belongs to.
 pub fn face_of_triangle(mesh: &creabim_core::EditMesh, triangle: usize) -> Option<usize> {

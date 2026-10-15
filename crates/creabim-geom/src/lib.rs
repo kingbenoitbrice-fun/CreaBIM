@@ -10,6 +10,7 @@ pub mod annotation;
 pub mod crop;
 pub mod members;
 pub mod mesh;
+pub mod opening;
 pub mod paper;
 pub mod pick;
 pub mod plan;
