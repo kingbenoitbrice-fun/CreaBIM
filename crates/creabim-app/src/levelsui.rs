@@ -107,6 +107,30 @@ impl CreaBimApp {
         }
     }
 
+    /// A level's name field in Properties: committed when it loses focus,
+    /// so the plans named after the level follow in the same undo step.
+    pub(super) fn level_name_field(&mut self, ui: &mut egui::Ui, id: ElementId, name: &str) {
+        let draft = self
+            .levels
+            .names
+            .entry(id)
+            .or_insert_with(|| name.to_string());
+        let r = ui.add(egui::TextEdit::singleline(draft).id_salt(("level-name", id)));
+        if r.lost_focus() && draft.trim() != name && !draft.trim().is_empty() {
+            let new = draft.trim().to_string();
+            self.run_level_ask(Ask::Rename(id, new));
+        } else if !r.has_focus() && *draft != *name {
+            *draft = name.to_string();
+        }
+    }
+
+    /// The 2D pane shows a section or elevation, where level lines are drawn.
+    pub(super) fn shows_section(&self) -> bool {
+        self.active_view
+            .and_then(|id| self.view(id))
+            .is_some_and(|v| matches!(v.kind, ViewKind::Section { .. }))
+    }
+
     /// The Underlay menu for the plan shown.
     pub(super) fn underlay_items(&self) -> Vec<crate::ui_model::Item> {
         use crate::ui_model::Item;
@@ -238,21 +262,29 @@ impl CreaBimApp {
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new(
-                "Highest first. Moving a level moves everything on it. In a section or elevation, drag a level line to move it, or draw a new one with the Level tool.",
+                "Highest first. Moving a level moves everything on it. Height is the storey's: new walls and columns are this tall. In a section or elevation you can also drag a level line, or draw a new one with the Level tool.",
             )
             .weak(),
         );
         ui.separator();
         egui::Grid::new("levels")
             .striped(true)
-            .num_columns(6)
+            .num_columns(7)
             .spacing([10.0, 6.0])
             .show(ui, |ui| {
-                for h in ["Name", "Elevation", "Height", "On it", "Floor plan", ""] {
+                for h in [
+                    "Name",
+                    "Elevation",
+                    "Height",
+                    "To next",
+                    "On it",
+                    "Floor plan",
+                    "",
+                ] {
                     ui.label(egui::RichText::new(h).strong());
                 }
                 ui.end_row();
-                for (id, name, l) in list.iter().rev() {
+                for (i, (id, name, l)) in list.iter().enumerate().rev() {
                     let draft = self.levels.names.entry(*id).or_insert_with(|| name.clone());
                     let r = ui.add_sized([150.0, 20.0], egui::TextEdit::singleline(draft));
                     if r.lost_focus() && draft.trim() != name && !draft.trim().is_empty() {
@@ -265,6 +297,30 @@ impl CreaBimApp {
                     let he = ui.add(crate::units::drag(&mut h).range(0.5..=100.0));
                     if ze.changed() || he.changed() {
                         asks.push(Ask::Set(*id, z, h));
+                    }
+                    // the gap up to the level above, which the storey can be fitted to
+                    match list.get(i + 1) {
+                        Some((_, above, a)) => {
+                            let gap = a.elevation - l.elevation;
+                            ui.horizontal(|ui| {
+                                ui.label(crate::units::len(gap))
+                                    .on_hover_text(format!("From here up to {above}"));
+                                if (gap - l.height).abs() > 1e-6
+                                    && gap > 0.5
+                                    && ui
+                                        .small_button("Fit")
+                                        .on_hover_text(format!(
+                                            "Make the storey as tall as the gap up to {above}"
+                                        ))
+                                        .clicked()
+                                {
+                                    asks.push(Ask::Set(*id, l.elevation, gap));
+                                }
+                            });
+                        }
+                        None => {
+                            ui.label(egui::RichText::new("top").weak());
+                        }
                     }
                     let n = levels::on_level(model, *id).len();
                     ui.label(format!("{n} element{}", if n == 1 { "" } else { "s" }));
@@ -447,9 +503,17 @@ impl CreaBimApp {
             }
             Ask::Rename(id, name) => {
                 let tx = levels::rename(self.doc.model(), id, &name);
+                let plans = tx.ops.len().saturating_sub(1);
                 let r = self.doc.commit(tx);
                 self.levels.names.remove(&id);
-                self.report(r, format!("Renamed the level {name}."));
+                self.report(
+                    r,
+                    match plans {
+                        0 => format!("Renamed the level {name}."),
+                        1 => format!("Renamed the level {name}, and its plan with it."),
+                        n => format!("Renamed the level {name}, and its {n} plans with it."),
+                    },
+                );
             }
             Ask::Set(id, z, h) => {
                 let r = self.doc.edit_merged(id, "Change level", |e| {

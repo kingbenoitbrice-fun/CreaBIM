@@ -477,21 +477,17 @@ impl CreaBimApp {
 
     /// Every view in the model, plans first, in model order.
     fn views(&self) -> Vec<(ElementId, String, bool)> {
-        let mut v: Vec<_> = self
-            .doc
-            .model()
-            .iter()
-            .filter_map(|e| match &e.kind {
-                ElementKind::View(v) => Some((
-                    e.id,
-                    e.name.clone(),
-                    matches!(v.kind, ViewKind::Plan { .. }),
-                )),
-                _ => None,
+        // in the project browser's order: plans first, by level
+        let model = self.doc.model();
+        crate::browser::view_groups(model)
+            .into_iter()
+            .flat_map(|(g, ids)| {
+                ids.into_iter().filter_map(move |id| {
+                    let e = model.get(id)?;
+                    Some((id, e.name.clone(), g == crate::browser::ViewGroup::Plans))
+                })
             })
-            .collect();
-        v.sort_by_key(|(_, _, plan)| !plan);
-        v
+            .collect()
     }
 
     fn view(&self, id: ElementId) -> Option<&View> {
@@ -2175,7 +2171,15 @@ impl CreaBimApp {
         self.refresh_snaps_3d(&exclude);
         let snapper = &self.snaps_3d.as_ref().expect("just built").2;
         let snap_cfg = self.plan.snap.live(ui.input(|i| i.modifiers.alt));
-        let Some(snap) = snapper.snap(&snap_cfg, hover, project, from, free) else {
+        // the corners of the chain of walls (or beams) drawn so far
+        let chain: Vec<DVec3> = match (&self.plan.chain, from) {
+            ((Some(l), pts), Some(_)) if *l == level => pts.iter().map(|p| p.extend(z)).collect(),
+            _ => vec![],
+        };
+        let track = snaps::track_points(&chain, &[]);
+        let Some((snap, align)) =
+            snapper.snap_tracked(&snap_cfg, hover, project, from, &track, free)
+        else {
             return;
         };
         let p = snap.p.truncate();
@@ -2184,7 +2188,7 @@ impl CreaBimApp {
             if snap.kind == SnapKind::Grid {
                 painter.circle_stroke(c, 4.0, egui::Stroke::new(1.0, accent));
             } else {
-                snaps::draw(painter, snap, c, from.and_then(project));
+                snaps::draw_tracked(painter, project, snap, align, c, from.and_then(project));
             }
         }
         if let Some(a) = from {
@@ -2326,10 +2330,12 @@ impl CreaBimApp {
             let free = Workplane::ground(outline.z).intersect(o, d);
             let from = outline.points.last().map(|p| p.extend(outline.z));
             let snapper = &self.snaps_3d.as_ref()?.2;
-            let s = snapper.snap(&snap_cfg, h, project, from, free)?;
+            let shape: Vec<DVec3> = outline.points.iter().map(|p| p.extend(outline.z)).collect();
+            let track = snaps::track_points(&shape, &[]);
+            let (s, align) = snapper.snap_tracked(&snap_cfg, h, project, from, &track, free)?;
             if let Some(c) = project(s.p.truncate().extend(outline.z)) {
                 if s.kind != SnapKind::Grid {
-                    snaps::draw(painter, s, c, from.and_then(project));
+                    snaps::draw_tracked(painter, project, s, align, c, from.and_then(project));
                 }
             }
             Some((h, s.p.truncate()))
@@ -2487,13 +2493,28 @@ impl CreaBimApp {
             .as_ref()
             .filter(|_| mine)
             .and_then(|d| Some(d.plane.to_model(*d.points.last()?)));
-        let snapped = hover.and_then(|h| {
+        let shape: Vec<DVec3> = self
+            .plan
+            .sketch
+            .as_ref()
+            .filter(|_| mine)
+            .map(|d| d.points.iter().map(|p| d.plane.to_model(*p)).collect())
+            .unwrap_or_default();
+        let track = snaps::track_points(&shape, &[]);
+        let plane = self.plan.sketch.as_ref().filter(|_| mine).map(|d| d.plane);
+        let tracked = hover.and_then(|h| {
             let snapper = &self.snaps_3d.as_ref()?.2;
-            snapper.snap(&snap_cfg, h, project, last, None)
+            // on the sketch's plane, the pointer's point lines up with its corners
+            let (o, d) = ray(h);
+            let free = plane.and_then(|p| p.intersect(o, d));
+            let (s, align) = snapper.snap_tracked(&snap_cfg, h, project, last, &track, free)?;
+            // only real snaps here: a free point is placed on the plane below
+            (s.kind != SnapKind::Grid).then_some((s, align))
         });
-        if let Some(s) = snapped {
+        let snapped = tracked.map(|t| t.0);
+        if let Some((s, align)) = tracked {
             if let Some(c) = project(s.p) {
-                snaps::draw(painter, s, c, last.and_then(project));
+                snaps::draw_tracked(painter, project, s, align, c, last.and_then(project));
             }
         }
         // the plane a first click would start on
@@ -3203,7 +3224,10 @@ impl CreaBimApp {
         }
         ui.label(egui::RichText::new(e.ifc_class()).weak());
         let mut name = e.name.clone();
-        if ui.text_edit_singleline(&mut name).changed() {
+        if matches!(e.kind, ElementKind::Level(_)) {
+            // a level is renamed with the plans named after it, once typed
+            self.level_name_field(ui, id, &e.name);
+        } else if ui.text_edit_singleline(&mut name).changed() {
             let r = self
                 .doc
                 .edit_merged(id, "Rename", |e| e.name = name.clone());
@@ -4216,6 +4240,9 @@ impl eframe::App for CreaBimApp {
         }
         for (c, at) in std::mem::take(&mut self.plan.commands) {
             self.run_command(&ctx, c, at);
+        }
+        if std::mem::take(&mut self.plan.want_levels) {
+            self.open_levels();
         }
         self.open_view_menu();
         self.materials_window(&ctx);

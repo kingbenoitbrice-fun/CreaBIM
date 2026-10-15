@@ -137,7 +137,7 @@ impl Tool {
             Tool::Roof => "Draw the roof's outline like a slab (1–4: Polygon, Rectangle, Fill room, From sketch). Pick Flat, Mono-pitch, Gable or Hip in the bar first.",
             Tool::Stair => "Click where the stair starts, then click the way it climbs. It rises to the next level in equal risers.",
             Tool::Railing => "Click inside a stair to rail both its sides, or click the points of a path; click the last point again to finish.",
-            Tool::Level => "Levels are drawn in a section or elevation: click where the level line starts (its height), then where it ends. Its floor plan is made with it.",
+            Tool::Level => "In a section or elevation, click where the level line starts (its height), then where it ends; its floor plan is made with it. In other views the Levels window opens to add, rename and move levels.",
         }
     }
 
@@ -283,6 +283,16 @@ pub struct PlanState {
     /// Sizes for new columns, beams, roofs, stairs and railings, and a
     /// railing path being clicked.
     pub members: crate::memberstool::MemberSettings,
+    /// The Level tool was used where level lines can't be drawn: the app
+    /// opens the Levels window instead.
+    pub want_levels: bool,
+    /// The points clicked so far for a chain of walls (or beams, grid
+    /// lines...), on a level, for alignment tracking.
+    pub chain: (Option<ElementId>, Vec<DVec2>),
+    /// Points the pointer rested on while drawing in a view, tracked like
+    /// the shape's own points, and the point it is resting on (since when).
+    rested: (Option<ElementId>, Vec<DVec2>),
+    rest: Option<(DVec2, f64)>,
 }
 
 impl Default for PlanState {
@@ -320,6 +330,10 @@ impl Default for PlanState {
             grid_group: None,
             level_drag: None,
             members: Default::default(),
+            want_levels: false,
+            chain: (None, vec![]),
+            rested: (None, vec![]),
+            rest: None,
         }
     }
 }
@@ -335,6 +349,8 @@ impl PlanState {
         self.guide_edge = None;
         self.outline = None;
         self.members.path.clear();
+        self.chain.1.clear();
+        self.rested.1.clear();
     }
 
     /// Is a tool part way through, with clicks to undo?
@@ -522,26 +538,46 @@ pub fn show(
         PaneKind::Section { start, end } => model_to_pane(Space::Section { start, end }, m),
         _ => m.truncate(),
     };
-    let tool_snap = response.hover_pos().and_then(|p| {
+    let last = state
+        .outline
+        .as_ref()
+        .and_then(|o| o.points.last().copied());
+    let drawing_from = state
+        .pending
+        .or(sketch_last.map(from_pane))
+        .or(last)
+        .map(|a| a.extend(0.0));
+    // the points of the shape being drawn here, for the next to line up with
+    let track = {
+        let shape = shape_points(state, view, kind, &from_pane);
+        let rested: Vec<DVec3> = match (&state.rested, drawing_from) {
+            ((Some(v), pts), Some(_)) if *v == view => pts.iter().map(|p| p.extend(0.0)).collect(),
+            _ => vec![],
+        };
+        let shape: Vec<DVec3> = shape.iter().map(|p| p.extend(0.0)).collect();
+        snaps::track_points(&shape, &rested)
+    };
+    let tracked = response.hover_pos().and_then(|p| {
         let snapper = &state.snaps.get(&view)?.2;
-        let last = state
-            .outline
-            .as_ref()
-            .and_then(|o| o.points.last().copied());
-        let from = state
-            .pending
-            .or(sketch_last.map(from_pane))
-            .or(last)
-            .map(|a| a.extend(0.0));
-        let s = snapper.snap(
+        snapper.snap_tracked(
             &snap_cfg,
             p,
             &pane_project,
-            from,
+            drawing_from,
+            &track,
             Some(xf.to_world(p).extend(0.0)),
-        )?;
-        Some(s)
+        )
     });
+    let tool_snap = tracked.map(|t| t.0);
+    let tool_align = tracked.and_then(|t| t.1);
+    // a point snapped to and rested on while drawing is tracked too
+    rest_on(
+        state,
+        view,
+        tool_snap,
+        drawing_from.is_some(),
+        ui.input(|i| i.time),
+    );
     let hover_world = response.hover_pos().map(|p| match kind {
         PaneKind::Plan { .. } | PaneKind::Section { .. } if !shift => {
             tool_snap.map_or(xf.to_world(p), |s| s.p.truncate())
@@ -598,7 +634,8 @@ pub fn show(
             let project = |p: DVec3| Some(xf.to_screen(p.truncate()));
             if let (Some(s), false) = (tool_snap, shift) {
                 let from = o.points.last().map(|a| xf.to_screen(*a));
-                snaps::draw(&painter, s, xf.to_screen(s.p.truncate()), from);
+                let at = xf.to_screen(s.p.truncate());
+                snaps::draw_tracked(&painter, &project, s, tool_align, at, from);
             }
             o.draw(&painter, &project, hover_world);
             // keys go to the pane under the pointer, as another pane may
@@ -1040,7 +1077,8 @@ pub fn show(
                 .pending
                 .or(sketch_last.map(from_pane))
                 .map(|a| xf.to_screen(a));
-            snaps::draw(&painter, s, xf.to_screen(s.p.truncate()), from);
+            let at = xf.to_screen(s.p.truncate());
+            snaps::draw_tracked(&painter, &pane_project, s, tool_align, at, from);
         }
     }
     if let Some(p) = hover_world {
@@ -1305,7 +1343,33 @@ pub fn clip_to_rect(a: Pos2, b: Pos2, r: Rect) -> Option<(Pos2, Pos2)> {
 }
 
 /// A click with a drawing tool in a plan (or on a level in the 3D view).
+/// The points of a chain of clicks (walls, beams) are kept for alignment
+/// tracking while it goes on.
 pub fn plan_tool(
+    doc: &mut Document,
+    level: ElementId,
+    tool: Tool,
+    p: DVec2,
+    state: &mut PlanState,
+    selection: &mut Selection,
+) -> Result<(), creabim_core::ModelError> {
+    let started = state.pending.is_none();
+    let r = plan_click(doc, level, tool, p, state, selection);
+    match state.pending {
+        Some(q) => {
+            if started || state.chain.0 != Some(level) {
+                state.chain = (Some(level), vec![]);
+            }
+            if state.chain.1.last() != Some(&q) {
+                state.chain.1.push(q);
+            }
+        }
+        None => state.chain.1.clear(),
+    }
+    r
+}
+
+fn plan_click(
     doc: &mut Document,
     level: ElementId,
     tool: Tool,
@@ -1317,8 +1381,9 @@ pub fn plan_tool(
         Tool::Select => Ok(()),
         Tool::Level => {
             state.status = Some(
-                "Levels are drawn in a section or elevation. Or use Create › Level above the top one, or the Levels manager.".into(),
+                "Level lines are drawn in a section or elevation. Here, add, rename and move levels in the Levels window.".into(),
             );
+            state.want_levels = true;
             Ok(())
         }
         Tool::Section | Tool::Elevation => match state.pending.take() {
@@ -3179,6 +3244,75 @@ pub fn pane_kind(v: &View) -> PaneKind {
         ViewKind::Section { start, end, .. } => PaneKind::Section { start, end },
         ViewKind::Axonometric { .. } => PaneKind::Axonometric,
         ViewKind::Schedule { .. } => PaneKind::Schedule,
+    }
+}
+
+/// The points of the shape being drawn in a view, in its drawing
+/// coordinates: a slab outline, a sketch, a railing path or a chain of
+/// walls. Alignment tracking lines the next point up with them.
+fn shape_points(
+    state: &PlanState,
+    view: ElementId,
+    kind: PaneKind,
+    from_pane: &dyn Fn(DVec3) -> DVec2,
+) -> Vec<DVec2> {
+    let level = match kind {
+        PaneKind::Plan { level } => Some(level),
+        _ => None,
+    };
+    if let Some(o) = state.outline.as_ref().filter(|o| Some(o.level) == level) {
+        return o.points.clone();
+    }
+    if let Some(d) = state.sketch.as_ref().filter(|d| d.pane == Some(view)) {
+        return d
+            .points
+            .iter()
+            .map(|p| from_pane(d.plane.to_model(*p)))
+            .collect();
+    }
+    if level.is_some() && !state.members.path.is_empty() {
+        return state.members.path.clone();
+    }
+    match (&state.chain, state.pending) {
+        ((Some(l), pts), Some(_)) if Some(*l) == level => pts.clone(),
+        _ => vec![],
+    }
+}
+
+/// While drawing, a point snapped to and rested on for a moment joins the
+/// points tracked (the last few of them), as in SketchUp.
+fn rest_on(
+    state: &mut PlanState,
+    view: ElementId,
+    snap: Option<snaps::Snap>,
+    drawing: bool,
+    now: f64,
+) {
+    const DWELL: f64 = 0.4;
+    const KEEP: usize = 4;
+    if !drawing {
+        state.rested.1.clear();
+        state.rest = None;
+        return;
+    }
+    if state.rested.0 != Some(view) {
+        state.rested = (Some(view), vec![]);
+    }
+    let Some(p) = snap.filter(|s| s.kind.is_point()).map(|s| s.p.truncate()) else {
+        state.rest = None;
+        return;
+    };
+    match state.rest {
+        Some((q, since)) if q.distance(p) < 1e-9 => {
+            let pts = &mut state.rested.1;
+            if now - since > DWELL && !pts.iter().any(|r| r.distance(p) < 1e-9) {
+                pts.push(p);
+                if pts.len() > KEEP {
+                    pts.remove(0);
+                }
+            }
+        }
+        _ => state.rest = Some((p, now)),
     }
 }
 
