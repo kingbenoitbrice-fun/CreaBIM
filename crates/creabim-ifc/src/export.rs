@@ -198,11 +198,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         HashMap::new()
     } else {
         let targets: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.0).collect();
-        creabim_geom::scene::element_scene(model)
-            .into_iter()
-            .filter(|i| targets.contains(&i.id))
-            .map(|i| (i.id, i.mesh))
-            .collect()
+        let mut all = creabim_geom::scene::element_meshes(&creabim_geom::scene::build_scene(model));
+        all.retain(|id, _| targets.contains(id));
+        all
     };
     let elevation =
         |l: Option<ElementId>| l.and_then(|l| model.level(l)).map_or(0.0, |l| l.elevation);
@@ -429,14 +427,22 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             format!("{g},$,$,$,{wall_r},{opening}"),
         );
 
+        // the door or window itself: its frame, glass, leaf and handle,
+        // each part a box, placed where the opening starts in the wall
         let fill_pl = c.local_placement(Some(pl), DVec3::ZERO, None);
-        let panel_pos = c.placement3d(
-            DVec3::new(o.width / 2.0, 0.025, o.height / 2.0),
-            Some(-DVec3::Y),
-            Some(DVec3::X),
-        );
-        let panel = c.rect_extrusion(DVec2::ZERO, o.width, o.height, panel_pos, 0.05);
-        let fill_shape = c.shape("SweptSolid", &[panel]);
+        let start = creabim_geom::wall::Cut::of(o, wall).map_or(DVec3::ZERO, |cut| {
+            DVec3::new(cut.u0 - o.offset, 0.0, cut.v0 - o.sill)
+        });
+        let mut parts = Vec::new();
+        for b in creabim_geom::opening::opening_boxes(o, wall) {
+            let size = b.hi - b.lo;
+            let pos = c.placement3d(start + b.lo, None, None);
+            parts.push(c.rect_extrusion(size.truncate() / 2.0, size.x, size.y, pos, size.z));
+        }
+        if parts.is_empty() {
+            continue;
+        }
+        let fill_shape = c.shape("SweptSolid", &parts);
         let (class, tail) = match o.kind {
             OpeningKind::Door => (
                 "IFCDOOR",

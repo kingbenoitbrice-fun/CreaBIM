@@ -172,6 +172,9 @@ pub enum Shape {
 /// Radius of a level head's target symbol, paper mm.
 pub const LEVEL_HEAD: f64 = 1.5;
 
+/// Clear paper a level head keeps above and below its text, mm.
+pub const LEVEL_ROOM: f64 = 6.0;
+
 /// An annotation ready to draw: its shape, what it reads and how it looks.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Annotation {
@@ -432,6 +435,12 @@ impl Annotation {
         pts.extend(m.arrows.iter().flatten());
         for t in &m.texts {
             pts.extend(text_box(t, &self.look, mm));
+        }
+        // a level head keeps clear paper above and below it, so the top
+        // and bottom levels of a section don't sit on the drawing's edge
+        if let Shape::Level { at, .. } = self.shape {
+            let room = (LEVEL_ROOM + self.look.size * 2.0) * mm;
+            pts.extend([at + DVec2::Y * room, at - DVec2::Y * room]);
         }
         pts
     }

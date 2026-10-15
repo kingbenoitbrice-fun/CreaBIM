@@ -257,6 +257,8 @@ pub struct PlanState {
     pub boxsel: Option<Pos2>,
     /// What rotate and scale turn about.
     pub pivot: modal::Pivot,
+    /// What the Move tool last worked on: whole elements or a face.
+    pub move_target: modal::Target,
     /// The pivot cursor, placed with Shift+right-click.
     pub cursor: Option<DVec3>,
     /// A move, rotate or scale picked from a button or menu, started by the
@@ -307,6 +309,7 @@ impl Default for PlanState {
             slab_keep_bottom: false,
             boxsel: None,
             pivot: modal::Pivot::default(),
+            move_target: modal::Target::default(),
             cursor: None,
             armed: None,
             commands: vec![],
@@ -677,6 +680,7 @@ pub fn show(
                 _ => -DVec3::Z,
             },
             snap: &snap_fn,
+            pick_face: None,
         };
         let pick = |p: Pos2| hit_test(&plan.items, xf.to_world(p), 6.0 / xf.scale as f64, mm);
         let edits = keyboard_edits(
@@ -1595,6 +1599,7 @@ fn section_tool(
                     width,
                     height,
                     material: None,
+                    frame: Default::default(),
                 }),
             );
             selection.only(e.id);
@@ -1889,6 +1894,9 @@ fn keyboard_edits(
                 state.modal = None;
             }
         }
+        if let Some(m) = &state.modal {
+            state.move_target = m.works_on;
+        }
         return Some(None);
     }
     if state.modal.is_some() || !response.hovered() || ui.ctx().egui_wants_keyboard_input() {
@@ -1917,6 +1925,7 @@ fn keyboard_edits(
         state.pivot,
         state.cursor,
         flow,
+        state.move_target,
     ) {
         Ok((m, copies)) => {
             if copies != ids {
@@ -1966,7 +1975,7 @@ pub fn restart_modal(
     ) {
         Ok(m) => {
             let n = ids.len();
-            *modal = Some(m.with_flow(Flow::Tool));
+            *modal = Some(m.with_flow(Flow::Tool).with_works_on(old.works_on));
             format!(
                 "{n} selected. Shift+click adds or takes away more; click the base point to go on."
             )
@@ -2013,17 +2022,20 @@ pub fn start_modal(
     pivot: modal::Pivot,
     cursor: Option<DVec3>,
     flow: Flow,
+    works_on: modal::Target,
 ) -> Result<(Modal, Vec<ElementId>), String> {
     let targets = if duplicate {
         modal::duplicate(doc, ids)?
     } else {
         ids.to_vec()
     };
-    let face = face.filter(|_| !duplicate);
+    // a selected mass face is what G moves; the Move tool picks its face
+    // itself when it works on faces
+    let face = face.filter(|_| !duplicate && flow == Flow::Keys);
     match Modal::start(doc, mode, &targets, face, space, pane, grab, pivot, cursor) {
         Ok(mut m) => {
             m.duplicated = duplicate;
-            Ok((m.with_flow(flow), targets))
+            Ok((m.with_flow(flow).with_works_on(works_on), targets))
         }
         Err(e) => {
             if duplicate {
@@ -3158,6 +3170,7 @@ fn place_opening(
             width,
             height,
             material: None,
+            frame: Default::default(),
         }),
     );
     selection.only(e.id);

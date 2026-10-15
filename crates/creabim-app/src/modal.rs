@@ -9,10 +9,16 @@
 //! base point (it snaps), then the selection follows the pointer with a
 //! rubber band from the base point until a click places it. Nothing moves
 //! before the base point is picked. Esc or right-click steps back a stage.
+//!
+//! Move works on whole elements, or (switched on its panel, or with F) on
+//! one face: the face under the pointer lights up, and after the base
+//! click it is pushed or pulled along its normal, SketchUp style, the
+//! element's own parameters following (see `creabim_core::pushpull`).
 
 use crate::handles::SnapFn;
 use crate::snaps::{Snap, SnapKind};
 use creabim_core::{
+    pushpull::{self, FaceRef},
     transform::{self, Xform},
     Axis, Document, Element, ElementId, ElementKind, ModelError, Transaction,
 };
@@ -147,6 +153,41 @@ pub enum Space {
     Section { start: DVec2, end: DVec2 },
 }
 
+/// What Move works on: whole elements, or one face of an element.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Target {
+    #[default]
+    Object,
+    Face,
+}
+
+impl Target {
+    pub fn label(self) -> &'static str {
+        match self {
+            Target::Object => "Object",
+            Target::Face => "Face",
+        }
+    }
+}
+
+/// A face under the pointer, as a pane picks it.
+#[derive(Clone, Debug)]
+pub struct FacePick {
+    pub id: ElementId,
+    pub face: FaceRef,
+    /// Its triangles in model coordinates, for the highlight.
+    pub tris: Vec<[DVec3; 3]>,
+}
+
+/// A face being pushed or pulled.
+#[derive(Debug)]
+struct Push {
+    pick: FacePick,
+    edit: LiveEdit,
+    /// How far it went out along its normal (in when negative).
+    distance: f64,
+}
+
 /// How a pane maps its pointer onto the model, for one frame.
 pub struct PaneMap<'a> {
     /// The pointer as a model point on the plane through `pivot` that
@@ -160,6 +201,8 @@ pub struct PaneMap<'a> {
     /// point (the base point) it also tracks the axes through it; without
     /// one it lands on what is under the pointer (a face in 3D).
     pub snap: &'a SnapFn<'a>,
+    /// The face under the pointer, in panes that can pick faces (3D).
+    pub pick_face: Option<&'a dyn Fn(Pos2) -> Option<FacePick>>,
 }
 
 /// How the edit was started, which decides how it takes clicks.
@@ -375,6 +418,13 @@ pub struct Modal {
     ctrl_before: bool,
     /// Copy switched on the on-screen panel.
     want_copy: Option<bool>,
+    /// Whole elements or one face, for Move.
+    pub works_on: Target,
+    /// Switched on the on-screen panel.
+    want_works_on: Option<Target>,
+    /// The face under the pointer while the base point is picked.
+    hover: Option<FacePick>,
+    push: Option<Push>,
 }
 
 pub enum Outcome {
@@ -486,6 +536,10 @@ impl Modal {
             delta: DVec3::ZERO,
             ctrl_before: false,
             want_copy: None,
+            works_on: Target::Object,
+            want_works_on: None,
+            hover: None,
+            push: None,
         };
         if let (Some(f), ElementKind::FreeMesh(m)) = (face, &first.kind) {
             if f < m.mesh.faces.len() {
@@ -589,7 +643,49 @@ impl Modal {
 
     /// The elements being edited.
     pub fn ids(&self) -> Vec<ElementId> {
-        self.edit.originals().iter().map(|e| e.id).collect()
+        let edit = self.push.as_ref().map_or(&self.edit, |p| &p.edit);
+        edit.originals().iter().map(|e| e.id).collect()
+    }
+
+    /// Is this Move working on one face, in a pane that can pick faces?
+    fn on_faces(&self, map: &PaneMap) -> bool {
+        self.can_take_faces() && self.works_on == Target::Face && map.pick_face.is_some()
+    }
+
+    /// Can this edit switch to faces: the Move tool, on whole elements.
+    fn can_take_faces(&self) -> bool {
+        self.mode == Mode::Move
+            && self.flow == Flow::Tool
+            && self.face.is_none()
+            && !self.duplicated
+    }
+
+    /// Work on whole elements or on one face, starting again from the base
+    /// point with nothing moved.
+    pub fn set_works_on(&mut self, doc: &mut Document, t: Target) {
+        if t == self.works_on || !self.can_take_faces() {
+            return;
+        }
+        self.set_copy(doc, false);
+        self.edit.cancel(doc);
+        if let Some(mut p) = self.push.take() {
+            p.edit.cancel(doc);
+        }
+        self.works_on = t;
+        self.hover = None;
+        self.typed.clear();
+        self.delta = DVec3::ZERO;
+        self.target = None;
+        self.base = None;
+        self.stage = Stage::Base;
+    }
+
+    /// Start the edit on whole elements or one face, as last chosen.
+    pub fn with_works_on(mut self, t: Target) -> Self {
+        if self.can_take_faces() {
+            self.works_on = t;
+        }
+        self
     }
 
     /// The move applied this frame.
@@ -671,8 +767,20 @@ impl Modal {
         }
         self.ortho = ev.shift;
         let follow = self.stage == Stage::Follow;
+        if let Some(t) = self.want_works_on.take() {
+            self.set_works_on(doc, t);
+        }
         for c in ev.text.chars() {
             match c.to_ascii_lowercase() {
+                // F switches between whole elements and a face (unless it
+                // is part of a typed length, as in 8ft)
+                'f' if self.typed.is_empty() && self.can_take_faces() => {
+                    let t = match self.works_on {
+                        Target::Object => Target::Face,
+                        Target::Face => Target::Object,
+                    };
+                    self.set_works_on(doc, t);
+                }
                 'x' => self.toggle(Axis::X),
                 'y' => self.toggle(Axis::Y),
                 'z' => self.toggle(Axis::Z),
@@ -691,7 +799,7 @@ impl Modal {
             self.typed.pop();
         }
         // Ctrl leaves copies behind
-        if ev.ctrl_pressed && self.mode == Mode::Move && self.face.is_none() && !self.duplicated {
+        if ev.ctrl_pressed && self.copies_allowed() {
             self.set_copy(doc, !self.copy);
         }
         if let Some(on) = self.want_copy.take() {
@@ -708,7 +816,14 @@ impl Modal {
         if !self.uses_points() {
             return self.step_relative(doc, ev, map);
         }
-        let skipped = self.skipped_note();
+        if self.on_faces(map) {
+            return self.step_faces(doc, ev, map);
+        }
+        self.hover = None;
+        let mut skipped = self.skipped_note();
+        if self.works_on == Target::Face && self.can_take_faces() {
+            skipped.push_str(" (faces are picked in the 3D view; here Move takes whole elements)");
+        }
         match self.stage {
             Stage::Base => {
                 self.snap = ev.pointer.and_then(|p| (map.snap)(p, None)).map(|s| s.1);
@@ -765,6 +880,139 @@ impl Modal {
             }
             Stage::Follow => self.step_follow(doc, ev, map),
         }
+    }
+
+    /// Can Ctrl leave copies behind: a Move of whole elements.
+    fn copies_allowed(&self) -> bool {
+        self.mode == Mode::Move
+            && self.face.is_none()
+            && !self.duplicated
+            && self.works_on == Target::Object
+    }
+
+    /// Move on faces: light up the face under the pointer, take it with the
+    /// base click, then push or pull it along its normal.
+    fn step_faces(&mut self, doc: &mut Document, ev: &Events, map: &PaneMap) -> Outcome {
+        let Some(pick_face) = map.pick_face else {
+            return Outcome::Running(String::new());
+        };
+        if self.push.is_none() {
+            self.stage = Stage::Base;
+            let model = doc.model();
+            self.hover = ev
+                .pointer
+                .and_then(pick_face)
+                .filter(|h| model.get(h.id).is_some_and(|e| pushpull::can_push(&e.kind)));
+            // the base point: a snap on the face, or where the pointer meets it
+            self.snap = ev
+                .pointer
+                .and_then(|p| (map.snap)(p, None))
+                .map(|s| s.1)
+                .filter(|s| {
+                    self.hover.as_ref().is_some_and(|h| {
+                        (s.p - h.face.point)
+                            .dot(h.face.normal.normalize_or_zero())
+                            .abs()
+                            < 1e-3
+                    })
+                });
+            let under = ev.pointer.and_then(pick_face);
+            if ev.click {
+                if let Some(h) = self.hover.clone() {
+                    let base = self.snap.map_or(h.face.point, |s| s.p);
+                    let originals = pushpull::affected(model, h.id);
+                    let name = originals.first().map_or(String::new(), |e| e.name.clone());
+                    self.push = Some(Push {
+                        edit: LiveEdit::new(format!("Push/pull {name}"), originals),
+                        pick: h,
+                        distance: 0.0,
+                    });
+                    self.base = Some(base);
+                    self.base_at = ev.pointer;
+                    self.stage = Stage::Follow;
+                    self.hover = None;
+                    return Outcome::Running(format!(
+                        "Push/pull {name}: move the pointer out or in, or type a distance + Enter."
+                    ));
+                }
+            }
+            return Outcome::Running(match (&self.hover, under) {
+                (Some(h), _) => {
+                    let name = model.get(h.id).map_or("", |e| e.name.as_str());
+                    format!(
+                        "Move face: click a point on this face of {name} to push or pull it. F moves whole elements instead. Esc cancels."
+                    )
+                }
+                (None, Some(u)) => {
+                    let name = model.get(u.id).map_or("", |e| e.name.as_str());
+                    format!("Move face: {name} has no faces to push or pull; walls, slabs and masses do. F moves whole elements.")
+                }
+                (None, None) => {
+                    "Move face: point at a face of a wall, slab or mass, and click on it. F moves whole elements instead.".into()
+                }
+            });
+        }
+        // following: how far along its normal the face goes
+        let base = self.base.expect("set with the push");
+        let n = self
+            .push
+            .as_ref()
+            .map_or(DVec3::Z, |p| p.pick.face.normal.normalize_or(DVec3::Z));
+        let still = self
+            .base_at
+            .is_some_and(|b| b.distance(self.pointer) < STILL);
+        // up and down on a plane facing the viewer; across on the level
+        let (target, snap) = if n.z.abs() > 0.5 {
+            ((map.to_model)(self.pointer, Some(Axis::Z), base), None)
+        } else {
+            match (map.snap)(self.pointer, Some(base)) {
+                Some((p, s)) => (Some(p), Some(s)),
+                None => ((map.to_model)(self.pointer, None, base), None),
+            }
+        };
+        self.snap = snap;
+        let mut s = match target {
+            _ if still => 0.0,
+            Some(t) => (t - base).dot(n),
+            None => self.push.as_ref().map_or(0.0, |p| p.distance),
+        };
+        if let Some(len) = parse_length(&self.typed) {
+            // a typed distance goes the way the pointer went (out when it
+            // hasn't moved); a minus sign pulls in
+            s = if len < 0.0 || s >= 0.0 { len } else { -len };
+        }
+        self.delta = n * s;
+        self.target = Some(base + self.delta);
+        let p = self.push.as_mut().expect("checked above");
+        p.distance = s;
+        let label = p.edit.label().to_string();
+        let way = if s < 0.0 { " in" } else { " out" };
+        self.shown = format!("{label}: {}{way}", crate::units::len(s.abs()));
+        let result = match pushpull::push_face(p.edit.originals(), &p.pick.face, s) {
+            Some(changed) => p.edit.update(doc, changed).map_err(|e| e.to_string()),
+            None if s.abs() < 1e-9 => {
+                p.edit.cancel(doc);
+                Ok(())
+            }
+            None => Err("the shape would turn inside out".to_string()),
+        };
+        if let Err(e) = result {
+            self.shown = format!("Can't go there: {e}");
+        }
+        if ev.click || ev.enter || self.ask == Some(true) {
+            self.ask = None;
+            let done = format!("{}. Ctrl+Z to undo.", self.shown);
+            return Outcome::Done(done);
+        }
+        let typed = if self.typed.is_empty() {
+            String::new()
+        } else {
+            format!("  [typed {}]", self.typed)
+        };
+        Outcome::Running(format!(
+            "{}{typed}   ·   click to place, type a distance + Enter, Esc steps back",
+            self.shown
+        ))
     }
 
     fn skipped_note(&self) -> String {
@@ -838,7 +1086,7 @@ impl Modal {
                     Some(c) if self.copy => c.label.clone(),
                     _ => self.edit.label().to_string(),
                 };
-                self.shown = format!("{label}: {:.3} m{axis}", d.length());
+                self.shown = format!("{label}: {}{axis}", crate::units::len(d.length()));
                 Xform::Move(d)
             }
             _ => {
@@ -879,7 +1127,7 @@ impl Modal {
             self.ask = None;
             return self.place(doc);
         }
-        let copy = if self.mode == Mode::Move && self.face.is_none() && !self.duplicated {
+        let copy = if self.copies_allowed() {
             if self.copy {
                 ", Ctrl: copy is on"
             } else {
@@ -962,6 +1210,9 @@ impl Modal {
                 self.edit.cancel(doc);
                 if let Some(c) = &mut self.copies {
                     c.cancel(doc);
+                }
+                if let Some(mut p) = self.push.take() {
+                    p.edit.cancel(doc);
                 }
                 self.typed.clear();
                 self.delta = DVec3::ZERO;
@@ -1049,7 +1300,28 @@ impl Modal {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(egui::RichText::new(self.mode.verb()).strong());
                         ui.separator();
+                        if self.can_take_faces() {
+                            // whole elements, or one face pushed and pulled
+                            for (t, tip) in [
+                                (Target::Object, "Move whole elements (F switches)"),
+                                (
+                                    Target::Face,
+                                    "Push or pull the face under the pointer: walls, slabs and masses (F switches)",
+                                ),
+                            ] {
+                                if ui
+                                    .selectable_label(self.works_on == t, t.label())
+                                    .on_hover_text(tip)
+                                    .clicked()
+                                {
+                                    self.want_works_on = Some(t);
+                                }
+                            }
+                            ui.separator();
+                        }
+                        let faces = self.works_on == Target::Face && self.can_take_faces();
                         let axes: &[Axis] = match (self.mode, self.face.is_some()) {
+                            _ if faces => &[],
                             (Mode::Rotate, true) => &[],
                             _ => &Axis::ALL,
                         };
@@ -1082,7 +1354,7 @@ impl Modal {
                                 .desired_width(60.0)
                                 .hint_text("type"),
                         );
-                        if self.mode == Mode::Move && self.face.is_none() && !self.duplicated {
+                        if self.copies_allowed() {
                             ui.separator();
                             if ui
                                 .selectable_label(self.copy, "Copy (Ctrl)")
@@ -1120,6 +1392,9 @@ impl Modal {
         self.edit.cancel(doc);
         if let Some(c) = &mut self.copies {
             c.cancel(doc);
+        }
+        if let Some(p) = &mut self.push {
+            p.edit.cancel(doc);
         }
         if self.duplicated && doc.undo_label().is_some_and(|l| l.starts_with("Duplicate")) {
             doc.discard_last();
@@ -1367,6 +1642,22 @@ impl Modal {
                 }
             }
         };
+        // the face under the pointer, or the face being pushed where it is now
+        let face = match (&self.push, &self.hover) {
+            (Some(p), _) => Some((&p.pick.tris, self.delta)),
+            (None, Some(h)) => Some((&h.tris, DVec3::ZERO)),
+            _ => None,
+        };
+        if let Some((tris, d)) = face {
+            // blue, so it reads apart from the orange of the selection
+            let fill = Color32::from_rgba_unmultiplied(40, 130, 240, 110);
+            for t in tris {
+                let pts: Option<Vec<Pos2>> = t.iter().map(|p| (map.project)(*p + d)).collect();
+                if let Some(pts) = pts {
+                    painter.add(egui::Shape::convex_polygon(pts, fill, Stroke::NONE));
+                }
+            }
+        }
         let base = self.base.and_then(|b| (map.project)(b));
         if let (Some(a), Some(b)) = (self.axis, self.base) {
             draw_axis(painter, map, b, a);
@@ -1406,7 +1697,7 @@ impl Modal {
                         painter.text(
                             b + (t - b) / 2.0 + side,
                             egui::Align2::CENTER_CENTER,
-                            format!("{:.3} m", self.delta.length()),
+                            crate::units::len(self.delta.length()),
                             egui::FontId::proportional(13.0),
                             accent,
                         );
@@ -1528,6 +1819,7 @@ mod tests {
             project: &project,
             look: -DVec3::Z,
             snap: &snap,
+            pick_face: None,
         };
         f(&map)
     }
@@ -1829,5 +2121,66 @@ mod tests {
         });
         let turned = DVec2::from_angle(90f64.to_radians()).rotate(before);
         assert!((dir(&doc) - turned).length() < 1e-6);
+    }
+
+    #[test]
+    fn move_switches_to_faces_and_pushes_a_wall_end_out() {
+        let mut doc = Document::from_model(sample_house());
+        let (id, start) = first_wall(&doc);
+        let ElementKind::Wall(w) = &doc.model().get(id).unwrap().kind else {
+            panic!()
+        };
+        let (end, dir, length) = (w.end, w.direction(), w.length());
+        let mut m = tool(&doc, Mode::Move, id);
+        // the wall's end face is under the pointer, wherever it is
+        let pick = move |_: Pos2| {
+            Some(FacePick {
+                id,
+                face: FaceRef {
+                    point: end.extend(1.5),
+                    normal: dir.extend(0.0),
+                    mesh_face: None,
+                },
+                tris: vec![],
+            })
+        };
+        with_map(&[], |map| {
+            let map = PaneMap {
+                pick_face: Some(&pick),
+                ..*map
+            };
+            // F switches to faces, and back
+            let f = Events {
+                text: "f".into(),
+                ..pointer(at(end.x, end.y))
+            };
+            m.step(&mut doc, &f, &map);
+            assert_eq!(m.works_on, Target::Face);
+            m.step(&mut doc, &f, &map);
+            assert_eq!(m.works_on, Target::Object);
+            m.step(&mut doc, &f, &map);
+            m.step(&mut doc, &click(at(end.x, end.y)), &map);
+            assert_eq!(m.stage(), Stage::Follow);
+            let past = end + dir * 1.5;
+            let out = m.step(&mut doc, &pointer(at(past.x, past.y)), &map);
+            let Outcome::Running(text) = out else {
+                panic!()
+            };
+            // the readout is in the project's units
+            assert!(text.contains("1500"), "{text}");
+            assert!(matches!(
+                m.step(&mut doc, &click(at(past.x, past.y)), &map),
+                Outcome::Done(_)
+            ));
+        });
+        let length_now = |doc: &Document| match &doc.model().get(id).unwrap().kind {
+            ElementKind::Wall(w) => w.length(),
+            _ => 0.0,
+        };
+        // longer by the push, its start where it was
+        assert!((length_now(&doc) - length - 1.5).abs() < 1e-6);
+        assert_eq!(wall_start(&doc, id), start);
+        doc.undo();
+        assert!((length_now(&doc) - length).abs() < 1e-9);
     }
 }

@@ -22,6 +22,7 @@ pub mod model;
 pub mod modifiers;
 pub mod ops;
 pub mod polygon;
+pub mod pushpull;
 pub mod sample;
 pub mod sketch;
 pub mod slab;
@@ -37,8 +38,8 @@ pub use document::{Document, Step, StepId};
 pub use editmesh::EditMesh;
 pub use element::{
     Cut, Dimension, Element, ElementKind, FreeMesh, Grid, GridGroup, Guide, Hatch, HostPoint,
-    Level, Material, Opening, OpeningKind, ScheduleCategory, Sheet, Sketch, Slab, Source, Tag,
-    Underlay, View, ViewKind, ViewStyle, Viewport, Wall, Workplane,
+    Level, Material, Opening, OpeningFrame, OpeningKind, ScheduleCategory, Sheet, Sketch, Slab,
+    Source, Tag, Underlay, View, ViewKind, ViewStyle, Viewport, Wall, Workplane,
 };
 pub use id::ElementId;
 pub use joins::{wall_joins, WallEnds};

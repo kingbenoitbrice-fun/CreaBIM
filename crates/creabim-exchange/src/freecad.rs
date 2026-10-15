@@ -86,6 +86,10 @@ fn to_linear(c: f32) -> f32 {
 /// The model as a FreeCAD document.
 pub fn export_fcstd(model: &Model, label: &str) -> Result<Vec<u8>, ExchangeError> {
     let scene = creabim_geom::scene::drawn_elements(model);
+    // an element drawn in parts (a window's frame and glass, a wall's
+    // layers) is one object
+    let whole = creabim_geom::scene::element_meshes(&scene);
+    let mut seen = std::collections::HashSet::new();
     let mut groups: Vec<FcExportGroup> = Vec::new();
     let mut group_of: HashMap<&'static str, usize> = HashMap::new();
     let mut objects = Vec::new();
@@ -93,6 +97,10 @@ pub fn export_fcstd(model: &Model, label: &str) -> Result<Vec<u8>, ExchangeError
         let Some(e) = model.get(item.id) else {
             continue;
         };
+        if !seen.insert(item.id) {
+            continue;
+        }
+        let item_mesh = &whole[&item.id];
         let (group, ifc_type) = match &e.kind {
             ElementKind::Wall(_) => ("Walls", "Wall".to_string()),
             ElementKind::Slab(_) => ("Slabs", "Slab".to_string()),
@@ -116,8 +124,8 @@ pub fn export_fcstd(model: &Model, label: &str) -> Result<Vec<u8>, ExchangeError
         let mut ids: HashMap<(i64, i64, i64), u32> = HashMap::new();
         let mut mesh = FcMesh::default();
         let mut tri = Vec::new();
-        for &i in &item.mesh.indices {
-            let p = item.mesh.positions[i as usize];
+        for &i in &item_mesh.indices {
+            let p = item_mesh.positions[i as usize];
             let mm = [
                 p[0] as f64 * 1000.0,
                 p[1] as f64 * 1000.0,

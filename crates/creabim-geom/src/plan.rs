@@ -815,37 +815,7 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                     let Some(c) = Cut::of(o, w) else { continue };
                     if cut_v > c.v0 && cut_v < c.v1 {
                         gaps.push((c.u0, c.u1));
-                        match o.kind {
-                            OpeningKind::Window => {
-                                for s in [-t, 0.0, t] {
-                                    items.push(PlanItem::Line {
-                                        id: oid,
-                                        pen: Pen::Symbol,
-                                        a: at(c.u0, s),
-                                        b: at(c.u1, s),
-                                    });
-                                }
-                            }
-                            OpeningKind::Door => {
-                                let hinge = at(c.u0, t);
-                                let r = c.u1 - c.u0;
-                                let a0 = d.to_angle();
-                                items.push(PlanItem::Line {
-                                    id: oid,
-                                    pen: Pen::Symbol,
-                                    a: hinge,
-                                    b: hinge + n * r,
-                                });
-                                items.push(PlanItem::Arc {
-                                    id: oid,
-                                    pen: Pen::Symbol,
-                                    center: hinge,
-                                    radius: r,
-                                    start: a0,
-                                    end: a0 + std::f64::consts::FRAC_PI_2,
-                                });
-                            }
-                        }
+                        items.extend(opening_symbol(oid, o, w, &c, cut_v, &at));
                     }
                 }
                 gaps.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
@@ -1040,6 +1010,87 @@ pub fn guide_span(a: DVec2, b: DVec2) -> Option<(DVec2, DVec2)> {
 
 /// The plan of a shape with no simple footprint: its section at `z`,
 /// filled, and its edges below `z` in projection.
+/// A door or window in plan, where the plan cuts the wall at `cut_v` above
+/// its base: the frame members the cut passes through, and for a window
+/// the sill member below, the wall faces and the glass line; for a door
+/// its leaf drawn open and the swing it sweeps. `at(u, s)` is a point
+/// `u` along the wall and `s` across it.
+fn opening_symbol(
+    id: ElementId,
+    o: &creabim_core::Opening,
+    w: &creabim_core::Wall,
+    c: &Cut,
+    cut_v: f64,
+    at: &dyn Fn(f64, f64) -> DVec2,
+) -> Vec<PlanItem> {
+    use crate::opening::{opening_boxes, Fitted, Part};
+    let mut out = Vec::new();
+    let Some(f) = Fitted::of(o, w) else {
+        return out;
+    };
+    let z = cut_v - c.v0;
+    let line = |out: &mut Vec<PlanItem>, a: DVec2, b: DVec2| {
+        out.push(PlanItem::Line {
+            id,
+            pen: Pen::Symbol,
+            a,
+            b,
+        })
+    };
+    let rect = |out: &mut Vec<PlanItem>, u0: f64, u1: f64, s0: f64, s1: f64| {
+        out.push(PlanItem::Polygon {
+            id,
+            pen: Pen::Symbol,
+            points: vec![at(u0, s0), at(u1, s0), at(u1, s1), at(u0, s1)],
+        })
+    };
+    let boxes = opening_boxes(o, w);
+    for b in &boxes {
+        let (u0, u1) = (c.u0 + b.lo.x, c.u0 + b.hi.x);
+        let cut = b.lo.z < z && z < b.hi.z;
+        match b.part {
+            // the sill member shows below the cut
+            Part::Frame if cut || (o.kind == OpeningKind::Window && b.lo.z <= 1e-9) => {
+                rect(&mut out, u0, u1, b.lo.y, b.hi.y)
+            }
+            Part::Glass if cut => {
+                let s = (b.lo.y + b.hi.y) / 2.0;
+                line(&mut out, at(u0, s), at(u1, s));
+            }
+            _ => {}
+        }
+    }
+    match o.kind {
+        OpeningKind::Window => {
+            // the wall faces carry on across, over the sill
+            let t = w.thickness / 2.0;
+            for s in [-t, t] {
+                line(&mut out, at(c.u0, s), at(c.u1, s));
+            }
+        }
+        OpeningKind::Door => {
+            let Some(leaf) = boxes.iter().find(|b| b.part == Part::Leaf) else {
+                return out;
+            };
+            // the leaf turned open about its hinge on the frame's face
+            let (u, s) = (c.u0 + leaf.lo.x, leaf.hi.y);
+            let r = leaf.hi.x - leaf.lo.x;
+            rect(&mut out, u, u + f.leaf(), s, s + r);
+            let hinge = at(u, s);
+            let a0 = (at(u + 1.0, s) - hinge).to_angle();
+            out.push(PlanItem::Arc {
+                id,
+                pen: Pen::Symbol,
+                center: hinge,
+                radius: r,
+                start: a0,
+                end: a0 + std::f64::consts::FRAC_PI_2,
+            });
+        }
+    }
+    out
+}
+
 fn sliced_plan(model: &Model, item: &crate::scene::SceneItem, z: f64, items: &mut Vec<PlanItem>) {
     let mut cut: Vec<(DVec2, DVec2)> = Vec::new();
     for lp in crate::slice::slice(&item.mesh, z) {
