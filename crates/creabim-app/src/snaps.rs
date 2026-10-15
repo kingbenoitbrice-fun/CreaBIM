@@ -1,6 +1,7 @@
 //! Object snaps shared by every pane: ends, midpoints, intersections, points
 //! on edges, perpendicular feet, centres and quadrants, grid lines, guide
-//! lines and the axes through the point a line started from. Geometry is
+//! lines, the axes through the point a line started from, and alignment
+//! with the other points of the shape being drawn. Geometry is
 //! held as segments in some 3D space (the model for the 3D view, drawing
 //! coordinates with z = 0 for plans and sections) and compared on screen
 //! through a projection, so the same pixel tolerance applies however far the
@@ -32,6 +33,12 @@ pub enum SnapKind {
     /// Along the X or Y axis through the start point.
     AxisX,
     AxisY,
+    /// In line, across or along, with another point of the shape being
+    /// drawn (its first corner, an earlier one, or a point the pointer
+    /// rested on): see [`Alignment`].
+    Aligned,
+    /// Where two alignments cross, or an alignment crosses an edge.
+    AlignedCross,
     /// No object snap: the point under the pointer, rounded to the
     /// increment when that is on.
     Grid,
@@ -51,6 +58,8 @@ impl SnapKind {
             SnapKind::OnGridLine => "On grid/level",
             SnapKind::AxisX => "On X axis",
             SnapKind::AxisY => "On Y axis",
+            SnapKind::Aligned => "Aligned",
+            SnapKind::AlignedCross => "Aligned both ways",
             SnapKind::Grid => "",
         }
     }
@@ -88,6 +97,9 @@ pub struct SnapSettings {
     pub guides: bool,
     /// Square to the X and Y axes through where a line started.
     pub axis: bool,
+    /// In line with the other points of the shape being drawn, and where
+    /// two such alignments cross.
+    pub tracking: bool,
     /// Round free points to a 5 cm step.
     pub increment: bool,
 }
@@ -112,6 +124,7 @@ impl SnapSettings {
         grid_lines: true,
         guides: true,
         axis: true,
+        tracking: true,
         increment: true,
     };
 
@@ -133,6 +146,7 @@ impl SnapSettings {
             grid_lines: false,
             guides: false,
             axis: false,
+            tracking: false,
             increment: false,
             ..self
         }
@@ -152,6 +166,7 @@ impl SnapSettings {
                 SnapKind::Guide => self.guides,
                 SnapKind::OnGridLine => self.grid_lines,
                 SnapKind::AxisX | SnapKind::AxisY => self.axis,
+                SnapKind::Aligned | SnapKind::AlignedCross => self.tracking,
                 SnapKind::Grid => self.increment,
             }
     }
@@ -175,7 +190,7 @@ impl SnapSettings {
     }
 
     /// Each switch with its label, in the order the snap bar lists them.
-    pub fn switches(&mut self) -> [(&'static str, &mut bool); 11] {
+    pub fn switches(&mut self) -> [(&'static str, &mut bool); 12] {
         [
             ("Endpoint", &mut self.endpoint),
             ("Midpoint", &mut self.midpoint),
@@ -187,6 +202,7 @@ impl SnapSettings {
             ("Grid and level lines", &mut self.grid_lines),
             ("Guides", &mut self.guides),
             ("X/Y axis tracking", &mut self.axis),
+            ("Alignment with the shape's points", &mut self.tracking),
             ("5 cm increment", &mut self.increment),
         ]
     }
@@ -199,10 +215,11 @@ pub fn snap_bar(ui: &mut egui::Ui, s: &mut SnapSettings) {
     );
     let mut all = *s;
     let n = all.switches().iter().filter(|(_, v)| **v).count();
+    let total = all.switches().len();
     let text = match n {
-        11 => "All".to_string(),
         0 => "None".to_string(),
-        n => format!("{n} of 11"),
+        n if n == total => "All".to_string(),
+        n => format!("{n} of {total}"),
     };
     ui.add_enabled_ui(s.on, |ui| {
         egui::ComboBox::from_id_salt("snap_kinds")
@@ -234,6 +251,95 @@ pub struct Snap {
     pub kind: SnapKind,
     /// The element the snap lies on, if any.
     pub host: Option<ElementId>,
+}
+
+/// What an alignment line runs through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Through {
+    /// The point the line being drawn starts from: its X and Y axes.
+    From,
+    /// The first point of the shape being drawn.
+    Start,
+    /// Another point of the shape, numbered from 1.
+    Point(usize),
+    /// A point the pointer rested on while drawing.
+    Rested,
+    /// An edge the alignment crosses.
+    Edge,
+}
+
+/// One line a snapped point is held to: horizontal (along X) or vertical
+/// (along Y) through `at`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Line {
+    pub at: DVec3,
+    /// Along X (horizontal in a plan) or along Y.
+    pub along_x: bool,
+    pub through: Through,
+}
+
+impl Line {
+    fn axis(&self) -> DVec3 {
+        if self.along_x {
+            DVec3::X
+        } else {
+            DVec3::Y
+        }
+    }
+
+    /// The point of the line nearest `p`, at the line's height.
+    fn foot(&self, p: DVec3) -> DVec3 {
+        self.at + self.axis() * (p - self.at).dot(self.axis())
+    }
+
+    fn text(&self) -> String {
+        let dir = if self.along_x { "X" } else { "Y" };
+        match self.through {
+            Through::From => format!("on {dir} axis"),
+            Through::Start => "in line with the start".into(),
+            Through::Point(n) => format!("in line with point {n}"),
+            Through::Rested => "in line with a point".into(),
+            Through::Edge => "on edge".into(),
+        }
+    }
+}
+
+/// The alignments a tracked snap follows: one line, or two that cross.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Alignment {
+    pub lines: [Option<Line>; 2],
+}
+
+impl Alignment {
+    /// What the snap reads as: "On Y axis · in line with the start".
+    pub fn label(&self) -> String {
+        let parts: Vec<String> = self.lines.iter().flatten().map(Line::text).collect();
+        let mut text = parts.join(" · ");
+        if let Some(c) = text.get(0..1) {
+            text = c.to_uppercase() + &text[1..];
+        }
+        text
+    }
+}
+
+/// Points of the shape being drawn that the next point can line up with,
+/// with what each is, for [`Snapper::snap_tracked`].
+pub fn track_points(shape: &[DVec3], rested: &[DVec3]) -> Vec<(DVec3, Through)> {
+    let mut out: Vec<(DVec3, Through)> = vec![];
+    for (i, p) in shape.iter().enumerate() {
+        let through = if i == 0 {
+            Through::Start
+        } else {
+            Through::Point(i + 1)
+        };
+        out.push((*p, through));
+    }
+    for p in rested {
+        if !out.iter().any(|(q, _)| q.distance(*p) < 1e-6) {
+            out.push((*p, Through::Rested));
+        }
+    }
+    out
 }
 
 /// Where snap geometry came from, so whole families can be turned off.
@@ -564,6 +670,26 @@ impl Snapper {
         from: Option<DVec3>,
         free: Option<DVec3>,
     ) -> Option<Snap> {
+        self.snap_tracked(cfg, cursor, project, from, &[], free)
+            .map(|(s, _)| s)
+    }
+
+    /// Like [`Snapper::snap`], also lining the point up with `track`: the
+    /// other points of the shape being drawn (Revit's tracking, SketchUp's
+    /// inference). Horizontal and vertical lines through each are snapped
+    /// to, as are the X and Y axes through `from`; where two of those lines
+    /// cross, or one crosses an edge, is a snap point of its own. Point
+    /// snaps still come first. The alignment followed, if any, is returned
+    /// to draw.
+    pub fn snap_tracked(
+        &self,
+        cfg: &SnapSettings,
+        cursor: Pos2,
+        project: &dyn Fn(DVec3) -> Option<Pos2>,
+        from: Option<DVec3>,
+        track: &[(DVec3, Through)],
+        free: Option<DVec3>,
+    ) -> Option<(Snap, Option<Alignment>)> {
         let near = |p: DVec3| {
             project(p)
                 .map(|s| s.distance(cursor))
@@ -583,24 +709,101 @@ impl Snapper {
             .filter_map(|q| near(q.p).map(|d| (d + rank(q.kind) * 2.0, q)))
             .min_by(|a, b| a.0.total_cmp(&b.0));
         if let Some((_, q)) = best_point {
-            return Some(Snap {
-                p: q.p,
-                kind: q.kind,
-                host: q.host,
-            });
+            return Some((
+                Snap {
+                    p: q.p,
+                    kind: q.kind,
+                    host: q.host,
+                },
+                None,
+            ));
         }
         let segments = || self.segments.iter().filter(|s| cfg.takes(s.src));
+        // the alignment lines the pointer is near: the axes through the
+        // start of the line, then through each point of the shape
+        let mut lines: Vec<(f32, Line)> = vec![];
+        if let Some(free) = free {
+            let mut all: Vec<Line> = vec![];
+            if let (Some(f), true) = (from, cfg.allows(SnapKind::AxisX)) {
+                for along_x in [true, false] {
+                    all.push(Line {
+                        at: f,
+                        along_x,
+                        through: Through::From,
+                    });
+                }
+            }
+            if cfg.allows(SnapKind::Aligned) {
+                for (p, through) in track {
+                    if from.is_some_and(|f| f.distance(*p) < 1e-6) {
+                        continue;
+                    }
+                    for along_x in [true, false] {
+                        all.push(Line {
+                            at: *p,
+                            along_x,
+                            through: *through,
+                        });
+                    }
+                }
+            }
+            for l in all {
+                let foot = l.foot(free);
+                if let (Some(sp), Some(sf)) = (project(foot), project(free)) {
+                    let d = sp.distance(sf);
+                    if d < TOLERANCE && foot.distance(l.at) > 1e-3 {
+                        lines.push((d, l));
+                    }
+                }
+            }
+        }
+        // two alignments that cross near the pointer: one along X, one
+        // along Y, through different points at one height
+        if cfg.allows(SnapKind::AlignedCross) {
+            let mut best: Option<(f32, DVec3, Line, Line)> = None;
+            for (_, a) in lines.iter().filter(|(_, l)| l.along_x) {
+                for (_, b) in lines.iter().filter(|(_, l)| !l.along_x) {
+                    if a.at.distance(b.at) < 1e-6 || (a.at.z - b.at.z).abs() > 1e-6 {
+                        continue;
+                    }
+                    if a.through == Through::From && b.through == Through::From {
+                        continue;
+                    }
+                    let p = DVec3::new(b.at.x, a.at.y, a.at.z);
+                    if let Some(d) = near(p) {
+                        if best.is_none_or(|(bd, ..)| d < bd) {
+                            best = Some((d, p, *a, *b));
+                        }
+                    }
+                }
+            }
+            if let Some((_, p, a, b)) = best {
+                return Some((
+                    Snap {
+                        p,
+                        kind: SnapKind::AlignedCross,
+                        host: None,
+                    },
+                    Some(Alignment {
+                        lines: [Some(b), Some(a)],
+                    }),
+                ));
+            }
+        }
         if let (Some(f), true) = (from, cfg.allows(SnapKind::Perpendicular)) {
             for s in segments() {
                 let foot = closest_on_segment(s.a, s.b, f);
                 if foot.distance(f) > 1e-6 && (foot - s.a).length() > 1e-6 && near(foot).is_some() {
                     let along = (s.b - s.a).normalize();
                     if (foot - f).normalize().dot(along).abs() < 1e-6 {
-                        return Some(Snap {
-                            p: foot,
-                            kind: SnapKind::Perpendicular,
-                            host: s.host,
-                        });
+                        return Some((
+                            Snap {
+                                p: foot,
+                                kind: SnapKind::Perpendicular,
+                                host: s.host,
+                            },
+                            None,
+                        ));
                     }
                 }
             }
@@ -631,29 +834,91 @@ impl Snapper {
             }
         }
         if let Some((_, s)) = best {
-            return Some(s);
-        }
-        let step = cfg.step(self.grid);
-        // the X and Y axes through the start
-        if let (Some(f), Some(free), true) = (from, free, cfg.allows(SnapKind::AxisX)) {
-            for (axis, kind) in [(DVec3::X, SnapKind::AxisX), (DVec3::Y, SnapKind::AxisY)] {
-                let p = f + axis * (free - f).dot(axis);
-                if let (Some(sp), Some(sf)) = (project(p), project(free)) {
-                    if sp.distance(sf) < TOLERANCE && p.distance(f) > 1e-3 {
-                        let len = grid_round((p - f).dot(axis), step);
-                        return Some(Snap {
-                            p: f + axis * len,
-                            kind,
-                            host: None,
-                        });
-                    }
+            // an edge an alignment crosses there: the point where it does
+            if cfg.allows(SnapKind::AlignedCross) && s.kind == SnapKind::OnEdge {
+                let hit = lines
+                    .iter()
+                    .filter_map(|(_, l)| {
+                        let seg = self.segments.iter().find(|g| {
+                            g.src == Source::Edge
+                                && closest_on_segment(g.a, g.b, s.p).distance(s.p) < 1e-6
+                        })?;
+                        let (a, b) = (l.at.truncate(), (l.at + l.axis()).truncate());
+                        let p = crossing(a, b, seg.a.truncate(), seg.b.truncate(), true, false)?;
+                        let p = p.extend(l.at.z);
+                        (closest_on_segment(seg.a, seg.b, p).distance(p) < 1e-6).then_some(())?;
+                        Some((near(p)?, p, *l, seg.host))
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0));
+                if let Some((_, p, l, host)) = hit {
+                    let edge = Line {
+                        at: p,
+                        along_x: !l.along_x,
+                        through: Through::Edge,
+                    };
+                    return Some((
+                        Snap {
+                            p,
+                            kind: SnapKind::AlignedCross,
+                            host,
+                        },
+                        Some(Alignment {
+                            lines: [Some(l), Some(edge)],
+                        }),
+                    ));
                 }
             }
+            return Some((s, None));
         }
-        free.map(|p| Snap {
-            p: DVec3::new(grid_round(p.x, step), grid_round(p.y, step), p.z),
-            kind: SnapKind::Grid,
-            host: None,
+        let step = cfg.step(self.grid);
+        // the nearest single alignment: the axes through the start come
+        // first when as near
+        let nearest = lines.iter().min_by(|a, b| {
+            let bias = |l: &Line| if l.through == Through::From { 0.5 } else { 0.0 };
+            (a.0 - bias(&a.1)).total_cmp(&(b.0 - bias(&b.1)))
+        });
+        if let (Some((_, l)), Some(free)) = (nearest, free) {
+            let axis = l.axis();
+            let p = match (l.through, from) {
+                // a round length from the start
+                (Through::From, _) => l.at + axis * grid_round((free - l.at).dot(axis), step),
+                // a round distance from where the line starts
+                (_, Some(f)) => {
+                    let foot = l.foot(free);
+                    let along = grid_round((foot - f).dot(axis), step);
+                    l.foot(f) + axis * along
+                }
+                (_, None) => {
+                    let foot = l.foot(free);
+                    l.at + axis * grid_round((foot - l.at).dot(axis), step)
+                }
+            };
+            let kind = match (l.through, l.along_x) {
+                (Through::From, true) => SnapKind::AxisX,
+                (Through::From, false) => SnapKind::AxisY,
+                _ => SnapKind::Aligned,
+            };
+            let align = (kind == SnapKind::Aligned).then_some(Alignment {
+                lines: [Some(*l), None],
+            });
+            return Some((
+                Snap {
+                    p,
+                    kind,
+                    host: None,
+                },
+                align,
+            ));
+        }
+        free.map(|p| {
+            (
+                Snap {
+                    p: DVec3::new(grid_round(p.x, step), grid_round(p.y, step), p.z),
+                    kind: SnapKind::Grid,
+                    host: None,
+                },
+                None,
+            )
         })
     }
 }
@@ -840,6 +1105,23 @@ pub fn face_centres(mesh: &creabim_geom::mesh::TriMesh) -> Vec<DVec3> {
 /// feet, a circle for centres, a diamond for quadrants, a small circle on
 /// edges. Axis snaps draw their axis from `from`.
 pub fn draw(painter: &Painter, snap: Snap, at: Pos2, from: Option<Pos2>) {
+    let Some(c) = marker(painter, snap, at, from) else {
+        return;
+    };
+    let label = snap.kind.label();
+    if !label.is_empty() {
+        painter.text(
+            at + egui::vec2(10.0, 10.0),
+            egui::Align2::LEFT_TOP,
+            label,
+            egui::FontId::proportional(12.0),
+            c,
+        );
+    }
+}
+
+/// The marker of [`draw`] without its label; its colour, if it drew one.
+fn marker(painter: &Painter, snap: Snap, at: Pos2, from: Option<Pos2>) -> Option<Color32> {
     let c = match snap.kind {
         SnapKind::Endpoint | SnapKind::Intersection => Color32::from_rgb(20, 150, 60),
         SnapKind::Midpoint => Color32::from_rgb(20, 120, 200),
@@ -848,7 +1130,8 @@ pub fn draw(painter: &Painter, snap: Snap, at: Pos2, from: Option<Pos2>) {
         SnapKind::OnEdge | SnapKind::Guide | SnapKind::OnGridLine => Color32::from_rgb(200, 40, 40),
         SnapKind::AxisX => Color32::from_rgb(220, 50, 50),
         SnapKind::AxisY => Color32::from_rgb(40, 160, 60),
-        SnapKind::Grid => return,
+        SnapKind::Aligned | SnapKind::AlignedCross => TRACK,
+        SnapKind::Grid => return None,
     };
     let s = Stroke::new(2.0, c);
     let r = 6.0;
@@ -899,6 +1182,14 @@ pub fn draw(painter: &Painter, snap: Snap, at: Pos2, from: Option<Pos2>) {
         SnapKind::OnEdge | SnapKind::Guide | SnapKind::OnGridLine => {
             painter.circle_stroke(at, r * 0.7, s);
         }
+        SnapKind::Aligned => {
+            painter.circle_filled(at, 3.0, c);
+        }
+        SnapKind::AlignedCross => {
+            painter.line_segment([at + egui::vec2(-r, -r), at + egui::vec2(r, r)], s);
+            painter.line_segment([at + egui::vec2(-r, r), at + egui::vec2(r, -r)], s);
+            painter.circle_stroke(at, r * 0.75, Stroke::new(1.5, c));
+        }
         SnapKind::AxisX | SnapKind::AxisY => {
             if let Some(f) = from {
                 painter.add(egui::Shape::dashed_line(
@@ -912,16 +1203,61 @@ pub fn draw(painter: &Painter, snap: Snap, at: Pos2, from: Option<Pos2>) {
         }
         SnapKind::Grid => {}
     }
-    let label = snap.kind.label();
-    if !label.is_empty() {
-        painter.text(
-            at + egui::vec2(10.0, 10.0),
-            egui::Align2::LEFT_TOP,
-            label,
-            egui::FontId::proportional(12.0),
-            c,
-        );
+    Some(c)
+}
+
+/// The colour of alignment tracking: its dashed lines, marker and label.
+const TRACK: Color32 = Color32::from_rgb(214, 96, 20);
+
+/// Draw a snap with the alignment it follows, if any: a dashed line from
+/// each point it lines up with to the snapped point, a small cross on that
+/// point, and the alignment's label instead of the snap's.
+pub fn draw_tracked(
+    painter: &Painter,
+    project: &dyn Fn(DVec3) -> Option<Pos2>,
+    snap: Snap,
+    align: Option<Alignment>,
+    at: Pos2,
+    from: Option<Pos2>,
+) {
+    // (an axis from the start is one of the alignment's lines, drawn from it)
+    let Some(align) = align else {
+        return draw(painter, snap, at, from);
+    };
+    let line = Stroke::new(1.2, TRACK);
+    for l in align.lines.iter().flatten() {
+        if l.through == Through::Edge {
+            continue;
+        }
+        let Some(a) = project(l.at) else { continue };
+        // a little past the snapped point, so the line reads as running on
+        let d = (at - a).normalized();
+        painter.add(egui::Shape::dashed_line(
+            &[a, at + d * 14.0],
+            line,
+            5.0,
+            4.0,
+        ));
+        let k = 3.5;
+        painter.line_segment([a + egui::vec2(-k, -k), a + egui::vec2(k, k)], line);
+        painter.line_segment([a + egui::vec2(-k, k), a + egui::vec2(k, -k)], line);
     }
+    marker(painter, snap, at, None);
+    // the label says what it lines up with
+    let label = align.label();
+    let galley = painter.layout_no_wrap(label, egui::FontId::proportional(12.0), TRACK);
+    // below right of the point, or left of it near the pane's right edge
+    let clip = painter.clip_rect();
+    let mut pos = at + egui::vec2(12.0, 10.0);
+    if pos.x + galley.size().x > clip.right() - 4.0 {
+        pos.x = at.x - 12.0 - galley.size().x;
+    }
+    if pos.y + galley.size().y > clip.bottom() - 4.0 {
+        pos.y = at.y - 10.0 - galley.size().y;
+    }
+    let bg = egui::Rect::from_min_size(pos, galley.size()).expand(2.0);
+    painter.rect_filled(bg, 3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 200));
+    painter.galley(pos, galley, TRACK);
 }
 
 #[cfg(test)]
@@ -1008,6 +1344,121 @@ mod tests {
             .unwrap();
         assert_eq!(hit.kind, SnapKind::Grid);
         assert!((hit.p.x - 3.0).abs() < 1e-9 && (hit.p.y - 1.05).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_closing_corner_lines_up_with_the_start_and_the_last_point() {
+        // an outline begun at (0, 0), now at (4, 3): the pointer near (4, 0)
+        let s = Snapper::new();
+        let shape = [DVec3::ZERO, DVec3::new(2.0, 3.0, 0.0)];
+        let from = DVec3::new(4.0, 3.0, 0.0);
+        let mut pts = shape.to_vec();
+        pts.push(from);
+        let track = track_points(&pts, &[]);
+        let free = DVec3::new(4.03, 0.04, 0.0);
+        let (hit, align) = s
+            .snap_tracked(
+                &ALL,
+                flat(free).unwrap(),
+                &flat,
+                Some(from),
+                &track,
+                Some(free),
+            )
+            .unwrap();
+        assert_eq!(hit.kind, SnapKind::AlignedCross);
+        assert!(hit.p.distance(DVec3::new(4.0, 0.0, 0.0)) < 1e-9);
+        let label = align.unwrap().label();
+        assert!(
+            label.contains("Y axis") && label.contains("start"),
+            "{label}"
+        );
+        // further up the Y axis only the axis holds it
+        let free = DVec3::new(4.02, 1.51, 0.0);
+        let (hit, _) = s
+            .snap_tracked(
+                &ALL,
+                flat(free).unwrap(),
+                &flat,
+                Some(from),
+                &track,
+                Some(free),
+            )
+            .unwrap();
+        assert_eq!(hit.kind, SnapKind::AxisY);
+        // in line with an earlier point, away from the axes
+        let free = DVec3::new(2.04, -1.33, 0.0);
+        let (hit, align) = s
+            .snap_tracked(
+                &ALL,
+                flat(free).unwrap(),
+                &flat,
+                Some(from),
+                &track,
+                Some(free),
+            )
+            .unwrap();
+        assert_eq!(hit.kind, SnapKind::Aligned);
+        assert!((hit.p.x - 2.0).abs() < 1e-9);
+        assert!(align.unwrap().label().contains("point 2"));
+        // the tracking switch turns it off, leaving the free point
+        let off = SnapSettings {
+            tracking: false,
+            ..ALL
+        };
+        let (hit, align) = s
+            .snap_tracked(
+                &off,
+                flat(free).unwrap(),
+                &flat,
+                Some(from),
+                &track,
+                Some(free),
+            )
+            .unwrap();
+        assert_eq!(hit.kind, SnapKind::Grid);
+        assert!(align.is_none());
+    }
+
+    #[test]
+    fn an_alignment_crossing_an_edge_snaps_where_it_crosses() {
+        let mut s = Snapper::new();
+        // a wall face along y = 5 from x 0 to 10
+        s.add_segment(
+            DVec3::new(0.0, 5.0, 0.0),
+            DVec3::new(10.0, 5.0, 0.0),
+            Source::Edge,
+            None,
+        );
+        let track = track_points(&[DVec3::new(3.0, 0.0, 0.0)], &[]);
+        let from = DVec3::new(8.0, 1.0, 0.0);
+        let free = DVec3::new(3.04, 5.02, 0.0);
+        let (hit, _) = s
+            .snap_tracked(
+                &ALL,
+                flat(free).unwrap(),
+                &flat,
+                Some(from),
+                &track,
+                Some(free),
+            )
+            .unwrap();
+        assert_eq!(hit.kind, SnapKind::AlignedCross);
+        assert!(hit.p.distance(DVec3::new(3.0, 5.0, 0.0)) < 1e-9);
+        // point snaps still come first
+        let free = DVec3::new(0.03, 5.02, 0.0);
+        let hit = s
+            .snap_tracked(
+                &ALL,
+                flat(free).unwrap(),
+                &flat,
+                Some(from),
+                &track,
+                Some(free),
+            )
+            .unwrap()
+            .0;
+        assert_eq!(hit.kind, SnapKind::Endpoint);
     }
 
     /// A model with one 2 × 4 m mass whose corners are at x 19..21, y 3..7.

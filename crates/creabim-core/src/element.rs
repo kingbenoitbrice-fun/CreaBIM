@@ -1029,6 +1029,10 @@ pub struct View {
     /// Another level drawn faintly under a plan, to trace and snap to.
     #[serde(default, skip_serializing_if = "Underlay::is_none")]
     pub underlay: Underlay,
+    /// Where the user put the view in its group of the project browser, by
+    /// dragging it; `None` keeps it in the automatic order (plans by level).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_order: Option<u32>,
 }
 
 /// What a plan shows faintly under its own level (Revit's underlay).
@@ -1143,6 +1147,7 @@ impl View {
             style: ViewStyle::HiddenLine,
             hidden: ViewHidden::default(),
             underlay: Underlay::None,
+            browser_order: None,
         }
     }
 
@@ -1158,6 +1163,7 @@ impl View {
             style: ViewStyle::HiddenLine,
             hidden: ViewHidden::default(),
             underlay: Underlay::None,
+            browser_order: None,
         }
     }
 }
@@ -1170,6 +1176,7 @@ impl View {
             style: ViewStyle::Shaded,
             hidden: ViewHidden::default(),
             underlay: Underlay::None,
+            browser_order: None,
         }
     }
 
@@ -1180,6 +1187,7 @@ impl View {
             style: ViewStyle::HiddenLine,
             hidden: ViewHidden::default(),
             underlay: Underlay::None,
+            browser_order: None,
         }
     }
 
@@ -1283,6 +1291,23 @@ mod tests {
         assert_eq!(serde_json::from_str::<HostPoint>(&text).unwrap(), on);
         let free = serde_json::to_string(&HostPoint::free(DVec2::ONE)).unwrap();
         assert!(!free.contains("body"));
+    }
+
+    #[test]
+    fn views_from_older_files_keep_the_automatic_browser_order() {
+        let mut v = View::schedule(ScheduleCategory::ALL[0]);
+        let text = serde_json::to_string(&v).unwrap();
+        assert!(
+            !text.contains("browser_order"),
+            "nothing written when automatic"
+        );
+        assert_eq!(
+            serde_json::from_str::<View>(&text).unwrap().browser_order,
+            None
+        );
+        v.browser_order = Some(3);
+        let text = serde_json::to_string(&v).unwrap();
+        assert_eq!(serde_json::from_str::<View>(&text).unwrap(), v);
     }
 
     #[test]
