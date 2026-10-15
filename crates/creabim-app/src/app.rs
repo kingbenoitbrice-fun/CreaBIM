@@ -23,6 +23,8 @@ use eframe::egui_wgpu;
 use glam::{DVec2, DVec3, Vec2 as GVec2, Vec3 as GVec3};
 use std::collections::HashMap;
 
+#[path = "assemblies.rs"]
+mod assemblies;
 #[path = "gridvis.rs"]
 mod gridvis;
 #[path = "levelsui.rs"]
@@ -148,6 +150,8 @@ pub struct CreaBimApp {
     shell: shell::Shell,
     /// The material browser.
     mat: materials::MaterialsUi,
+    /// The assembly editor.
+    asm: assemblies::AssembliesUi,
     /// The Levels manager and the Project units dialog.
     levels: levelsui::LevelsUi,
     /// Orbit about the selection rather than the middle of the view.
@@ -202,6 +206,7 @@ impl CreaBimApp {
             recent: crate::files::Recent::load(),
             shell: Default::default(),
             mat: Default::default(),
+            asm: Default::default(),
             levels: Default::default(),
             orbit_selection: false,
             rect_3d: None,
@@ -3266,7 +3271,28 @@ impl CreaBimApp {
                 }
             }
             ElementKind::Wall(w) => {
-                if num(ui, "Thickness", &mut w.thickness, 0.02, 2.0) {
+                if self.assembly_combo(ui, creabim_core::AssemblyUse::Wall, &mut w.assembly) {
+                    label = "Wall assembly"
+                }
+                let layered = w.assembly.is_some_and(|a| {
+                    matches!(
+                        self.doc.model().get(a).map(|e| &e.kind),
+                        Some(ElementKind::Assembly(_))
+                    )
+                });
+                if layered {
+                    ui.label(format!(
+                        "Thickness {}, from its layers",
+                        crate::units::len(w.thickness)
+                    ));
+                    if ui
+                        .checkbox(&mut w.flip, "Exterior on the left")
+                        .on_hover_text("Which face the assembly's first (exterior) layer is on, looking from the wall's start to its end")
+                        .changed()
+                    {
+                        label = "Flip wall"
+                    }
+                } else if num(ui, "Thickness", &mut w.thickness, 0.02, 2.0) {
                     label = "Wall thickness"
                 }
                 if num(ui, "Height", &mut w.height, 0.1, 50.0) {
@@ -3275,7 +3301,7 @@ impl CreaBimApp {
                 if num(ui, "Base offset", &mut w.base_offset, -10.0, 50.0) {
                     label = "Wall base offset"
                 }
-                if self.material_combo(ui, &mut w.material) {
+                if !layered && self.material_combo(ui, &mut w.material) {
                     label = "Wall material"
                 }
                 ui.label(format!("Length {}", crate::units::len(w.length())));
@@ -3298,8 +3324,22 @@ impl CreaBimApp {
                 }
             }
             ElementKind::Slab(s) => {
+                if self.assembly_combo(ui, creabim_core::AssemblyUse::Floor, &mut s.assembly) {
+                    label = "Slab assembly"
+                }
+                let layered = s.assembly.is_some_and(|a| {
+                    matches!(
+                        self.doc.model().get(a).map(|e| &e.kind),
+                        Some(ElementKind::Assembly(_))
+                    )
+                });
                 let mut thickness = s.thickness;
-                if num(ui, "Thickness", &mut thickness, 0.02, 3.0) {
+                if layered {
+                    ui.label(format!(
+                        "Thickness {}, from its layers",
+                        crate::units::len(s.thickness)
+                    ));
+                } else if num(ui, "Thickness", &mut thickness, 0.02, 3.0) {
                     s.set_thickness(thickness, self.plan.slab_keep_bottom);
                     label = "Slab thickness"
                 }
@@ -3323,7 +3363,7 @@ impl CreaBimApp {
                     ))
                     .weak(),
                 );
-                if self.material_combo(ui, &mut s.material) {
+                if !layered && self.material_combo(ui, &mut s.material) {
                     label = "Slab material"
                 }
                 let arcs = s.bulges.iter().filter(|b| b.abs() > 1e-9).count();
@@ -3580,6 +3620,9 @@ impl CreaBimApp {
                 if ui.button("Open the view itself").clicked() {
                     self.active_view = Some(vp.view);
                 }
+            }
+            ElementKind::Assembly(_) => {
+                self.assembly_properties(ui, id);
             }
             ElementKind::Material(m) => {
                 materials::preview(ui, m, 72.0);
@@ -4009,11 +4052,19 @@ impl CreaBimApp {
             | ElementKind::Roof(_)
             | ElementKind::Stair(_)
             | ElementKind::Railing(_)) => {
+                if let ElementKind::Roof(r) = k {
+                    if self.assembly_combo(ui, creabim_core::AssemblyUse::Roof, &mut r.assembly) {
+                        label = "Roof assembly";
+                    }
+                }
+                let layered = matches!(k, ElementKind::Roof(r) if r.assembly.is_some_and(|a| {
+                    matches!(self.doc.model().get(a).map(|e| &e.kind), Some(ElementKind::Assembly(_)))
+                }));
                 let l = crate::memberstool::properties(ui, self.doc.model(), k);
                 if !l.is_empty() {
                     label = l;
                 }
-                if let Some(m) = creabim_core::members::material_mut(k) {
+                if let Some(m) = creabim_core::members::material_mut(k).filter(|_| !layered) {
                     if self.material_combo(ui, m) {
                         label = "Material";
                     }
@@ -4056,6 +4107,11 @@ impl CreaBimApp {
             }
         }
         if !label.is_empty() {
+            // a layered element is always as thick as its layers
+            let slot = creabim_core::assembly::assembly_slot(&edited).flatten();
+            if slot.is_some() {
+                creabim_core::assembly::set_assembly(self.doc.model(), &mut edited, slot);
+            }
             let r = self.doc.edit_merged(id, label, |e| *e = edited.clone());
             self.report(r, format!("{label}."));
         }
@@ -4246,6 +4302,7 @@ impl eframe::App for CreaBimApp {
         }
         self.open_view_menu();
         self.materials_window(&ctx);
+        self.assemblies_window(&ctx);
         self.levels_window(&ctx);
         self.units_window(&ctx);
         // a plan in its own window keeps egui's menus
@@ -4460,6 +4517,7 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Sheet(_) => "sheet",
         ElementKind::Viewport(_) => "placed view",
         ElementKind::Material(_) => "material",
+        ElementKind::Assembly(_) => "assembly",
         ElementKind::Column(_) => "column",
         ElementKind::Beam(_) => "beam",
         ElementKind::Roof(_) => "roof",

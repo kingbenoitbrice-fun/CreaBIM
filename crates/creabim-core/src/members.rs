@@ -233,6 +233,11 @@ pub struct Roof {
     pub edge: usize,
     #[serde(default)]
     pub material: Option<ElementId>,
+    /// The layered assembly the roof is built of, layers listed from the
+    /// top down, each measured square to the slope. With one, the roof's
+    /// thickness is the assembly's total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assembly: Option<ElementId>,
 }
 
 /// One flat piece of a roof's underside: its outline in plan and the plane
@@ -275,6 +280,7 @@ impl Roof {
             base_offset: 0.0,
             edge,
             material: None,
+            assembly: None,
         }
     }
 

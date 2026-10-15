@@ -238,6 +238,8 @@ mod tests {
                 height: 3.0,
                 base_offset: 0.0,
                 material: None,
+                assembly: None,
+                flip: false,
             }),
         )
     }

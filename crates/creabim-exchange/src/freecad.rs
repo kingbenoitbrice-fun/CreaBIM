@@ -85,8 +85,9 @@ fn to_linear(c: f32) -> f32 {
 
 /// The model as a FreeCAD document.
 pub fn export_fcstd(model: &Model, label: &str) -> Result<Vec<u8>, ExchangeError> {
-    let scene = creabim_geom::scene::drawn_scene(model);
-    // an element drawn in parts (a window's frame and glass) is one object
+    let scene = creabim_geom::scene::drawn_elements(model);
+    // an element drawn in parts (a window's frame and glass, a wall's
+    // layers) is one object
     let whole = creabim_geom::scene::element_meshes(&scene);
     let mut seen = std::collections::HashSet::new();
     let mut groups: Vec<FcExportGroup> = Vec::new();

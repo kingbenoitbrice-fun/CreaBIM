@@ -134,6 +134,8 @@ pub fn fit(
                 height: hi.z - lo.z,
                 base_offset: lo.z - elev,
                 material,
+                assembly: None,
+                flip: false,
             }))
         }
         Assign::Slab => {
@@ -163,6 +165,7 @@ pub fn fit(
                 material,
                 top_offset: hi.z - elevation,
                 bulges: vec![],
+                assembly: None,
             }))
         }
         Assign::Door | Assign::Window => {

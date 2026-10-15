@@ -45,6 +45,7 @@ impl Icon {
             "IfcColumn" | "IfcPile" => Icon::Column,
             "IfcBeam" | "IfcMember" => Icon::Beam,
             "IfcMaterial" => Icon::Material,
+            "IfcMaterialLayerSet" => Icon::Slab,
             "View" => Icon::Plan,
             "Sheet" => Icon::Sheet,
             "Viewport" => Icon::Viewport,

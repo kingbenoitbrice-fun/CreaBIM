@@ -55,11 +55,17 @@ impl LiveEdit {
     /// previous frame's version.
     pub fn update(&mut self, doc: &mut Document, changed: Vec<Element>) -> Result<(), ModelError> {
         self.cancel(doc);
+        let mut changed = changed;
+        // walls joined to a moved wall stretch to stay joined
+        let follow = creabim_core::joins::follow(doc.model(), &mut changed);
         let mut tx = Transaction::new(self.label.clone());
         for (o, n) in self.originals.iter().zip(changed) {
             if *o != n {
                 tx = tx.replace(o.clone(), n);
             }
+        }
+        for (o, n) in follow {
+            tx = tx.replace(o, n);
         }
         if tx.ops.is_empty() {
             return Ok(());

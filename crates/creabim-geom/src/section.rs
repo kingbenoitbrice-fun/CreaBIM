@@ -87,7 +87,8 @@ pub fn section_view_at(
     items.extend(image);
     items.extend(lines);
 
-    // Cut fill, drawn over the projection.
+    // Cut fill, drawn over the projection; layered elements layer by layer.
+    let mut layers = vec![];
     if cut {
         for s in &scene {
             for loop_ in cut_loops(s, &frame) {
@@ -95,16 +96,23 @@ pub fn section_view_at(
                 if pts.iter().all(|p| p.x < -1e-6 || p.x > frame.length + 1e-6) {
                     continue;
                 }
-                items.push(PlanItem::Polygon {
-                    id: s.id,
-                    pen: Pen::Cut,
-                    points: pts,
-                });
+                match s.layer {
+                    Some(layer) => layers.push(crate::plan::CutPiece {
+                        id: s.id,
+                        points: pts,
+                        layer: Some(layer),
+                    }),
+                    None => items.push(PlanItem::Polygon {
+                        id: s.id,
+                        pen: Pen::Cut,
+                        points: pts,
+                    }),
+                }
             }
         }
     }
 
-    crate::plan::clean_up_cuts(model, &mut items);
+    crate::plan::clean_up_pieces(model, &mut items, layers);
 
     // Sketches between the cut plane and the far edge of the view
     for e in model.iter() {

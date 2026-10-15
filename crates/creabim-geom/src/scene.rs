@@ -1,5 +1,5 @@
 use crate::{triangulate::triangulate, wall::wall_mesh, TriMesh};
-use creabim_core::{csg, BoolOp, ElementId, ElementKind, Model, Opening};
+use creabim_core::{assembly, csg, BoolOp, Element, ElementId, ElementKind, Model, Opening};
 use glam::{DVec2, DVec3};
 
 /// Roughness, metallic and opacity of an element without a material.
@@ -16,9 +16,128 @@ pub struct SceneItem {
     /// A cutter: drawn as a see-through outline in 3D, left out of
     /// drawings and exports, but still clickable.
     pub ghost: bool,
+    /// For one layer of a layered wall, slab or roof: which layer. A
+    /// layered element is one item per layer, all with its id.
+    pub layer: Option<LayerPart>,
     /// A look of its own over the element's material, by name: a
     /// window's glass, a door's handle.
     pub finish: Option<&'static str>,
+}
+
+/// Which layer of its element's assembly a scene item is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerPart {
+    pub index: usize,
+    pub material: Option<ElementId>,
+    pub function: creabim_core::LayerFunction,
+    pub core: bool,
+}
+
+impl LayerPart {
+    fn of(b: &assembly::Band) -> Self {
+        Self {
+            index: b.index,
+            material: b.material,
+            function: b.function,
+            core: b.core,
+        }
+    }
+}
+
+/// Default colours for layers with no material, by function.
+fn layer_color(f: creabim_core::LayerFunction, plain: [f32; 3]) -> [f32; 3] {
+    use creabim_core::LayerFunction as F;
+    match f {
+        F::Insulation => [0.93, 0.86, 0.45],
+        F::Membrane => [0.25, 0.27, 0.30],
+        F::Finish => [0.92, 0.91, 0.88],
+        _ => plain,
+    }
+}
+
+/// The solid of each layer of a layered element, with its look; air gaps
+/// are left empty. `None` for an element that isn't layered.
+fn layer_items(
+    model: &Model,
+    e: &Element,
+    joins: &std::collections::HashMap<ElementId, creabim_core::WallEnds>,
+    plain: [f32; 3],
+) -> Option<Vec<SceneItem>> {
+    let (_, a) = assembly::assembly_of(model, e)?;
+    let parts: Vec<(assembly::Band, TriMesh)> = match &e.kind {
+        ElementKind::Wall(w) => {
+            let level = model.level(w.level)?;
+            let openings: Vec<&Opening> = model
+                .dependents(e.id)
+                .into_iter()
+                .filter_map(|d| match &model.get(d)?.kind {
+                    ElementKind::Opening(o) => Some(o),
+                    _ => None,
+                })
+                .collect();
+            let ends = joins.get(&e.id).copied().unwrap_or_default();
+            assembly::wall_bands(a, w)
+                .into_iter()
+                .map(|b| {
+                    let m = crate::wall::wall_layer_mesh(
+                        w,
+                        level.elevation,
+                        &openings,
+                        &ends,
+                        (b.s0, b.s1),
+                        b.core,
+                    );
+                    (b, m)
+                })
+                .collect()
+        }
+        ElementKind::Slab(s) => {
+            let level = model.level(s.level)?;
+            let top = s.top(level.elevation);
+            let outline = s.outline();
+            assembly::depth_bands(a, s.thickness)
+                .into_iter()
+                .map(|b| (b, slab_mesh(&outline, top - b.s0, b.s1 - b.s0)))
+                .collect()
+        }
+        ElementKind::Roof(r) => {
+            let base = r.base(model);
+            // layers are square to the slope; upright they are thicker
+            let k = r.vertical_thickness() / r.thickness.max(1e-9);
+            let tv = r.vertical_thickness();
+            assembly::depth_bands(a, r.thickness)
+                .into_iter()
+                .map(|b| {
+                    let m = crate::members::roof_layer_mesh(r, base, tv - b.s1 * k, tv - b.s0 * k);
+                    (b, m)
+                })
+                .collect()
+        }
+        _ => return None,
+    };
+    Some(
+        parts
+            .into_iter()
+            .filter(|(b, _)| b.function != creabim_core::LayerFunction::AirGap)
+            .map(|(b, mesh)| {
+                let look = b.material.and_then(|m| match &model.get(m)?.kind {
+                    ElementKind::Material(m) => Some((m.color, m.surface())),
+                    _ => None,
+                });
+                let (color, surface) =
+                    look.unwrap_or((layer_color(b.function, plain), PLAIN_SURFACE));
+                SceneItem {
+                    id: e.id,
+                    mesh,
+                    color,
+                    surface,
+                    ghost: false,
+                    layer: Some(LayerPart::of(&b)),
+                    finish: None,
+                }
+            })
+            .collect(),
+    )
 }
 
 /// The lines of every sketch, in model coordinates: (sketch, from, to).
@@ -43,6 +162,15 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
     let mut out = Vec::new();
     let joins = creabim_core::wall_joins(model);
     for e in model.iter() {
+        let plain = match &e.kind {
+            ElementKind::Wall(_) => [0.86, 0.84, 0.80],
+            ElementKind::Slab(_) => [0.70, 0.70, 0.72],
+            _ => [0.66, 0.34, 0.26],
+        };
+        if let Some(layers) = layer_items(model, e, &joins, plain) {
+            out.extend(layers);
+            continue;
+        }
         let (mesh, color) = match &e.kind {
             ElementKind::Wall(w) => {
                 let Some(level) = model.level(w.level) else {
@@ -97,6 +225,7 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             | ElementKind::Sheet(_)
             | ElementKind::Viewport(_)
             | ElementKind::Material(_)
+            | ElementKind::Assembly(_)
             | ElementKind::Dimension(_)
             | ElementKind::Tag(_)
             | ElementKind::Note(_)
@@ -124,6 +253,7 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             color,
             surface,
             ghost: false,
+            layer: None,
             finish: None,
         });
     }
@@ -136,6 +266,43 @@ pub fn drawn_scene(model: &Model) -> Vec<SceneItem> {
     let mut s = build_scene(model);
     s.retain(|i| !i.ghost);
     s
+}
+
+/// One item per element, a layered element's layers in one mesh with its
+/// core's look: for exports that take one shape per element.
+pub fn merged(items: Vec<SceneItem>) -> Vec<SceneItem> {
+    let mut out: Vec<SceneItem> = Vec::with_capacity(items.len());
+    let mut at: std::collections::HashMap<ElementId, usize> = std::collections::HashMap::new();
+    for item in items {
+        match at.get(&item.id) {
+            Some(&i) => {
+                let o = &mut out[i];
+                o.mesh.append(&item.mesh);
+                // the first core layer gives the look
+                if item.layer.is_some_and(|l| l.core) && !o.layer.is_some_and(|l| l.core) {
+                    (o.color, o.surface, o.layer) = (item.color, item.surface, item.layer);
+                }
+            }
+            None => {
+                at.insert(item.id, out.len());
+                out.push(item);
+            }
+        }
+    }
+    for o in &mut out {
+        o.layer = None;
+    }
+    out
+}
+
+/// [`build_scene`] with one item per element.
+pub fn element_scene(model: &Model) -> Vec<SceneItem> {
+    merged(build_scene(model))
+}
+
+/// [`drawn_scene`] with one item per element.
+pub fn drawn_elements(model: &Model) -> Vec<SceneItem> {
+    merged(drawn_scene(model))
 }
 
 /// Every cut in the model, in order: (target, cutter, operation).
@@ -164,18 +331,26 @@ fn apply_cuts(model: &Model, items: &mut [SceneItem]) {
     if cuts.is_empty() {
         return;
     }
-    let original: std::collections::HashMap<ElementId, TriMesh> = cuts
-        .iter()
-        .filter_map(|(_, c, _)| {
-            let item = items.iter().find(|i| i.id == *c)?;
-            Some((*c, item.mesh.clone()))
-        })
-        .collect();
+    // a layered cutter cuts with all its layers
+    let mut original: std::collections::HashMap<ElementId, TriMesh> =
+        std::collections::HashMap::new();
+    for (_, c, _) in &cuts {
+        if original.contains_key(c) {
+            continue;
+        }
+        let mut tool = TriMesh::default();
+        for i in items.iter().filter(|i| i.id == *c) {
+            tool.append(&i.mesh);
+        }
+        if !tool.is_empty() {
+            original.insert(*c, tool);
+        }
+    }
     for (target, cutter, op) in &cuts {
         let Some(tool) = original.get(cutter) else {
             continue;
         };
-        if let Some(item) = items.iter_mut().find(|i| i.id == *target) {
+        for item in items.iter_mut().filter(|i| i.id == *target) {
             item.mesh = boolean_mesh(&item.mesh, tool, *op);
         }
     }
@@ -256,6 +431,7 @@ fn opening_items(
                 color,
                 surface,
                 ghost: false,
+                layer: None,
                 finish: match part {
                     Part::Glass => Some("Glass"),
                     Part::Handle => Some("Metal"),

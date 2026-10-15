@@ -35,6 +35,21 @@ impl Cut {
 /// side face, so ends, top, bottom and opening reveals all come out closed.
 /// `ends` mitres or trims the two ends where the wall joins its neighbours.
 pub fn wall_mesh(wall: &Wall, base_z: f64, openings: &[&Opening], ends: &WallEnds) -> TriMesh {
+    let t = wall.thickness / 2.0;
+    wall_layer_mesh(wall, base_z, openings, ends, (-t, t), false)
+}
+
+/// One layer of a layered wall as a closed solid: the part of the wall
+/// between `band.0` and `band.1` across it (left positive), its ends on
+/// the wall's end lines, or past them for a `core` layer that runs on.
+pub fn wall_layer_mesh(
+    wall: &Wall,
+    base_z: f64,
+    openings: &[&Opening],
+    ends: &WallEnds,
+    band: (f64, f64),
+    core: bool,
+) -> TriMesh {
     let len = wall.length();
     let h = wall.height;
     let cuts: Vec<Cut> = openings.iter().filter_map(|o| Cut::of(o, wall)).collect();
@@ -64,14 +79,14 @@ pub fn wall_mesh(wall: &Wall, base_z: f64, openings: &[&Opening], ends: &WallEnd
 
     let d = wall.direction();
     let n2 = DVec2::new(-d.y, d.x);
-    let t = wall.thickness / 2.0;
+    let (lo, hi) = band;
     let z0 = base_z + wall.base_offset;
     let p = |u: f64, v: f64, w: f64| -> DVec3 {
         // the end grid lines follow the joins
         let u = if u <= 0.0 {
-            ends.start_u(w)
+            ends.layer_start(wall, w, core)
         } else if u >= len {
-            ends.end_u(wall, w)
+            ends.layer_end(wall, w, core)
         } else {
             u
         };
@@ -90,34 +105,34 @@ pub fn wall_mesh(wall: &Wall, base_z: f64, openings: &[&Opening], ends: &WallEnd
             let (ua, ub) = (us[i as usize], us[i as usize + 1]);
             let (va, vb) = (vs[j as usize], vs[j as usize + 1]);
             m.add_quad(
-                [p(ua, va, t), p(ub, va, t), p(ub, vb, t), p(ua, vb, t)],
+                [p(ua, va, hi), p(ub, va, hi), p(ub, vb, hi), p(ua, vb, hi)],
                 across,
             );
             m.add_quad(
-                [p(ua, va, -t), p(ub, va, -t), p(ub, vb, -t), p(ua, vb, -t)],
+                [p(ua, va, lo), p(ub, va, lo), p(ub, vb, lo), p(ua, vb, lo)],
                 -across,
             );
             if !solid(i - 1, j) {
                 m.add_quad(
-                    [p(ua, va, -t), p(ua, va, t), p(ua, vb, t), p(ua, vb, -t)],
-                    end_normal(p(ua, va, -t), p(ua, va, t), -along),
+                    [p(ua, va, lo), p(ua, va, hi), p(ua, vb, hi), p(ua, vb, lo)],
+                    end_normal(p(ua, va, lo), p(ua, va, hi), -along),
                 );
             }
             if !solid(i + 1, j) {
                 m.add_quad(
-                    [p(ub, va, -t), p(ub, va, t), p(ub, vb, t), p(ub, vb, -t)],
-                    end_normal(p(ub, va, -t), p(ub, va, t), along),
+                    [p(ub, va, lo), p(ub, va, hi), p(ub, vb, hi), p(ub, vb, lo)],
+                    end_normal(p(ub, va, lo), p(ub, va, hi), along),
                 );
             }
             if !solid(i, j - 1) {
                 m.add_quad(
-                    [p(ua, va, -t), p(ub, va, -t), p(ub, va, t), p(ua, va, t)],
+                    [p(ua, va, lo), p(ub, va, lo), p(ub, va, hi), p(ua, va, hi)],
                     -DVec3::Z,
                 );
             }
             if !solid(i, j + 1) {
                 m.add_quad(
-                    [p(ua, vb, -t), p(ub, vb, -t), p(ub, vb, t), p(ua, vb, t)],
+                    [p(ua, vb, lo), p(ub, vb, lo), p(ub, vb, hi), p(ua, vb, hi)],
                     DVec3::Z,
                 );
             }
@@ -153,6 +168,8 @@ mod tests {
             height: 3.0,
             base_offset: 0.0,
             material: None,
+            assembly: None,
+            flip: false,
         }
     }
 

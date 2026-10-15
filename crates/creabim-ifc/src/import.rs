@@ -206,6 +206,9 @@ struct Importer<'a> {
     material_colors: HashMap<u64, Surface>,
     /// Imported materials by name.
     materials: HashMap<String, ElementId>,
+    /// Imported assemblies, by the IfcMaterialLayerSet they came from.
+    layer_sets: HashMap<u64, ElementId>,
+    assembly_elems: Vec<Element>,
     walls: HashMap<u64, HostWall>,
     /// Elements written so far, by IFC instance, so nothing is imported twice.
     done: HashSet<u64>,
@@ -245,6 +248,8 @@ impl<'a> Importer<'a> {
             styles: HashMap::new(),
             material_colors: HashMap::new(),
             materials: HashMap::new(),
+            layer_sets: HashMap::new(),
+            assembly_elems: vec![],
             walls: HashMap::new(),
             done: HashSet::new(),
             material_elems: vec![],
@@ -300,6 +305,33 @@ impl<'a> Importer<'a> {
         for id in rest {
             self.import_free_mesh(id);
         }
+        // the rest of the file's layer sets (a roof's, unused ones) come
+        // along as assemblies, as its materials do
+        let mut sets: Vec<u64> = self.ids("IFCMATERIALLAYERSET").to_vec();
+        sets.sort_unstable();
+        for set in sets {
+            let roof = self.materials_of.iter().any(|(p, m)| {
+                *m == set
+                    && self
+                        .f
+                        .get(*p)
+                        .is_some_and(|e| e.class.starts_with("IFCROOF"))
+            });
+            let name = self
+                .f
+                .get(set)
+                .and_then(|e| e.arg(1).as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let usage = if roof || name.contains("roof") {
+                creabim_core::AssemblyUse::Roof
+            } else if name.contains("floor") || name.contains("slab") {
+                creabim_core::AssemblyUse::Floor
+            } else {
+                creabim_core::AssemblyUse::Wall
+            };
+            self.layer_set(set, usage);
+        }
         let spaces = self.ids("IFCSPACE").len();
         if spaces > 0 {
             self.g.warnings.add(format!(
@@ -319,6 +351,7 @@ impl<'a> Importer<'a> {
         }
         self.out = [
             std::mem::take(&mut self.material_elems),
+            std::mem::take(&mut self.assembly_elems),
             std::mem::take(&mut self.level_elems),
             std::mem::take(&mut self.grid_elems),
             std::mem::take(&mut self.wall_elems),
@@ -587,6 +620,112 @@ impl<'a> Importer<'a> {
         Some(mid)
     }
 
+    /// The CreaBIM material for an IfcMaterial, made on first use.
+    fn material_entity(&mut self, mat: u64) -> Option<ElementId> {
+        let f = self.f;
+        let e = f.get(mat).filter(|e| e.is("IFCMATERIAL"))?;
+        let name = e.arg(0).as_str().map(str::trim).filter(|n| !n.is_empty())?;
+        if let Some(&m) = self.materials.get(name) {
+            return Some(m);
+        }
+        let surface = self.material_colors.get(&mat).copied();
+        let material = material_from(f, name, Some(mat), surface);
+        let e = Element::new(name, ElementKind::Material(material));
+        let id = e.id;
+        self.material_elems.push(e);
+        self.materials.insert(name.to_string(), id);
+        Some(id)
+    }
+
+    /// The CreaBIM assembly for an IfcMaterialLayerSet of two or more
+    /// layers, made on first use: its layers with their materials,
+    /// thicknesses and functions. (A set of one layer is just a material.)
+    fn layer_set(&mut self, set: u64, usage: creabim_core::AssemblyUse) -> Option<ElementId> {
+        use creabim_core::assembly::{Layer, LayerFunction, MIN_LAYER};
+        if let Some(&a) = self.layer_sets.get(&set) {
+            return Some(a);
+        }
+        let f = self.f;
+        let e = f.get(set).filter(|e| e.is("IFCMATERIALLAYERSET"))?;
+        if e.arg(0).refs().count() < 2 {
+            return None;
+        }
+        let mut layers = vec![];
+        for l in e.arg(0).refs().filter_map(|l| f.get(l)) {
+            if !l.is("IFCMATERIALLAYER") {
+                continue;
+            }
+            let material = l.arg(0).as_ref().and_then(|m| self.material_entity(m));
+            let thickness = self.g.length(l.arg(1)).unwrap_or(0.0).max(MIN_LAYER);
+            let ventilated = l.arg(2).as_enum() == Some("T");
+            let category = l.arg(5).as_str().or(l.arg(3).as_str()).unwrap_or("");
+            let function = if material.is_none() && ventilated {
+                LayerFunction::AirGap
+            } else {
+                LayerFunction::from_ifc(category, ventilated)
+            };
+            layers.push(Layer::new(function, material, thickness));
+        }
+        if layers.is_empty() {
+            return None;
+        }
+        let base = e
+            .arg(1)
+            .as_str()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or("Assembly")
+            .to_string();
+        let mut name = base.clone();
+        let mut n = 2;
+        while self.assembly_elems.iter().any(|a| a.name == name) {
+            name = format!("{base} {n}");
+            n += 1;
+        }
+        let mut a = creabim_core::Assembly::new(usage, layers);
+        a.description = e.arg(2).as_str().unwrap_or("").trim().to_string();
+        let el = Element::new(name, ElementKind::Assembly(a));
+        let id = el.id;
+        self.assembly_elems.push(el);
+        self.layer_sets.insert(set, id);
+        Some(id)
+    }
+
+    /// What an imported assembly's core is made of: the element's material
+    /// should it lose the assembly.
+    fn core_material(&self, assembly: ElementId) -> Option<ElementId> {
+        self.assembly_elems.iter().find_map(|e| match &e.kind {
+            ElementKind::Assembly(a) if e.id == assembly => a.layers[a.core().0].material,
+            _ => None,
+        })
+    }
+
+    /// A layered product's assembly, and for one placed with a layer set
+    /// usage, whether its layers run the usage axis's positive way.
+    fn assembly_for(
+        &mut self,
+        id: u64,
+        usage: creabim_core::AssemblyUse,
+    ) -> Option<(ElementId, Option<bool>)> {
+        let assoc = self
+            .materials_of
+            .get(&id)
+            .or_else(|| self.type_of.get(&id).and_then(|t| self.materials_of.get(t)))
+            .copied()?;
+        let e = self.f.get(assoc)?;
+        let (set, positive) = if e.is("IFCMATERIALLAYERSETUSAGE") {
+            (
+                e.arg(0).as_ref()?,
+                Some(e.arg(2).as_enum() != Some("NEGATIVE")),
+            )
+        } else if e.is("IFCMATERIALLAYERSET") {
+            (assoc, None)
+        } else {
+            return None;
+        };
+        Some((self.layer_set(set, usage)?, positive))
+    }
+
     /// The surface style on a product's body, if it has one.
     fn product_surface(&self, e: &Entity) -> Option<Surface> {
         let body = self.g.body(e)?;
@@ -792,7 +931,18 @@ impl<'a> Importer<'a> {
             self.done.insert(id);
             let lid = w.level;
             let level_elev = self.levels.iter().find(|l| l.1 == lid).map_or(0.0, |l| l.0);
-            let material = self.material_for(id);
+            let layered = self.assembly_for(id, creabim_core::AssemblyUse::Wall);
+            // the first (exterior) layer is on the wall's left when the
+            // layers run towards its right
+            let flip = layered.and_then(|l| l.1).is_some_and(|positive| {
+                let y = world.y_axis.truncate().truncate();
+                let left = (w.end - w.start).normalize_or_zero().perp();
+                positive == (y.dot(left) < 0.0)
+            });
+            let material = match layered {
+                Some((a, _)) => self.core_material(a),
+                None => self.material_for(id),
+            };
             let eid = self.new_id(e);
             self.walls.insert(
                 id,
@@ -808,7 +958,12 @@ impl<'a> Importer<'a> {
                 source: None,
                 id: eid,
                 name: Self::name(e, "Wall"),
-                kind: ElementKind::Wall(Wall { material, ..w }),
+                kind: ElementKind::Wall(Wall {
+                    material,
+                    assembly: layered.map(|l| l.0),
+                    flip,
+                    ..w
+                }),
             });
         } else {
             self.import_free_mesh(id);
@@ -858,6 +1013,8 @@ impl<'a> Importer<'a> {
             height: prism.z1 - prism.z0,
             base_offset: prism.z0 - elev,
             material: None,
+            assembly: None,
+            flip: false,
         })
     }
 
@@ -885,7 +1042,11 @@ impl<'a> Importer<'a> {
                 .add("openings in slabs are not cut (CreaBIM slabs have no holes yet)");
         }
         self.done.insert(id);
-        let material = self.material_for(id);
+        let layered = self.assembly_for(id, creabim_core::AssemblyUse::Floor);
+        let material = match layered {
+            Some((a, _)) => self.core_material(a),
+            None => self.material_for(id),
+        };
         let eid = self.new_id(e);
         self.wall_elems.push(Element {
             source: None,
@@ -898,6 +1059,7 @@ impl<'a> Importer<'a> {
                 material,
                 top_offset: 0.0,
                 bulges: vec![],
+                assembly: layered.map(|l| l.0),
             }),
         });
     }
