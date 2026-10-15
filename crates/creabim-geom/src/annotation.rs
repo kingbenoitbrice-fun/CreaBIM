@@ -4,7 +4,7 @@
 //! millimetre, so arrows, gaps and text keep their size on paper.
 
 use crate::paper::{text_width, Anchor};
-use creabim_core::{DimensionKind, Font, TextStyle};
+use creabim_core::{DimensionKind, Font, TextStyle, Units};
 use glam::DVec2;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -90,9 +90,9 @@ pub fn angle_text(radians: f64) -> String {
     }
 }
 
-/// Millimetres, as dimensions are written.
-pub fn length_text(metres: f64) -> String {
-    format!("{:.0}", metres * 1000.0)
+/// A length as dimensions write it in `units`.
+pub fn length_text(units: &Units, metres: f64) -> String {
+    units.dimension(metres)
 }
 
 /// Where the endless lines through `a0`,`a1` and `b0`,`b1` cross; none when
@@ -121,13 +121,14 @@ pub fn circle_through(p: DVec2, q: DVec2, r: DVec2) -> Option<(DVec2, f64)> {
 }
 
 /// What a dimension of `kind` reads, from its resolved points.
-pub fn measure(kind: DimensionKind, center: DVec2, a: DVec2, b: DVec2) -> String {
+pub fn measure(units: &Units, kind: DimensionKind, center: DVec2, a: DVec2, b: DVec2) -> String {
+    let l = |m: f64| length_text(units, m);
     match kind {
-        DimensionKind::Linear => length_text(a.distance(b)),
+        DimensionKind::Linear => l(a.distance(b)),
         DimensionKind::Angular => angle_text(sweep(center, a, b)),
-        DimensionKind::Radius => format!("R{}", length_text(center.distance(a))),
-        DimensionKind::Diameter => format!("Ø{}", length_text(2.0 * center.distance(a))),
-        DimensionKind::ArcLength => length_text(center.distance(a) * sweep(center, a, b)),
+        DimensionKind::Radius => format!("R{}", l(center.distance(a))),
+        DimensionKind::Diameter => format!("Ø{}", l(2.0 * center.distance(a))),
+        DimensionKind::ArcLength => l(center.distance(a) * sweep(center, a, b)),
     }
 }
 
@@ -162,7 +163,14 @@ pub enum Shape {
     },
     /// Lines of text from `at`, with a leader to `leader`.
     Note { at: DVec2, leader: Option<DVec2> },
+    /// A level's head where its datum line ends at `at`, Revit style: a
+    /// target symbol, the level's name (the annotation's text) above the
+    /// line and its `elevation` below.
+    Level { at: DVec2, elevation: String },
 }
+
+/// Radius of a level head's target symbol, paper mm.
+pub const LEVEL_HEAD: f64 = 1.5;
 
 /// An annotation ready to draw: its shape, what it reads and how it looks.
 #[derive(Clone, Debug, PartialEq)]
@@ -364,6 +372,31 @@ impl Annotation {
                         .collect(),
                 );
             }
+            Shape::Level { at, ref elevation } => {
+                let r = LEVEL_HEAD * mm;
+                out.lines.push(arc_points(at, r, 0.0, TAU));
+                // two opposite quarters filled in
+                for q in [0.0, PI] {
+                    for i in 0..4 {
+                        let t = |k: usize| q + FRAC_PI_2 * k as f64 / 4.0;
+                        out.arrows.push([
+                            at,
+                            at + DVec2::from_angle(t(i)) * r,
+                            at + DVec2::from_angle(t(i + 1)) * r,
+                        ]);
+                    }
+                }
+                let x = at.x + r + TEXT_GAP * mm;
+                let dy = (look.size * 0.5 + 0.8) * mm;
+                for (y, text) in [(dy, self.text.clone()), (-dy, elevation.clone())] {
+                    out.texts.push(MarkText {
+                        at: DVec2::new(x, at.y + y),
+                        text,
+                        angle: 0.0,
+                        anchor: Anchor::Start,
+                    });
+                }
+            }
             Shape::Note { at, leader } => {
                 let lines: Vec<&str> = self.text.split('\n').collect();
                 let step = look.size * 1.5 * mm;
@@ -501,7 +534,10 @@ mod tests {
         let diag = o + DVec2::new(1.0, 1.0);
         assert_eq!(angle_text(sweep(o, east, diag)), "45°");
         assert_eq!(angle_text(30.25f64.to_radians()), "30.3°");
-        assert_eq!(measure(DimensionKind::Angular, o, east, north), "90°");
+        assert_eq!(
+            measure(&Units::metric(), DimensionKind::Angular, o, east, north),
+            "90°"
+        );
     }
 
     #[test]
@@ -509,11 +545,23 @@ mod tests {
         let c = DVec2::new(1.0, 1.0);
         let a = c + DVec2::X * 1.5;
         let b = c + DVec2::Y * 1.5;
-        assert_eq!(measure(DimensionKind::Radius, c, a, a), "R1500");
-        assert_eq!(measure(DimensionKind::Diameter, c, a, a), "Ø3000");
+        assert_eq!(
+            measure(&Units::metric(), DimensionKind::Radius, c, a, a),
+            "R1500"
+        );
+        assert_eq!(
+            measure(&Units::metric(), DimensionKind::Diameter, c, a, a),
+            "Ø3000"
+        );
         // a quarter of a 1.5 m circle
-        assert_eq!(measure(DimensionKind::ArcLength, c, a, b), "2356");
-        assert_eq!(measure(DimensionKind::Linear, c, a, b), "2121");
+        assert_eq!(
+            measure(&Units::metric(), DimensionKind::ArcLength, c, a, b),
+            "2356"
+        );
+        assert_eq!(
+            measure(&Units::metric(), DimensionKind::Linear, c, a, b),
+            "2121"
+        );
     }
 
     #[test]

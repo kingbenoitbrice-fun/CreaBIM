@@ -549,7 +549,7 @@ fn shape_of(ready: Ready, at: DVec2) -> (Shape, String) {
                     extra: (at.distance(c) - r).max(0.0),
                     diameter,
                 },
-                measure(kind, c, on, on),
+                measure(&crate::units::get(), kind, c, on, on),
             )
         }
         Ready::Arc { center, a, b } => (
@@ -559,7 +559,13 @@ fn shape_of(ready: Ready, at: DVec2) -> (Shape, String) {
                 b: b.1,
                 offset: at.distance(center.1) - center.1.distance(a.1),
             },
-            measure(DimensionKind::ArcLength, center.1, a.1, b.1),
+            measure(
+                &crate::units::get(),
+                DimensionKind::ArcLength,
+                center.1,
+                a.1,
+                b.1,
+            ),
         ),
         Ready::Leader { target } => (
             Shape::Note {
@@ -743,7 +749,7 @@ pub fn drag(
                     Shape::ArcLength { center, a, .. } => {
                         dim.offset = p.distance(center) - a.distance(center)
                     }
-                    Shape::Note { .. } => {}
+                    Shape::Note { .. } | Shape::Level { .. } => {}
                 }
             })
         }

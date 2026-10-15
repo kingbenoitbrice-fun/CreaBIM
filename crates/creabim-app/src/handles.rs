@@ -498,51 +498,62 @@ pub fn apply(
 pub fn readout(changed: &[Element]) -> String {
     match changed.first().map(|e| &e.kind) {
         Some(ElementKind::Wall(w)) => format!(
-            "length {:.2} m, height {:.2} m, thickness {:.0} mm",
-            w.length(),
-            w.height,
-            w.thickness * 1000.0
+            "length {}, height {}, thickness {}",
+            crate::units::len(w.length()),
+            crate::units::len(w.height),
+            crate::units::len(w.thickness)
         ),
         Some(ElementKind::Opening(o)) => format!(
-            "width {:.2} m, height {:.2} m, sill {:.2} m",
-            o.width, o.height, o.sill
+            "width {}, height {}, sill {}",
+            crate::units::len(o.width),
+            crate::units::len(o.height),
+            crate::units::len(o.sill)
         ),
         Some(ElementKind::View(v)) => match v.kind {
             ViewKind::Section {
                 start, end, depth, ..
             } => format!(
-                "line {:.2} m long, sees {depth:.2} m deep",
-                start.distance(end)
+                "line {} long, sees {} deep",
+                crate::units::len(start.distance(end)),
+                crate::units::len(depth)
             ),
             _ => String::new(),
         },
         Some(ElementKind::Slab(s)) => format!(
-            "area {:.2} m², thickness {:.0} mm, top {:+.3} m, underside {:+.3} m from its level",
-            s.area(),
-            s.thickness * 1000.0,
-            s.top_offset,
+            "area {}, thickness {}, top {}, underside {} from its level",
+            crate::units::area(s.area()),
+            crate::units::len(s.thickness),
+            crate::units::elevation(s.top_offset),
             s.top_offset - s.thickness
         ),
         Some(ElementKind::Column(c)) => match c.height {
-            Some(h) => format!("{} mm, height {h:.2} m", c.profile.label()),
-            None => format!("{} mm", c.profile.label()),
+            Some(h) => format!(
+                "{}, height {}",
+                c.profile.label_in(&crate::units::get()),
+                crate::units::len(h)
+            ),
+            None => c.profile.label_in(&crate::units::get()),
         },
         Some(ElementKind::Beam(b)) => format!(
-            "length {:.2} m, {:.0} × {:.0} mm",
-            b.length(),
-            b.width * 1000.0,
-            b.depth * 1000.0
+            "length {}, {} × {}",
+            crate::units::len(b.length()),
+            crate::units::len(b.width),
+            crate::units::len(b.depth)
         ),
         Some(ElementKind::Roof(r)) => format!(
-            "{} roof, pitch {:.1}°, {:.2} m² with overhang",
+            "{} roof, pitch {:.1}°, {} with overhang",
             r.effective_shape().label(),
             r.pitch,
-            r.plan_area()
+            crate::units::area(r.plan_area())
         ),
         Some(ElementKind::Stair(s)) => {
-            format!("width {:.2} m, treads {:.0} mm", s.width, s.tread * 1000.0)
+            format!(
+                "width {}, treads {}",
+                crate::units::len(s.width),
+                crate::units::len(s.tread)
+            )
         }
-        Some(ElementKind::Railing(r)) => format!("height {:.2} m", r.height),
+        Some(ElementKind::Railing(r)) => format!("height {}", crate::units::len(r.height)),
         _ => String::new(),
     }
 }

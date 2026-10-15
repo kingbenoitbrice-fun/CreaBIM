@@ -377,19 +377,10 @@ pub enum Outcome {
     Cancelled(String),
 }
 
-/// Parse a typed length in metres: "2.4", "2400mm", "240cm", "2.4m".
+/// Parse a typed length in the project's units: a bare number is in the
+/// project's unit, and any unit can be written (`2400mm`, `2.4m`, `8'-6"`).
 pub fn parse_length(s: &str) -> Option<f64> {
-    let s = s.trim();
-    let (num, scale) = if let Some(n) = s.strip_suffix("mm") {
-        (n, 0.001)
-    } else if let Some(n) = s.strip_suffix("cm") {
-        (n, 0.01)
-    } else if let Some(n) = s.strip_suffix('m') {
-        (n, 1.0)
-    } else {
-        (s, 1.0)
-    };
-    num.trim().parse::<f64>().ok().map(|v| v * scale)
+    crate::units::parse(s)
 }
 
 /// The move from `base` to `target`, kept to `axis`, square to the pane
@@ -682,7 +673,11 @@ impl Modal {
                 c @ ('0'..='9' | '.' | '-' | ',') if follow => {
                     self.typed.push(if c == ',' { '.' } else { c })
                 }
-                c @ ('m' | 'c') if follow && !self.typed.is_empty() => self.typed.push(c),
+                c @ ('m' | 'c' | 'f' | 't' | 'i' | 'n' | '\'' | '"' | '/' | ' ')
+                    if follow && !self.typed.is_empty() =>
+                {
+                    self.typed.push(c)
+                }
                 _ => {}
             }
         }
@@ -1138,7 +1133,12 @@ impl Modal {
     }
 
     fn xform(&mut self, map: &PaneMap, ctrl: bool) -> Option<Xform> {
-        let typed: Option<f64> = self.typed.parse().ok();
+        // a move is typed as a length in the project's units; turns and
+        // scales as plain numbers
+        let typed: Option<f64> = match self.mode {
+            Mode::Move => parse_length(&self.typed),
+            _ => self.typed.trim().parse().ok(),
+        };
         let snap = |v: f64, step: f64| (v / step).round() * step;
         let ps = (map.project)(self.pivot).unwrap_or(self.grab);
         Some(match self.mode {
@@ -1176,7 +1176,11 @@ impl Modal {
                 let axis = self
                     .axis
                     .map_or(String::new(), |a| format!(" along {}", a.label()));
-                self.shown = format!("{}: {:.3} m{axis}", self.edit.label, d.length());
+                self.shown = format!(
+                    "{}: {}{axis}",
+                    self.edit.label,
+                    crate::units::len(d.length())
+                );
                 Xform::Move(d)
             }
             Mode::Rotate => {
@@ -1473,6 +1477,17 @@ mod tests {
     use super::*;
     use creabim_core::sample::sample_house;
 
+    #[test]
+    fn typed_move_distances_follow_the_project_units() {
+        crate::units::set(creabim_core::Units::metric());
+        assert_eq!(parse_length("2400"), Some(2.4));
+        assert_eq!(parse_length("2.4m"), Some(2.4));
+        crate::units::set(creabim_core::Units::imperial());
+        let ft = parse_length("8'-6\"").unwrap();
+        assert!((ft - 2.5908).abs() < 1e-9, "{ft}");
+        crate::units::set(creabim_core::Units::metric());
+    }
+
     /// A plan-like pane: 10 points to the metre, y down, with endpoint
     /// snaps at `points` (within half a metre) and free points elsewhere.
     fn with_map<R>(points: &[DVec3], f: impl FnOnce(&PaneMap) -> R) -> R {
@@ -1672,7 +1687,6 @@ mod tests {
         );
         assert_eq!(d, DVec3::new(3.0, 1.0, 0.0));
         assert_eq!(parse_length("120cm"), Some(1.2));
-        assert_eq!(parse_length("3"), Some(3.0));
         assert_eq!(parse_length("-"), None);
     }
 

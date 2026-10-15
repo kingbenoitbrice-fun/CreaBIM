@@ -22,6 +22,7 @@ mod snaps;
 mod textures;
 mod theme;
 mod ui_model;
+mod units;
 mod webui;
 
 fn main() -> eframe::Result {

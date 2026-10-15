@@ -12,7 +12,7 @@ use crate::snaps::{self, SnapKind, Snapper};
 use creabim_core::{
     element::FREE_MESH_CLASSES, sample::sample_house, Axis, BoolOp, Cut, Document, Element,
     ElementId, ElementKind, Hatch, Material, Model, Modifier, ModifierKind, ScheduleCategory,
-    Sheet, Transaction, View, ViewKind, ViewStyle, Workplane,
+    Sheet, Transaction, Underlay, View, ViewKind, ViewStyle, Workplane,
 };
 use creabim_geom::sheet::{self as sheets, PlacedView, SheetInfo};
 use creabim_geom::{
@@ -25,6 +25,8 @@ use std::collections::HashMap;
 
 #[path = "gridvis.rs"]
 mod gridvis;
+#[path = "levelsui.rs"]
+mod levelsui;
 #[path = "materials.rs"]
 mod materials;
 #[path = "shell.rs"]
@@ -146,6 +148,8 @@ pub struct CreaBimApp {
     shell: shell::Shell,
     /// The material browser.
     mat: materials::MaterialsUi,
+    /// The Levels manager and the Project units dialog.
+    levels: levelsui::LevelsUi,
     /// Orbit about the selection rather than the middle of the view.
     orbit_selection: bool,
     /// Where the 3D view was drawn last frame, for its navigation buttons.
@@ -198,6 +202,7 @@ impl CreaBimApp {
             recent: crate::files::Recent::load(),
             shell: Default::default(),
             mat: Default::default(),
+            levels: Default::default(),
             orbit_selection: false,
             rect_3d: None,
             status: "Loaded the sample house. Orbit with left drag, pan with right drag, zoom with the wheel.".into(),
@@ -624,7 +629,7 @@ impl CreaBimApp {
                         origin: p,
                         ..Workplane::ground(p.z)
                     };
-                    self.set_workplane(plane, format!("level at {:+.2} m", p.z));
+                    self.set_workplane(plane, format!("level at {}", crate::units::elevation(p.z)));
                 }
             }
             Command::Move | Command::Rotate | Command::Scale | Command::Duplicate => {}
@@ -817,6 +822,11 @@ impl CreaBimApp {
         let Some(&last) = ids.last() else {
             return;
         };
+        // a level asks first what happens to what is on it
+        if let Some(level) = ids.iter().find(|id| self.doc.model().level(**id).is_some()) {
+            self.ask_delete_level(*level);
+            return;
+        }
         let name = match ids.len() {
             1 => self
                 .doc
@@ -849,6 +859,7 @@ impl CreaBimApp {
                             | ElementKind::Sheet(_)
                             | ElementKind::Viewport(_)
                             | ElementKind::Material(_)
+                            | ElementKind::Units(_)
                     )
             })
             .map(|e| e.id)
@@ -982,7 +993,10 @@ impl CreaBimApp {
         });
         self.report(
             r,
-            format!("Extruded face {face} by {d:.2} m. Press E again to keep going."),
+            format!(
+                "Extruded face {face} by {}. Press E again to keep going.",
+                crate::units::len(d)
+            ),
         );
     }
 
@@ -997,10 +1011,10 @@ impl CreaBimApp {
                 self.face = cap;
                 self.status = match cap {
                     Some(_) => format!(
-                        "Extruded the sketch {d:.2} m into a mass. Its far face is selected: press E to push it further."
+                        "Extruded the sketch {} into a mass. Its far face is selected: press E to push it further.", crate::units::len(d)
                     ),
                     None => format!(
-                        "Extruded the open sketch {d:.2} m into a surface. Add a Solidify modifier to give it thickness."
+                        "Extruded the open sketch {} into a surface. Add a Solidify modifier to give it thickness.", crate::units::len(d)
                     ),
                 };
             }
@@ -1201,9 +1215,13 @@ impl CreaBimApp {
                                 seg(points[i], points[(i + 1) % points.len()], c);
                             }
                         }
-                        // guides show as their own lines in 3D
+                        // guides show as their own lines in 3D; underlays stay in the plan
                         PlanItem::Line {
-                            pen: Pen::Guide, ..
+                            pen: Pen::Guide | Pen::Underlay,
+                            ..
+                        }
+                        | PlanItem::Arc {
+                            pen: Pen::Underlay, ..
                         } => {}
                         PlanItem::Line { a, b, .. } => seg(*a, *b, c),
                         PlanItem::Arc {
@@ -1949,7 +1967,10 @@ impl CreaBimApp {
         }
         self.status = match from {
             None => "Guide on the workplane: click a point it runs through.".into(),
-            Some(a) => format!("{:.2} m. Click a second point.", a.distance(at)),
+            Some(a) => format!(
+                "{}. Click a second point.",
+                crate::units::len(a.distance(at))
+            ),
         };
         if !response.clicked() {
             return;
@@ -2134,9 +2155,9 @@ impl CreaBimApp {
                         let text = match self.plan.guide_edge {
                             Some((e0, e1)) => {
                                 let d = (e1 - e0).normalize_or_zero();
-                                format!("{:.2} m", (p - e0).perp_dot(d).abs())
+                                crate::units::len((p - e0).perp_dot(d).abs())
                             }
-                            None => format!("{:.2} m", a.truncate().distance(p)),
+                            None => crate::units::len(a.truncate().distance(p)),
                         };
                         painter.text(
                             sb + Vec2::new(10.0, -12.0),
@@ -2170,7 +2191,7 @@ impl CreaBimApp {
                         painter.text(
                             sb + Vec2::new(10.0, -12.0),
                             egui::Align2::LEFT_BOTTOM,
-                            format!("{:.2} m", a.truncate().distance(p)),
+                            crate::units::len(a.truncate().distance(p)),
                             egui::FontId::proportional(13.0),
                             accent,
                         );
@@ -2682,19 +2703,17 @@ impl CreaBimApp {
                 let level = self.work_level();
                 if let Some((_, z)) = level {
                     if ui.button("Level plane you can offset").clicked() {
-                        self.set_workplane(Workplane::ground(z), format!("level at {z:+.2} m"));
+                        self.set_workplane(
+                            Workplane::ground(z),
+                            format!("level at {}", crate::units::elevation(z)),
+                        );
                     }
                 }
             });
         if let Some((plane, _)) = self.workplane.as_mut() {
             let mut d = 0.0;
             let r = ui
-                .add(
-                    egui::DragValue::new(&mut d)
-                        .speed(0.05)
-                        .prefix("Offset ± ")
-                        .suffix(" m"),
-                )
+                .add(crate::units::drag(&mut d).prefix("Offset ± "))
                 .on_hover_text("Drag to slide the workplane along its normal");
             if r.changed() && d != 0.0 {
                 plane.origin += plane.normal() * d;
@@ -2776,18 +2795,15 @@ impl CreaBimApp {
                         ViewKind::Schedule { .. } => return,
                     };
                     ui.label(text);
-                    let changed = ui
-                        .add(
-                            egui::DragValue::new(value)
-                                .speed(0.05)
-                                .range(if unit == "°" {
-                                    -89.0..=89.0
-                                } else {
-                                    0.1..=200.0
-                                })
-                                .suffix(unit),
-                        )
-                        .changed();
+                    let field = if unit == "°" {
+                        egui::DragValue::new(value)
+                            .speed(0.05)
+                            .range(-89.0..=89.0)
+                            .suffix(unit)
+                    } else {
+                        crate::units::drag(value).range(0.1..=200.0)
+                    };
+                    let changed = ui.add(field).changed();
                     let mut shaded = v.style == ViewStyle::Shaded;
                     let restyled = shadable && ui.checkbox(&mut shaded, "Shaded").changed();
                     if restyled {
@@ -2820,12 +2836,7 @@ impl CreaBimApp {
                 }
             }
             ui.label("Wall thickness:");
-            ui.add(
-                egui::DragValue::new(&mut self.plan.wall_thickness)
-                    .speed(0.01)
-                    .range(0.05..=1.0)
-                    .suffix(" m"),
-            );
+            ui.add(crate::units::drag(&mut self.plan.wall_thickness).range(0.05..=1.0));
         });
     }
 
@@ -2945,6 +2956,9 @@ impl CreaBimApp {
         egui::ScrollArea::vertical().show(ui, |ui| {
             let mut groups: Vec<(String, Vec<(ElementId, String)>)> = Vec::new();
             for e in self.doc.model().iter() {
+                if matches!(e.kind, ElementKind::Units(_)) {
+                    continue;
+                }
                 let class = e.ifc_class().to_string();
                 match groups.iter_mut().find(|(c, _)| *c == class) {
                     Some((_, v)) => v.push((e.id, e.name.clone())),
@@ -3159,13 +3173,7 @@ impl CreaBimApp {
         let num = |ui: &mut egui::Ui, text: &str, v: &mut f64, lo: f64, hi: f64| -> bool {
             ui.horizontal(|ui| {
                 ui.label(text);
-                ui.add(
-                    egui::DragValue::new(v)
-                        .speed(0.01)
-                        .range(lo..=hi)
-                        .suffix(" m"),
-                )
-                .changed()
+                ui.add(crate::units::drag(v).range(lo..=hi)).changed()
             })
             .inner
         };
@@ -3181,6 +3189,13 @@ impl CreaBimApp {
                     label = "Level height"
                 }
                 ui.label(egui::RichText::new("Moving a level moves everything on it.").weak());
+                if ui
+                    .button("Levels…")
+                    .on_hover_text("Add, duplicate, rename and delete levels")
+                    .clicked()
+                {
+                    self.open_levels();
+                }
             }
             ElementKind::Wall(w) => {
                 if num(ui, "Thickness", &mut w.thickness, 0.02, 2.0) {
@@ -3195,7 +3210,7 @@ impl CreaBimApp {
                 if self.material_combo(ui, &mut w.material) {
                     label = "Wall material"
                 }
-                ui.label(format!("Length {:.2} m", w.length()));
+                ui.label(format!("Length {}", crate::units::len(w.length())));
                 if num(ui, "Start X", &mut w.start.x, -1e4, 1e4)
                     | num(ui, "Start Y", &mut w.start.y, -1e4, 1e4)
                 {
@@ -3234,9 +3249,9 @@ impl CreaBimApp {
                 let level = self.doc.model().level(s.level).map_or(0.0, |l| l.elevation);
                 ui.label(
                     egui::RichText::new(format!(
-                        "Top at {:.3} m, underside at {:.3} m. The top handle moves the top, the underside handle the underside.",
-                        s.top(level),
-                        s.top(level) - s.thickness
+                        "Top at {}, underside at {}. The top handle moves the top, the underside handle the underside.",
+                        crate::units::elevation(s.top(level)),
+                        crate::units::elevation(s.top(level) - s.thickness)
                     ))
                     .weak(),
                 );
@@ -3245,12 +3260,16 @@ impl CreaBimApp {
                 }
                 let arcs = s.bulges.iter().filter(|b| b.abs() > 1e-9).count();
                 ui.label(match arcs {
-                    0 => format!("{} corners, {:.2} m²", s.boundary.len(), s.area()),
+                    0 => format!(
+                        "{} corners, {}",
+                        s.boundary.len(),
+                        crate::units::area(s.area())
+                    ),
                     n => format!(
-                        "{} corners, {n} arc{}, {:.2} m²",
+                        "{} corners, {n} arc{}, {}",
                         s.boundary.len(),
                         if n == 1 { "" } else { "s" },
-                        s.area()
+                        crate::units::area(s.area())
                     ),
                 });
                 if ui
@@ -3309,10 +3328,30 @@ impl CreaBimApp {
                     }
                 });
                 match &mut v.kind {
-                    ViewKind::Plan { cut_height, .. } => {
+                    ViewKind::Plan { cut_height, level } => {
                         if num(ui, "Cut height", cut_height, 0.1, 50.0) {
                             label = "View cut height"
                         }
+                        let choices = self.underlay_choices(*level);
+                        let current = choices
+                            .iter()
+                            .find(|(u, _)| *u == v.underlay)
+                            .map_or("None".to_string(), |(_, l)| l.clone());
+                        egui::ComboBox::from_label("Underlay")
+                            .selected_text(current)
+                            .show_ui(ui, |ui| {
+                                for (u, l) in &choices {
+                                    if ui.selectable_value(&mut v.underlay, *u, l).changed() {
+                                        label = "View underlay"
+                                    }
+                                }
+                            });
+                        ui.label(
+                            egui::RichText::new(
+                                "Another level drawn faintly under this one, to trace and snap to. Not printed.",
+                            )
+                            .weak(),
+                        );
                     }
                     ViewKind::Section {
                         start,
@@ -3471,13 +3510,15 @@ impl CreaBimApp {
                         })
                     })
                     .unwrap_or_else(|| "-".into());
+                // metric dimension text carries no unit; say which here
                 let unit = if !matches!(
                     d.kind,
                     creabim_core::DimensionKind::Linear | creabim_core::DimensionKind::ArcLength
-                ) {
-                    ""
+                ) || crate::units::get().is_imperial()
+                {
+                    String::new()
                 } else {
-                    " mm"
+                    format!(" {}", crate::units::symbol())
                 };
                 ui.label(format!("{}: {measured}{unit}", d.kind.label()));
                 let attached = [Some(d.a), Some(d.b), d.center]
@@ -3541,6 +3582,11 @@ impl CreaBimApp {
                     crate::annotate::LookEdit::None => {}
                 }
             }
+            ElementKind::Units(_) => {
+                if ui.button("Project units…").clicked() {
+                    self.levels.units_open = true;
+                }
+            }
             ElementKind::TextStyle(s) => {
                 if let Some(l) = crate::annotate::style_ui(ui, s) {
                     label = l;
@@ -3594,11 +3640,7 @@ impl CreaBimApp {
                 );
                 ui.horizontal(|ui| {
                     ui.label("Extrude by");
-                    ui.add(
-                        egui::DragValue::new(&mut self.extrude_distance)
-                            .speed(0.05)
-                            .suffix(" m"),
-                    );
+                    ui.add(crate::units::drag(&mut self.extrude_distance));
                 });
                 if ui
                     .button(if sk.closed {
@@ -3811,11 +3853,7 @@ impl CreaBimApp {
                 };
                 ui.horizontal(|ui| {
                     ui.label("Distance");
-                    ui.add(
-                        egui::DragValue::new(&mut self.extrude_distance)
-                            .speed(0.05)
-                            .suffix(" m"),
-                    );
+                    ui.add(crate::units::drag(&mut self.extrude_distance));
                 });
                 ui.horizontal(|ui| {
                     if ui
@@ -3979,6 +4017,7 @@ impl eframe::App for CreaBimApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        crate::units::set(self.doc.model().units());
         self.shortcuts(&ctx);
         let dropped: Vec<String> = ctx.input(|i| {
             i.raw
@@ -4113,6 +4152,8 @@ impl eframe::App for CreaBimApp {
         }
         self.open_view_menu();
         self.materials_window(&ctx);
+        self.levels_window(&ctx);
+        self.units_window(&ctx);
         // a plan in its own window keeps egui's menus
         self.plan.web_menus = false;
 
@@ -4320,6 +4361,7 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Tag(_) => "tag",
         ElementKind::Note(_) => "note",
         ElementKind::TextStyle(_) => "text style",
+        ElementKind::Units(_) => "project units",
         ElementKind::View(_) => "view",
         ElementKind::Sheet(_) => "sheet",
         ElementKind::Viewport(_) => "placed view",

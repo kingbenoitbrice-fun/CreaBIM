@@ -158,9 +158,9 @@ pub fn click(
                 let s = new_stair(doc.model(), level, a, p, &set);
                 let lay = s.layout(s.rise(doc.model()));
                 state.status = Some(format!(
-                    "Stair added: {} risers of {:.0} mm. Railing tool: click inside it to add its railings.",
+                    "Stair added: {} risers of {}. Railing tool: click inside it to add its railings.",
                     lay.risers,
-                    lay.riser * 1000.0
+                    crate::units::len(lay.riser)
                 ));
                 add(
                     doc,
@@ -336,13 +336,7 @@ pub fn properties(ui: &mut egui::Ui, model: &Model, kind: &mut ElementKind) -> &
     let num = |ui: &mut egui::Ui, text: &str, v: &mut f64, lo: f64, hi: f64| -> bool {
         ui.horizontal(|ui| {
             ui.label(text);
-            ui.add(
-                egui::DragValue::new(v)
-                    .speed(0.01)
-                    .range(lo..=hi)
-                    .suffix(" m"),
-            )
-            .changed()
+            ui.add(crate::units::drag(v).range(lo..=hi)).changed()
         })
         .inner
     };
@@ -420,7 +414,14 @@ pub fn properties(ui: &mut egui::Ui, model: &Model, kind: &mut ElementKind) -> &
                 label = "Move column"
             }
             let (z0, z1) = c.span(model);
-            weak(ui, format!("Base at {z0:.3} m, top at {z1:.3} m."));
+            weak(
+                ui,
+                format!(
+                    "Base at {}, top at {}.",
+                    crate::units::elevation(z0),
+                    crate::units::elevation(z1)
+                ),
+            );
         }
         ElementKind::Beam(b) => {
             if num(ui, "Width", &mut b.width, 0.02, 3.0) {
@@ -442,9 +443,9 @@ pub fn properties(ui: &mut egui::Ui, model: &Model, kind: &mut ElementKind) -> &
             weak(
                 ui,
                 format!(
-                    "Length {:.2} m, top at {:.3} m. Plans show it dashed above the cut.",
-                    b.length(),
-                    b.top(model)
+                    "Length {}, top at {}. Plans show it dashed above the cut.",
+                    crate::units::len(b.length()),
+                    crate::units::elevation(b.top(model))
                 ),
             );
         }
@@ -493,10 +494,10 @@ pub fn properties(ui: &mut egui::Ui, model: &Model, kind: &mut ElementKind) -> &
             weak(
                 ui,
                 format!(
-                    "{} corners, {:.2} m² with the overhang, {:.2} m high.",
+                    "{} corners, {} with the overhang, {} high.",
                     n,
-                    r.plan_area(),
-                    r.peak()
+                    crate::units::area(r.plan_area()),
+                    crate::units::len(r.peak())
                 ),
             );
         }
@@ -568,16 +569,20 @@ pub fn properties(ui: &mut egui::Ui, model: &Model, kind: &mut ElementKind) -> &
             weak(
                 ui,
                 format!(
-                    "{} risers of {:.0} mm, rise {:.2} m, going {:.2} m. 2R + G = {:.0} mm{}.",
+                    "{} risers of {}, rise {}, going {}. 2R + G = {}{}.",
                     lay.risers,
-                    lay.riser * 1000.0,
-                    rise,
-                    going,
-                    r2g * 1000.0,
+                    crate::units::len(lay.riser),
+                    crate::units::len(rise),
+                    crate::units::len(going),
+                    crate::units::len(r2g),
                     if (0.55..=0.70).contains(&r2g) {
-                        ""
+                        String::new()
                     } else {
-                        " (outside the usual 550–700)"
+                        format!(
+                            " (outside the usual {}–{})",
+                            crate::units::len(0.55),
+                            crate::units::len(0.70)
+                        )
                     }
                 ),
             );
@@ -603,8 +608,8 @@ pub fn properties(ui: &mut egui::Ui, model: &Model, kind: &mut ElementKind) -> &
             weak(
                 ui,
                 format!(
-                    "Length {:.2} m, {} posts.",
-                    r.length(model),
+                    "Length {}, {} posts.",
+                    crate::units::len(r.length(model)),
                     r.posts(model).len()
                 ),
             );

@@ -20,7 +20,7 @@ pub enum Field {
 }
 
 impl Field {
-    /// Lengths are shown and edited in millimetres.
+    /// Lengths, shown and edited in the project's units.
     pub fn is_length(self) -> bool {
         matches!(
             self,
@@ -61,15 +61,6 @@ fn col(title: &'static str, field: Option<Field>, width: f64, numeric: bool) -> 
         width,
         numeric,
     }
-}
-
-/// A length in metres as schedule text: whole millimetres.
-fn mm(v: f64) -> String {
-    format!("{:.0}", v * 1000.0)
-}
-
-fn area(v: f64) -> String {
-    format!("{v:.2} m²")
 }
 
 /// The current value of a numeric field, metres.
@@ -114,6 +105,9 @@ pub fn set_material(e: &mut Element, material: Option<ElementId>) {
 
 /// The schedule of one category, rows in mark or model order.
 pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
+    let units = model.units();
+    let mm = |v: f64| units.dimension(v);
+    let area = |v: f64| units.area(v);
     let name = |id: ElementId| model.get(id).map(|e| e.name.clone()).unwrap_or_default();
     let material = |e: &Element| {
         creabim_core::material_of(model, e)
@@ -292,10 +286,12 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
             let mut total = 0.0;
             for e in model.iter() {
                 let (kind, section, length) = match &e.kind {
-                    ElementKind::Column(c) => ("Column", c.profile.label(), c.height_in(model)),
+                    ElementKind::Column(c) => {
+                        ("Column", c.profile.label_in(&units), c.height_in(model))
+                    }
                     ElementKind::Beam(b) => (
                         "Beam",
-                        format!("{:.0} × {:.0}", b.width * 1000.0, b.depth * 1000.0),
+                        format!("{} × {}", mm(b.width), mm(b.depth)),
                         b.length(),
                     ),
                     _ => continue,
@@ -332,6 +328,13 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
     };
     // marks sort as text (D01 < D02); walls and slabs by level, then model order
     rows.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    // feet and inches take more room than millimetres
+    let mut columns = columns;
+    if units.is_imperial() {
+        for c in columns.iter_mut().filter(|c| c.numeric) {
+            c.width *= 1.4;
+        }
+    }
     Schedule {
         category,
         columns,
@@ -491,6 +494,29 @@ mod tests {
         assert!(csv.starts_with("Name,Level,Material,Length"));
         assert!(csv.contains("GF Wall 1,Ground Floor,Brick,10000,300,3000"));
         assert!(csv.trim_end().ends_with("m²"));
+    }
+
+    #[test]
+    fn an_imperial_project_schedules_in_feet_and_inches() {
+        let mut doc = creabim_core::Document::from_model(sample_house());
+        let tx = creabim_core::units::set_units(doc.model(), creabim_core::Units::imperial());
+        doc.commit(tx).unwrap();
+        let walls = schedule(doc.model(), ScheduleCategory::Walls);
+        // 10 m long, 300 thick, 3 m high
+        assert_eq!(
+            walls.rows[0].cells[..6],
+            [
+                "GF Wall 1",
+                "Ground Floor",
+                "Brick",
+                "32'-9 3/4\"",
+                "0'-11 3/4\"",
+                "9'-10 1/8\""
+            ]
+        );
+        assert!(walls.totals.last().unwrap().ends_with("ft²"));
+        // inch marks are quoted in the CSV
+        assert!(to_csv(&walls).contains(",\"32'-9 3/4\"\"\","));
     }
 
     #[test]

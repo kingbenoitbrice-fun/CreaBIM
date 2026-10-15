@@ -51,9 +51,14 @@
 
   function control(c) {
     switch (c.kind) {
-      case "number":
+      case "number": {
+        // a length comes formatted in the project's units, and what is
+        // typed in it goes back as text for the app to read
+        const text = c.text != null;
         return `<label class="field" title="${esc(c.hint)}"><span class="k" data-scrub="${esc(c.key)}" data-step="${c.step}" data-min="${c.min}" data-max="${c.max}">${esc(c.label)}</span>` +
-          `<input data-key="${esc(c.key)}" data-step="${c.step}" data-min="${c.min}" data-max="${c.max}" value="${fmt(c.value, c.step)}"><span class="u">${esc(c.unit)}</span></label>`;
+          `<input class="${text ? "len" : ""}" data-key="${esc(c.key)}" data-step="${c.step}" data-min="${c.min}" data-max="${c.max}" data-v="${c.value}" data-text="${text ? 1 : 0}" value="${text ? esc(c.text) : fmt(c.value, c.step)}">` +
+          (c.unit ? `<span class="u">${esc(c.unit)}</span>` : "") + `</label>`;
+      }
       case "menu":
         return `<button class="dd ${c.big ? "big" : ""} ${S.popup === c.key ? "open" : ""}" data-popup="${esc(c.key)}" title="${esc(c.hint)}" ${c.enabled === false ? "disabled" : ""}>` +
           (c.icon ? icon(c.icon) : "") + (c.label ? `<span class="k">${esc(c.label)}</span>` : "") +
@@ -83,7 +88,8 @@
     const min = parseFloat(input.dataset.min), max = parseFloat(input.dataset.max);
     if (!isNaN(min)) v = Math.max(min, v);
     if (!isNaN(max)) v = Math.min(max, v);
-    input.value = fmt(v, parseFloat(input.dataset.step));
+    input.dataset.v = v;
+    if (input.dataset.text !== "1") input.value = fmt(v, parseFloat(input.dataset.step));
     post({ t: "set", key: input.dataset.key, value: v });
   }
 
@@ -124,7 +130,8 @@
       if (f && rows.length === 0) continue;
       any = true;
       const open = f ? true : (local.open[g.key] !== undefined ? local.open[g.key] : g.open);
-      html += `<div class="group ${open ? "open" : ""}" data-group="${esc(g.key)}">${icon("chevron-right", "chev")}${icon(g.icon)}<span>${esc(g.title)}</span><span class="n">${g.rows.length}</span></div>`;
+      const acts = (g.acts || []).map((a) => `<button class="gact" data-act="${esc(a.id)}" title="${esc(a.hint)}">${icon(a.icon)}</button>`).join("");
+      html += `<div class="group ${open ? "open" : ""}" data-group="${esc(g.key)}">${icon("chevron-right", "chev")}${icon(g.icon)}<span>${esc(g.title)}</span>${acts}<span class="n">${g.rows.length}</span></div>`;
       if (open) {
         for (const r of rows) {
           html += `<div class="row ${r.sel ? "sel" : ""}" data-id="${r.id}" title="${esc(r.hint || r.name)}">${icon(r.icon)}<span>${esc(r.name)}</span>${r.active ? `<span class="dot"></span>` : ""}</div>`;
@@ -415,7 +422,9 @@
 
   document.addEventListener("change", (e) => {
     const t = e.target;
-    if (t.dataset.key && t.dataset.key !== "filter" && t.dataset.key !== "palette") {
+    if (t.dataset.text === "1") {
+      post({ t: "set", key: t.dataset.key, text: t.value });
+    } else if (t.dataset.key && t.dataset.key !== "filter" && t.dataset.key !== "palette") {
       const v = parseFloat(t.value.replace(",", "."));
       if (!isNaN(v)) setNumber(t, v);
     }
@@ -440,7 +449,7 @@
       else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && t.dataset.step) {
         e.preventDefault();
         const step = parseFloat(t.dataset.step) * (e.shiftKey ? 10 : 1);
-        setNumber(t, parseFloat(t.value) + (e.key === "ArrowUp" ? step : -step));
+        setNumber(t, value(t) + (e.key === "ArrowUp" ? step : -step));
       }
       return;
     }
@@ -454,12 +463,17 @@
     if (e.ctrlKey || e.metaKey || e.key === "F3" || e.key === "Tab") e.preventDefault();
   });
 
+  // A number field's value: lengths keep theirs (metres) beside the text.
+  function value(input) {
+    return input.dataset.text === "1" ? parseFloat(input.dataset.v) : parseFloat(input.value);
+  }
+
   // Drag a number's label sideways to change it.
   function startScrub(e, label) {
     const input = label.parentElement.querySelector("input");
     const step = parseFloat(label.dataset.step);
     const x0 = e.clientX;
-    const v0 = parseFloat(input.value);
+    const v0 = value(input);
     let moved = false;
     e.preventDefault();
     function move(ev) {

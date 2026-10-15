@@ -4,7 +4,7 @@ Reference screenshots of the sample house in a 1400×860 window, plus two at 128
 
 **Move by base point.** Move (M, the toolbar button, Edit menu or right-click) no longer grabs the selection and sends it after the pointer. If nothing is selected it says what to do, and Move is armed for the next selection. The flow has three steps:
 1. *Base point.* A snap marker shows under the pointer. Nothing moves before this click. Shift+click adds or removes elements here.
-2. *Follow.* The selection follows the pointer by the vector from the base point, with a dashed rubber band that shows its length. The destination snaps to ends, middles, crossings and grid lines; the moving elements are left out of the snaps, so they never snap to themselves. Shift keeps it square. X, Y or Z keeps it on that axis. Typing a distance and pressing Enter moves it that far in the direction the pointer points; the distance is in metres, and `mm` and `cm` suffixes also work. Ctrl toggles *Copy*, and then every click leaves a copy behind.
+2. *Follow.* The selection follows the pointer by the vector from the base point, with a dashed rubber band that shows its length. The destination snaps to ends, middles, crossings and grid lines; the moving elements are left out of the snaps, so they never snap to themselves. Shift keeps it square. X, Y or Z keeps it on that axis. Typing a distance and pressing Enter moves it that far in the direction the pointer points; the distance is in the project's units (a bare number is millimetres in a metric project), and any unit can be written, such as `2.4m`, `240cm` or `8'-6"`. Ctrl toggles *Copy*, and then every click leaves a copy behind.
 3. *Place.* Click. Esc or right-click steps back one stage (from following to choosing the base point again), then cancels. A move is one undo step, and each placed copy is one undo step.
 
 It works the same in plans, sections and 3D; in 3D the move stays on its level unless Z is locked. G, the Blender-like grab, is still there, but it now starts at the snapped point under the pointer, without a jump, and nothing moves until the pointer has gone 4 px. **Rotate** uses the same base-point flow: centre, reference direction, new direction, all snapped.
@@ -57,7 +57,6 @@ It works the same in plans, sections and 3D; in 3D the move stays on its level u
 
 ## Known gaps
 
-- Typed distances are metres (with mm and cm suffixes). There is no project units setting yet.
 - Drag-move moves the element under the pointer, not the whole selection; Move (M) moves all of it.
 - Moving a wall doesn't stretch the walls joined to it, so it can leave a gap at a corner.
 - Scale (S) still works the old way, by pointer distance, without base points.

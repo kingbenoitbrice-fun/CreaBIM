@@ -87,6 +87,7 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Roof => "tent",
         Tool::Stair => "chart-no-axes-column-increasing",
         Tool::Railing => "fence",
+        Tool::Level => "level",
     }
 }
 
@@ -111,7 +112,7 @@ fn tool_group(t: Tool) -> u8 {
         | Tool::Diameter
         | Tool::ArcLength
         | Tool::Note => 3,
-        Tool::Sketch | Tool::Guide | Tool::Grid => 4,
+        Tool::Sketch | Tool::Guide | Tool::Grid | Tool::Level => 4,
     }
 }
 
@@ -223,6 +224,7 @@ impl CreaBimApp {
             "menu:View" => self.view_menu(),
             "menu:Materials" => self.materials_menu(),
             "menu:Create" => self.create_menu(),
+            "underlay" => self.underlay_items(),
             "palette" => self.palette_items(),
             "look" => crate::camera::Look::ALL
                 .iter()
@@ -351,8 +353,10 @@ impl CreaBimApp {
                 ];
                 if let Some((_, z)) = self.work_level() {
                     items.push(
-                        Item::new("wp.offset", "Level plane you can offset")
-                            .hint(format!("A plane at {z:+.2} m to slide up and down")),
+                        Item::new("wp.offset", "Level plane you can offset").hint(format!(
+                            "A plane at {} to slide up and down",
+                            crate::units::elevation(z)
+                        )),
                     );
                 }
                 items
@@ -442,6 +446,14 @@ impl CreaBimApp {
                 .hint("Save as a .creabim project file, with its undo history."),
             Item::new("saveas", "Save as…"),
             Item::Separator,
+            Item::Header("Project".into()),
+            Item::new("units", "Project units…")
+                .icon("ruler")
+                .hint("Metric or imperial: how lengths are shown and typed, in dimensions, schedules and on sheets"),
+            Item::new("levels", "Levels…")
+                .icon("level")
+                .hint("Add, duplicate, rename, move and delete levels"),
+            Item::Separator,
             Item::Header("Linked files".into()),
             Item::new("link", "Import and link…")
                 .icon("link")
@@ -517,6 +529,18 @@ impl CreaBimApp {
                             .hint(t.hint()),
                     );
                 }
+            }
+            if group == 1 {
+                items.push(
+                    Item::new("level.add", "Level above the top one")
+                        .icon("level")
+                        .hint("A new level one storey up, with its floor plan"),
+                );
+                items.push(
+                    Item::new("levels", "Levels…")
+                        .icon("level")
+                        .hint("Add, duplicate, rename, move and delete levels"),
+                );
             }
             if group == 2 {
                 items.push(Item::new("new.sheet", "Sheet").icon("file-text"));
@@ -626,6 +650,8 @@ impl CreaBimApp {
             Item::new("layout.swap", "2D view first").checked(self.layout.swapped),
             Item::Separator,
             Item::new("plan3d", "Show the 2D view in 3D space").checked(self.plan_in_3d),
+            Item::sub("Underlay", self.underlay_items()).enabled(self.active_plan().is_some()),
+            Item::new("levels", "Levels…").icon("level"),
             Item::Separator,
             Item::Header("3D view".into()),
             Item::sub(
@@ -774,7 +800,10 @@ impl CreaBimApp {
             }
             "wp.offset" => {
                 if let Some((_, z)) = self.work_level() {
-                    self.set_workplane(Workplane::ground(z), format!("level at {z:+.2} m"));
+                    self.set_workplane(
+                        Workplane::ground(z),
+                        format!("level at {}", crate::units::elevation(z)),
+                    );
                 }
             }
             "snap.on" => self.plan.snap.on = !self.plan.snap.on,
@@ -812,6 +841,23 @@ impl CreaBimApp {
                     "New project with one level. Pick the Wall tool to start drawing.".into();
             }
             "new.sheet" => self.new_sheet(),
+            "levels" => self.open_levels(),
+            "level.add" => self.add_level_above(),
+            "units" => self.levels.units_open = true,
+            "underlay" => {
+                if let Some((view, level)) = self.active_plan() {
+                    let u = match arg {
+                        "below" => Underlay::Below,
+                        "above" => Underlay::Above,
+                        "none" => Underlay::None,
+                        _ => match by_uuid(self) {
+                            Some(l) if l != level => Underlay::Level(l),
+                            _ => return,
+                        },
+                    };
+                    self.set_underlay(view, u);
+                }
+            }
             "new.schedule" => {
                 if let Some(c) = index.and_then(|i| ScheduleCategory::ALL.get(i)) {
                     self.new_schedule(*c);
@@ -1267,11 +1313,31 @@ impl CreaBimApp {
                 "hint": "Tag every door and window in this view that has no tag yet",
             }));
         }
+        if let Some((view, level)) = self.active_plan() {
+            let u = self.view(view).map(|v| v.underlay).unwrap_or_default();
+            let value = self
+                .underlay_choices(level)
+                .into_iter()
+                .find(|c| c.0 == u)
+                .map_or("None".to_string(), |c| c.1);
+            options.push(json!({
+                "kind": "menu", "key": "underlay", "label": "Underlay", "value": value,
+                "icon": "layers", "hint": "Show another level faintly under this plan, to trace and snap to",
+            }));
+        }
         options.extend(
             self.grid_vis_options()
                 .into_iter()
                 .filter(|o| o["key"] != "gridgroups" && o["kind"] != "sep"),
         );
+        // lengths show and take the project's units; what is typed is read here
+        for o in &mut options {
+            if o["kind"] == "number" && o["unit"] == "m" {
+                let v = o["value"].as_f64().unwrap_or(0.0);
+                o["text"] = json!(crate::units::len(v));
+                o["unit"] = json!("");
+            }
+        }
         if self.active_view.is_some_and(|id| self.is_sheet(id)) {
             options.push(json!({
                 "kind": "menu", "key": "placeview", "label": "", "value": "Place view…",
@@ -1316,6 +1382,9 @@ impl CreaBimApp {
         let model = self.doc.model();
         let mut groups: Vec<(String, Vec<&Element>)> = vec![];
         for e in model.iter() {
+            if matches!(e.kind, ElementKind::Units(_)) {
+                continue;
+            }
             let class = e.ifc_class().to_string();
             match groups.iter_mut().find(|(c, _)| *c == class) {
                 Some((_, v)) => v.push(e),
@@ -1344,9 +1413,16 @@ impl CreaBimApp {
                         })
                     })
                     .collect();
+                // levels are managed from their group
+                let act = (class == "IfcBuildingStorey").then(|| {
+                    json!([
+                        {"id": "level.add", "icon": "plus", "hint": "Add a level above the top one, with its floor plan"},
+                        {"id": "levels", "icon": "ellipsis", "hint": "Levels: add, duplicate, rename, move, delete"},
+                    ])
+                });
                 json!({
                     "key": class, "title": group_title(&class), "icon": icon_name(Icon::of_class(&class)),
-                    "open": rank(&class) < 3, "rows": rows,
+                    "open": rank(&class) < 3, "rows": rows, "acts": act,
                 })
             })
             .collect();
@@ -1545,7 +1621,20 @@ impl CreaBimApp {
                 }
             }
             "set" => {
-                let v = b["value"].as_f64().unwrap_or(0.0);
+                // a length field sends what was typed, in any unit
+                let v = match (b["value"].as_f64(), b["text"].as_str()) {
+                    (Some(v), _) => v,
+                    (None, Some(t)) => match crate::units::parse(t) {
+                        Some(v) => v,
+                        None => {
+                            self.status = format!(
+                                "Couldn't read \"{t}\" as a length. Try 3'-6 1/2\", 1067 or 1.2 m."
+                            );
+                            return;
+                        }
+                    },
+                    _ => return,
+                };
                 match b["key"].as_str().unwrap_or("") {
                     "wall.thickness" => self.plan.wall_thickness = v.clamp(0.05, 1.0),
                     k if k.starts_with("member.") => {

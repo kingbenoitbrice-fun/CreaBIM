@@ -211,19 +211,11 @@ pub fn show(
                 let inner = c.shrink2(egui::vec2(PAD - 3.0, 3.0));
                 match col.field {
                     Some(f) if f.is_length() && schedule::value(&e, f).is_some() => {
-                        let mut mm = schedule::value(&e, f).unwrap_or_default() * 1000.0;
-                        let resp = ui.put(
-                            inner,
-                            egui::DragValue::new(&mut mm)
-                                .speed(5.0)
-                                .range(0.0..=50_000.0)
-                                .max_decimals(0),
-                        );
+                        // lengths show and read in the project units
+                        let mut m = schedule::value(&e, f).unwrap_or_default();
+                        let resp = ui.put(inner, crate::units::drag(&mut m).range(0.0..=50.0));
                         if resp.changed() {
-                            edit = Some((
-                                r.id,
-                                Box::new(move |e| schedule::set_value(e, f, mm / 1000.0)),
-                            ));
+                            edit = Some((r.id, Box::new(move |e| schedule::set_value(e, f, m))));
                         }
                     }
                     Some(Field::Name) => {

@@ -228,9 +228,10 @@ pub fn tag_text(model: &Model, id: ElementId) -> (String, bool) {
         return (String::new(), false);
     };
     let material = creabim_core::material_of(model, e).map(|(m, _)| m.name.clone());
-    let with_material = |mm: f64| match &material {
-        Some(m) => format!("{m} {mm:.0}"),
-        None => format!("{mm:.0}"),
+    let units = model.units();
+    let with_material = |t: f64| match &material {
+        Some(m) => format!("{m} {}", units.dimension(t)),
+        None => units.dimension(t),
     };
     match &e.kind {
         ElementKind::Opening(o) => (
@@ -239,15 +240,15 @@ pub fn tag_text(model: &Model, id: ElementId) -> (String, bool) {
                 .unwrap_or_else(|| e.name.clone()),
             o.kind == OpeningKind::Door,
         ),
-        ElementKind::Wall(w) => (with_material(w.thickness * 1000.0), false),
-        ElementKind::Slab(s) => (with_material(s.thickness * 1000.0), false),
+        ElementKind::Wall(w) => (with_material(w.thickness), false),
+        ElementKind::Slab(s) => (with_material(s.thickness), false),
         _ => (e.name.clone(), false),
     }
 }
 
-/// A dimension's value as it is written: millimetres.
-pub fn dimension_text(a: DVec2, b: DVec2) -> String {
-    format!("{:.0}", a.distance(b) * 1000.0)
+/// A dimension's value as it is written in `units`.
+pub fn dimension_text(units: &creabim_core::Units, a: DVec2, b: DVec2) -> String {
+    units.dimension(a.distance(b))
 }
 
 /// How an annotation with `style` and its own `color` looks.
@@ -299,7 +300,7 @@ fn measured(
         id,
         item: Box::new(Annotation {
             shape,
-            text: measure(d.kind, c, a, b),
+            text: measure(&model.units(), d.kind, c, a, b),
             look: look_of(model, d.style, d.color),
             mm: view.scale / 1000.0,
         }),
@@ -366,7 +367,7 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
                     a,
                     b,
                     offset: d.offset,
-                    text: dimension_text(a, b),
+                    text: dimension_text(&model.units(), a, b),
                     look: look_of(model, d.style, d.color),
                 });
             }
