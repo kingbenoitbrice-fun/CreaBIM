@@ -34,6 +34,7 @@ fn door_splits_wall_into_two_cut_pieces_with_a_swing() {
             width: 1.0,
             height: 2.1,
             material: None,
+            frame: Default::default(),
         }),
     );
     let lid = l.id;

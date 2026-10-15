@@ -79,9 +79,11 @@ pub fn export_glb(model: &Model) -> Vec<u8> {
         let ia = accessors.len() - 1;
 
         let (mat_name, color, [roughness, metallic, opacity]) =
-            match creabim_core::material_of(model, e) {
-                Some((m, mat)) => (m.name.clone(), mat.color, mat.surface()),
-                None => (
+            match (item.finish, creabim_core::material_of(model, e)) {
+                // a window's glass, a door's handle
+                (Some(name), _) => (name.to_string(), item.color, item.surface),
+                (None, Some((m, mat))) => (m.name.clone(), mat.color, mat.surface()),
+                (None, None) => (
                     default_material(&e.kind).to_string(),
                     item.color,
                     [0.8, 0.0, 1.0],

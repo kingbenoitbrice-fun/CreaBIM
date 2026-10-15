@@ -919,7 +919,11 @@ pub fn interact(
                         }
                         _ => String::new(),
                     };
-                    format!("{}: {:.3} m{onto}", d.edit.label(), (now - d.grab).length())
+                    format!(
+                        "{}: {}{onto}",
+                        d.edit.label(),
+                        crate::units::len((now - d.grab).length())
+                    )
                 }
                 Some(_) => format!("{}  {}", d.edit.label(), readout(&changed)),
             });

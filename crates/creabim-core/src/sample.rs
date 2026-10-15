@@ -119,6 +119,11 @@ pub fn sample_house() -> Model {
                         width: 1.2,
                         height: 1.3,
                         material: None,
+                        // two casements side by side
+                        frame: OpeningFrame {
+                            panes_across: 2,
+                            ..Default::default()
+                        },
                     }),
                 );
                 tagged.push((window.id, level, outside * 0.9));
@@ -136,6 +141,7 @@ pub fn sample_house() -> Model {
             width: 1.0,
             height: 2.2,
             material: None,
+            frame: Default::default(),
         }),
     );
     let front_door_id = front_door.id;
@@ -165,6 +171,7 @@ pub fn sample_house() -> Model {
             width: 0.9,
             height: 2.1,
             material: None,
+            frame: Default::default(),
         }),
     );
     tagged.push((inner_door.id, g, DVec2::new(0.8, 0.0)));
