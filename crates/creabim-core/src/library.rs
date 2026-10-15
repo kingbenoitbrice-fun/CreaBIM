@@ -744,8 +744,13 @@ pub fn assign(
 /// (`None`: their type's default look). One undo step.
 pub fn delete(model: &Model, material: ElementId, replacement: Option<ElementId>) -> Transaction {
     let users = users(model, material);
-    let (mut tx, _) = assign(model, &users, replacement.filter(|r| *r != material));
+    let replacement = replacement.filter(|r| *r != material);
+    let (mut tx, _) = assign(model, &users, replacement);
     tx.label = "Delete material".into();
+    // layers of assemblies made of it too
+    for (before, after) in crate::assembly::replace_material(model, material, replacement) {
+        tx = tx.replace(before, after);
+    }
     tx.remove_cascade(model, material)
 }
 

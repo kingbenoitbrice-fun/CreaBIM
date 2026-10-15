@@ -22,6 +22,8 @@ fn door_splits_wall_into_two_cut_pieces_with_a_swing() {
             height: 3.0,
             base_offset: 0.0,
             material: None,
+            assembly: None,
+            flip: false,
         }),
     );
     let d = Element::new(
@@ -108,6 +110,8 @@ fn a_box_subtracted_from_a_wall_leaves_a_gap_in_the_plan() {
             height: 3.0,
             base_offset: 0.0,
             material: None,
+            assembly: None,
+            flip: false,
         }),
     );
     // a 1 m box through the wall, 0.5 to 2.5 m up

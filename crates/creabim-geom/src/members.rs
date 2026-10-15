@@ -36,8 +36,14 @@ pub fn member_mesh(model: &Model, e: &Element) -> Option<(TriMesh, [f32; 3])> {
 /// A roof as a closed solid: each flat piece of its underside, raised by the
 /// roof's upright thickness for the top, with upright edges round the eaves.
 pub fn roof_mesh(r: &Roof, base: f64) -> TriMesh {
+    roof_layer_mesh(r, base, 0.0, r.vertical_thickness())
+}
+
+/// One layer of a layered roof: the part of the roof from `from` to `to`
+/// above its underside, measured upright.
+pub fn roof_layer_mesh(r: &Roof, base: f64, from: f64, to: f64) -> TriMesh {
     let mut m = TriMesh::default();
-    let tv = r.vertical_thickness();
+    let tv = to - from;
     let eaves = r.eave_outline();
     let on_eaves = |a: DVec2, b: DVec2| {
         let mid = (a + b) / 2.0;
@@ -57,7 +63,10 @@ pub fn roof_mesh(r: &Roof, base: f64) -> TriMesh {
     for f in r.faces() {
         let pts = &f.outline;
         let tris = triangulate(pts);
-        let lo: Vec<DVec3> = pts.iter().map(|p| p.extend(base + f.z(*p))).collect();
+        let lo: Vec<DVec3> = pts
+            .iter()
+            .map(|p| p.extend(base + from + f.z(*p)))
+            .collect();
         let hi: Vec<DVec3> = lo.iter().map(|p| *p + DVec3::Z * tv).collect();
         let up = DVec3::new(-f.g.x, -f.g.y, 1.0);
         m.add_polygon(&hi, &tris, up);

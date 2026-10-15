@@ -5,6 +5,7 @@
 //! committed through a [`Document`], which records them for undo and redo.
 
 pub mod annotation;
+pub mod assembly;
 pub mod constraint;
 pub mod csg;
 pub mod document;
@@ -29,6 +30,7 @@ pub mod units;
 pub mod visibility;
 
 pub use annotation::{text_style, DimensionKind, Font, Note, TextStyle};
+pub use assembly::{assembly_of, Assembly, AssemblyUse, Layer, LayerFunction};
 pub use constraint::{Constraint, SolveError};
 pub use csg::BoolOp;
 pub use document::{Document, Step, StepId};

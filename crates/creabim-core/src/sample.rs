@@ -78,6 +78,7 @@ pub fn sample_house() -> Model {
                 material: Some(concrete_id),
                 top_offset: 0.0,
                 bulges: vec![],
+                assembly: None,
             }),
         ));
         for i in 0..4 {
@@ -91,6 +92,8 @@ pub fn sample_house() -> Model {
                     height: 3.0,
                     base_offset: 0.0,
                     material: Some(brick_id),
+                    assembly: None,
+                    flip: false,
                 }),
             );
             let id = wall.id;
@@ -152,6 +155,8 @@ pub fn sample_house() -> Model {
             height: 3.0,
             base_offset: 0.0,
             material: Some(stud_id),
+            assembly: None,
+            flip: false,
         }),
     );
     let pid = part.id;
@@ -437,5 +442,51 @@ pub fn sample_house() -> Model {
     }
 
     doc.commit(tx).expect("sample house is valid");
+    doc.model().clone()
+}
+
+/// The sample house built of layered assemblies: cavity outer walls, a
+/// plastered block partition, concrete floors and a tiled gable roof.
+pub fn layered_house() -> Model {
+    let mut doc = Document::from_model(sample_house());
+    let (tx, ids) = assembly::add_starters(doc.model());
+    doc.commit(tx).expect("starter assemblies are valid");
+    let [outer, inner, floor, roof] = ids[..] else {
+        unreachable!("four starters")
+    };
+    let model = doc.model().clone();
+    let pick = |f: &dyn Fn(&Element) -> bool| -> Vec<ElementId> {
+        model.iter().filter(|e| f(e)).map(|e| e.id).collect()
+    };
+    let is_wall = |e: &Element| matches!(e.kind, ElementKind::Wall(_));
+    let outer_walls = pick(&|e| is_wall(e) && !e.name.contains("Partition"));
+    let partitions = pick(&|e| is_wall(e) && e.name.contains("Partition"));
+    let slabs = pick(&|e| matches!(e.kind, ElementKind::Slab(_)));
+    for (elements, a) in [(outer_walls, outer), (partitions, inner), (slabs, floor)] {
+        let (tx, _) = assembly::assign(doc.model(), &elements, Some(a));
+        doc.commit(tx).expect("assemblies fit");
+    }
+    // a gable roof on the first floor's walls
+    let first = model
+        .levels()
+        .find(|(e, _)| e.name == "First Floor")
+        .map(|(e, _)| e.id)
+        .expect("a first floor");
+    let mut r = Roof::new(
+        first,
+        vec![
+            DVec2::new(0.0, 0.0),
+            DVec2::new(10.0, 0.0),
+            DVec2::new(10.0, 6.0),
+            DVec2::new(0.0, 6.0),
+        ],
+        RoofShape::Gable,
+    );
+    r.base_offset = 3.0;
+    r.pitch = 35.0;
+    let mut e = Element::new("Roof", ElementKind::Roof(r));
+    assembly::set_assembly(doc.model(), &mut e, Some(roof));
+    doc.commit(Transaction::new("Roof").insert(e))
+        .expect("the roof is valid");
     doc.model().clone()
 }

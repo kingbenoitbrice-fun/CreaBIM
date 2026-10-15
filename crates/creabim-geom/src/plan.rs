@@ -181,6 +181,52 @@ fn material_key(model: &Model, id: ElementId) -> (Option<ElementId>, u8) {
     }
 }
 
+/// A piece of cut material: an element's cut, or one layer's of a layered
+/// element. [`clean_up_pieces`] turns them into fills and outlines.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CutPiece {
+    pub id: ElementId,
+    pub points: Vec<DVec2>,
+    pub layer: Option<crate::scene::LayerPart>,
+}
+
+impl CutPiece {
+    /// Which cut wins where two overlap: a wall's core cuts through
+    /// another wall's finishes, walls through slabs, columns through all.
+    fn priority(&self, model: &Model) -> u8 {
+        let core = self.layer.is_none_or(|l| l.core);
+        cut_priority(model, self.id) * 2 + u8::from(core)
+    }
+
+    /// What it merges with: the same material, or for a layer without
+    /// one, layers of the same function (air gaps run on into each other).
+    fn key(&self, model: &Model) -> (Option<ElementId>, u8) {
+        match self.layer {
+            None => material_key(model, self.id),
+            Some(l) => match l.material {
+                Some(m) if model.get(m).is_some() => (Some(m), 0),
+                _ if l.function == creabim_core::LayerFunction::AirGap => (None, 250),
+                _ => (None, 1 + cut_priority(model, self.id)),
+            },
+        }
+    }
+
+    fn hatch(&self, model: &Model) -> Hatch {
+        match self.layer {
+            None => hatch_of(model, self.id),
+            Some(l) => match l.material.and_then(|m| model.get(m)).map(|e| &e.kind) {
+                Some(ElementKind::Material(m)) => m.hatch,
+                _ if l.function == creabim_core::LayerFunction::AirGap => Hatch::Empty,
+                _ => match model.get(self.id).map(|e| &e.kind) {
+                    Some(ElementKind::Wall(_)) => Hatch::Diagonal,
+                    Some(ElementKind::Slab(_)) => Hatch::Cross,
+                    _ => Hatch::Solid,
+                },
+            },
+        }
+    }
+}
+
 fn is_convex(poly: &[DVec2]) -> bool {
     let n = poly.len();
     if n < 3 {
@@ -272,28 +318,42 @@ fn boxes_overlap(a: &[DVec2], b: &[DVec2]) -> bool {
 /// Turn cut polygons into fills plus outlines, leaving out outline segments
 /// shared with a neighbouring cut so joined elements read as one mass.
 pub fn clean_up_cuts(model: &Model, items: &mut Vec<PlanItem>) {
-    let mut cuts: Vec<(ElementId, Vec<DVec2>)> = Vec::new();
+    clean_up_pieces(model, items, vec![]);
+}
+
+/// [`clean_up_cuts`], with layer pieces of layered elements besides the
+/// `Pen::Cut` polygons in `items`. Each layer is filled with its own
+/// material's hatch; the line between two layers of one element is a thin
+/// one, and layers of the same material merge across joined walls.
+pub fn clean_up_pieces(model: &Model, items: &mut Vec<PlanItem>, layers: Vec<CutPiece>) {
+    let mut cuts: Vec<CutPiece> = Vec::new();
     items.retain(|it| match it {
         PlanItem::Polygon {
             id,
             pen: Pen::Cut,
             points,
         } => {
-            cuts.push((*id, points.clone()));
+            cuts.push(CutPiece {
+                id: *id,
+                points: points.clone(),
+                layer: None,
+            });
             false
         }
         _ => true,
     });
+    cuts.extend(layers);
     // where cuts overlap, the higher-priority element cuts through the
     // other: a wall runs through the end of the slab that sits in it
-    let mut polys: Vec<(ElementId, Vec<DVec2>)> = Vec::new();
-    for (id, pts) in &cuts {
-        let mut pieces = vec![pts.clone()];
-        let mine = cut_priority(model, *id);
-        for (other, hole) in &cuts {
-            if cut_priority(model, *other) <= mine || !is_convex(hole) {
+    let mut polys: Vec<CutPiece> = Vec::new();
+    for c in &cuts {
+        let mut pieces = vec![c.points.clone()];
+        let mine = c.priority(model);
+        for other in &cuts {
+            if other.priority(model) <= mine || other.id == c.id || !is_convex(&other.points) {
                 continue;
             }
+            let hole = &other.points;
             pieces = pieces
                 .into_iter()
                 .flat_map(|p| {
@@ -305,13 +365,17 @@ pub fn clean_up_cuts(model: &Model, items: &mut Vec<PlanItem>) {
                 })
                 .collect();
         }
-        polys.extend(pieces.into_iter().map(|p| (*id, p)));
+        polys.extend(pieces.into_iter().map(|p| CutPiece {
+            points: p,
+            ..c.clone()
+        }));
     }
-    for (id, pts) in &polys {
+    let keys: Vec<(Option<ElementId>, u8)> = polys.iter().map(|p| p.key(model)).collect();
+    for p in &polys {
         items.push(PlanItem::Fill {
-            id: *id,
-            points: pts.clone(),
-            hatch: hatch_of(model, *id),
+            id: p.id,
+            points: p.points.clone(),
+            hatch: p.hatch(model),
         });
     }
     let edges = |pts: &Vec<DVec2>| -> Vec<(DVec2, DVec2)> {
@@ -320,43 +384,91 @@ pub fn clean_up_cuts(model: &Model, items: &mut Vec<PlanItem>) {
             .collect()
     };
     let eps = 1e-4;
-    for (i, (id, pts)) in polys.iter().enumerate() {
-        for (a, b) in edges(pts) {
+    for (i, piece) in polys.iter().enumerate() {
+        for (a, b) in edges(&piece.points) {
             let len = a.distance(b);
             if len < eps {
                 continue;
             }
             let d = (b - a) / len;
             let on_line = |p: DVec2| (p - a).perp_dot(d).abs() < eps;
-            // parts of this edge covered by another cut's edge
+            // parts of this edge covered by another cut's edge: merged away
+            // where it is the same material, a thin line between two layers
+            // of one element (drawn by the first of the two)
             let mut covered: Vec<(f64, f64)> = Vec::new();
-            for (j, (other_id, other)) in polys.iter().enumerate() {
-                if i == j || material_key(model, *id) != material_key(model, *other_id) {
+            let mut thin: Vec<(f64, f64, bool)> = Vec::new();
+            for (j, other) in polys.iter().enumerate() {
+                let same = keys[i] == keys[j];
+                if i == j || (!same && other.id != piece.id) {
                     continue;
                 }
-                for (p, q) in edges(other) {
+                for (p, q) in edges(&other.points) {
                     if on_line(p) && on_line(q) {
                         let (tp, tq) = ((p - a).dot(d), (q - a).dot(d));
                         let (lo, hi) = (tp.min(tq).max(0.0), tp.max(tq).min(len));
                         if hi > lo + eps {
-                            covered.push((lo, hi));
+                            if same {
+                                covered.push((lo, hi));
+                            } else {
+                                thin.push((lo, hi, i < j));
+                            }
                         }
                     }
                 }
             }
-            covered.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
-            let mut t = 0.0;
-            for (lo, hi) in covered.into_iter().chain([(len, len)]) {
-                if lo > t + eps {
+            // split the edge where any of that changes, and draw each part
+            let mut ts: Vec<f64> = vec![0.0, len];
+            for (lo, hi) in &covered {
+                ts.extend([*lo, *hi]);
+            }
+            for (lo, hi, _) in &thin {
+                ts.extend([*lo, *hi]);
+            }
+            ts.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            ts.dedup_by(|x, y| (*x - *y).abs() < eps);
+            let mut run: Option<(f64, f64, Pen)> = None;
+            let flush = |run: &mut Option<(f64, f64, Pen)>, items: &mut Vec<PlanItem>| {
+                if let Some((t0, t1, pen)) = run.take() {
                     items.push(PlanItem::Line {
-                        id: *id,
-                        pen: Pen::Cut,
-                        a: a + d * t,
-                        b: a + d * lo,
+                        id: piece.id,
+                        pen,
+                        a: a + d * t0,
+                        b: a + d * t1,
                     });
                 }
-                t = t.max(hi);
+            };
+            for w in ts.windows(2) {
+                let (t0, t1) = (w[0], w[1]);
+                let m = (t0 + t1) / 2.0;
+                let inside = |lo: f64, hi: f64| lo <= m && m <= hi;
+                let pen = if covered.iter().any(|(lo, hi)| inside(*lo, *hi)) {
+                    None
+                } else {
+                    let mine: Vec<bool> = thin
+                        .iter()
+                        .filter(|(lo, hi, _)| inside(*lo, *hi))
+                        .map(|t| t.2)
+                        .collect();
+                    if mine.is_empty() {
+                        Some(Pen::Cut)
+                    } else if mine.iter().any(|f| *f) {
+                        Some(Pen::Projection)
+                    } else {
+                        None
+                    }
+                };
+                match (pen, &mut run) {
+                    (Some(p), Some((_, end, rp))) if *rp == p && (*end - t0).abs() < eps => {
+                        *end = t1
+                    }
+                    (Some(p), _) => {
+                        flush(&mut run, items);
+                        run = Some((t0, t1, p));
+                    }
+                    (None, _) => flush(&mut run, items),
+                }
             }
+            flush(&mut run, items);
         }
     }
 }
@@ -632,6 +744,8 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
     let targets: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.0).collect();
     // elements whose plan comes from slicing their final 3D shape
     let mut sliced: Vec<ElementId> = Vec::new();
+    // the layers of layered walls, cut
+    let mut layers: Vec<CutPiece> = Vec::new();
     for e in model.iter() {
         if cutters.contains(&e.id) {
             continue;
@@ -746,6 +860,39 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                 if w.length() > u + 1e-9 {
                     pieces.push((u, w.length()));
                 }
+                if let Some((_, asm)) = creabim_core::assembly_of(model, e) {
+                    // each layer between its own ends: a core runs on at a T
+                    for band in creabim_core::assembly::wall_bands(asm, w) {
+                        let at = |u: f64, s: f64| {
+                            let u = if u <= 0.0 {
+                                ends.layer_start(w, s, band.core)
+                            } else if u >= len {
+                                ends.layer_end(w, s, band.core)
+                            } else {
+                                u
+                            };
+                            w.start + d * u + n * s
+                        };
+                        for &(a, b) in &pieces {
+                            layers.push(CutPiece {
+                                id: e.id,
+                                points: vec![
+                                    at(a, band.s0),
+                                    at(b, band.s0),
+                                    at(b, band.s1),
+                                    at(a, band.s1),
+                                ],
+                                layer: Some(crate::scene::LayerPart {
+                                    index: band.index,
+                                    material: band.material,
+                                    function: band.function,
+                                    core: band.core,
+                                }),
+                            });
+                        }
+                    }
+                    continue;
+                }
                 for (a, b) in pieces {
                     items.push(PlanItem::Polygon {
                         id: e.id,
@@ -799,7 +946,8 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
     }
     // a cut wall keeps its opening symbols but takes its outline from the slice
     items.retain(|it| !sliced.contains(&it.id()) || matches!(it, PlanItem::Label { .. }));
-    clean_up_cuts(model, &mut items);
+    layers.retain(|p| !sliced.contains(&p.id));
+    clean_up_pieces(model, &mut items, layers);
     if !sliced.is_empty() {
         let z = model.level(level).map_or(0.0, |l| l.elevation) + cut_height;
         let scene = crate::scene::build_scene(model);
@@ -905,10 +1053,16 @@ fn sliced_plan(model: &Model, item: &crate::scene::SceneItem, z: f64, items: &mu
                 b: lp[(i + 1) % n],
             });
         }
+        let hatch = CutPiece {
+            id: item.id,
+            points: vec![],
+            layer: item.layer,
+        }
+        .hatch(model);
         items.push(PlanItem::Fill {
             id: item.id,
             points: lp,
-            hatch: hatch_of(model, item.id),
+            hatch,
         });
     }
     for (a, b) in crate::section::feature_edges(item) {

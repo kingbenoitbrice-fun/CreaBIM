@@ -1344,6 +1344,8 @@ pub fn plan_tool(
                         height,
                         base_offset: 0.0,
                         material: None,
+                        assembly: None,
+                        flip: false,
                     }),
                 );
                 selection.only(e.id);
@@ -1540,6 +1542,8 @@ fn section_tool(
                         height,
                         base_offset: z0 - elevation,
                         material: None,
+                        assembly: None,
+                        flip: false,
                     }),
                 );
                 selection.only(e.id);
@@ -1657,6 +1661,7 @@ fn section_tool(
                         material: None,
                         top_offset: 0.0,
                         bulges: vec![],
+                        assembly: None,
                     }),
                 );
                 selection.only(e.id);

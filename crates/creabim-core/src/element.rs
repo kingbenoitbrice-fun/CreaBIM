@@ -68,6 +68,8 @@ impl Element {
             // a missing material falls back to the element type's default,
             // so materials are not hard references
             ElementKind::Material(_) => vec![],
+            // so are assemblies, and the materials of their layers
+            ElementKind::Assembly(_) => vec![],
             ElementKind::Opening(o) => vec![o.host],
             ElementKind::FreeMesh(m) => m.level.into_iter().collect(),
             ElementKind::View(v) => match &v.kind {
@@ -117,6 +119,7 @@ impl Element {
             ElementKind::Sheet(_) => "Sheet",
             ElementKind::Viewport(_) => "Viewport",
             ElementKind::Material(_) => "IfcMaterial",
+            ElementKind::Assembly(_) => "IfcMaterialLayerSet",
             ElementKind::Dimension(_) => "Dimension",
             ElementKind::Tag(_) => "Tag",
             ElementKind::Note(_) => "Note",
@@ -260,6 +263,7 @@ impl Element {
             ElementKind::Note(n) => n.validate(),
             ElementKind::TextStyle(s) => s.validate(),
             ElementKind::Units(_) => Ok(()),
+            ElementKind::Assembly(a) => a.validate(),
             ElementKind::Sketch(s) => s.check(),
             ElementKind::Cut(c) => {
                 if c.target == c.cutter {
@@ -309,6 +313,8 @@ pub enum ElementKind {
     Stair(Stair),
     Railing(Railing),
     GridGroup(GridGroup),
+    /// A named layered build-up that walls, slabs or roofs are made of.
+    Assembly(crate::assembly::Assembly),
     /// The project's units: one per project, read through [`crate::Model::units`].
     Units(crate::units::Units),
 }
@@ -340,6 +346,7 @@ impl ElementKind {
             ElementKind::Note(_) => "Note",
             ElementKind::TextStyle(_) => "TextStyle",
             ElementKind::GridGroup(_) => "GridGroup",
+            ElementKind::Assembly(_) => "Assembly",
             ElementKind::Units(_) => "Units",
         }
     }
@@ -643,6 +650,18 @@ pub struct Wall {
     pub base_offset: f64,
     #[serde(default)]
     pub material: Option<ElementId>,
+    /// The layered assembly the wall is built of. With one, the wall's
+    /// thickness is the assembly's total and `material` is not drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assembly: Option<ElementId>,
+    /// The assembly's exterior face is on the wall's left (start → end)
+    /// instead of its right.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flip: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl Wall {
@@ -674,6 +693,10 @@ pub struct Slab {
     /// end of the list are straight, so older slabs have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bulges: Vec<f64>,
+    /// The layered assembly the slab is built of, layers listed from the
+    /// top down. With one, the slab's thickness is the assembly's total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assembly: Option<ElementId>,
 }
 
 impl Slab {
@@ -686,6 +709,7 @@ impl Slab {
             material: None,
             top_offset: 0.0,
             bulges: vec![],
+            assembly: None,
         }
     }
 

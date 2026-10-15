@@ -357,6 +357,7 @@ impl CreaBimApp {
             }),
             Item::sub("Assign material", assign).enabled(targets > 0),
         ]);
+        items.extend(self.assemblies_menu());
         items
     }
 
@@ -391,7 +392,7 @@ impl CreaBimApp {
                     .map(|e| e.id);
                 self.assign_material(m);
             }
-            _ => return false,
+            _ => return self.assemblies_action(head, arg),
         }
         true
     }

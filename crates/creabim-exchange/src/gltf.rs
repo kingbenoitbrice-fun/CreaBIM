@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 pub fn export_glb(model: &Model) -> Vec<u8> {
-    let scene = creabim_geom::scene::drawn_scene(model);
+    let scene = creabim_geom::scene::drawn_elements(model);
     let mut bin: Vec<u8> = Vec::new();
     let (mut views, mut accessors, mut meshes, mut nodes) = (vec![], vec![], vec![], vec![]);
     let mut materials: Vec<Value> = Vec::new();

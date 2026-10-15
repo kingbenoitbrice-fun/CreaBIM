@@ -153,6 +153,7 @@ fn group_title(class: &str) -> String {
         "IfcBuildingElementProxy" => "Masses".into(),
         "Sketch" => "Sketches".into(),
         "IfcMaterial" => "Materials".into(),
+        "IfcMaterialLayerSet" => "Assemblies".into(),
         "TextStyle" => "Text styles".into(),
         c => {
             let c = c.strip_prefix("Ifc").unwrap_or(c);
@@ -1413,13 +1414,17 @@ impl CreaBimApp {
                         })
                     })
                     .collect();
-                // levels are managed from their group
-                let act = (class == "IfcBuildingStorey").then(|| {
-                    json!([
+                // levels and assemblies are managed from their groups
+                let act = match class.as_str() {
+                    "IfcBuildingStorey" => Some(json!([
                         {"id": "level.add", "icon": "plus", "hint": "Add a level above the top one, with its floor plan"},
                         {"id": "levels", "icon": "ellipsis", "hint": "Levels: add, duplicate, rename, move, delete"},
-                    ])
-                });
+                    ])),
+                    "IfcMaterialLayerSet" => Some(json!([
+                        {"id": "asm.browser", "icon": "ellipsis", "hint": "Assemblies: edit layers, add, duplicate, delete, assign"},
+                    ])),
+                    _ => None,
+                };
                 json!({
                     "key": class, "title": group_title(&class), "icon": icon_name(Icon::of_class(&class)),
                     "open": rank(&class) < 3, "rows": rows, "acts": act,

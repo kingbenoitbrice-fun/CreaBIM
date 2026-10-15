@@ -110,6 +110,13 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
     let area = |v: f64| units.area(v);
     let name = |id: ElementId| model.get(id).map(|e| e.name.clone()).unwrap_or_default();
     let material = |e: &Element| {
+        // A layered element is listed by its core layer's material.
+        let core = creabim_core::assembly_of(model, e)
+            .and_then(|(_, a)| a.layers.get(a.core().0)?.material)
+            .and_then(|m| model.get(m));
+        if let Some(m) = core {
+            return m.name.clone();
+        }
         creabim_core::material_of(model, e)
             .map(|(m, _)| m.name.clone())
             .unwrap_or_else(|| "-".into())
@@ -177,7 +184,12 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
             (columns, vec![format!("{} {what}", rows.len())])
         }
         ScheduleCategory::Walls => {
-            let columns = vec![
+            // The assembly column shows up once any wall has layers, so
+            // single-material projects keep their old table.
+            let layered = model
+                .iter()
+                .any(|e| matches!(&e.kind, ElementKind::Wall(w) if w.assembly.is_some()));
+            let mut columns = vec![
                 col("Name", Some(Field::Name), 30.0, false),
                 col("Level", None, 28.0, false),
                 col("Material", Some(Field::Material), 30.0, false),
@@ -186,6 +198,9 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                 col("Height", Some(Field::WallHeight), 18.0, true),
                 col("Area", None, 22.0, true),
             ];
+            if layered {
+                columns.insert(3, col("Assembly", None, 44.0, false));
+            }
             let mut total_area = 0.0;
             let mut total_length = 0.0;
             for e in model.iter() {
@@ -203,35 +218,37 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                 let a = (w.length() * w.height - openings).max(0.0);
                 total_area += a;
                 total_length += w.length();
-                rows.push((
-                    elevation(e),
-                    String::new(),
-                    Row {
-                        id: e.id,
-                        cells: vec![
-                            e.name.clone(),
-                            name(w.level),
-                            material(e),
-                            mm(w.length()),
-                            mm(w.thickness),
-                            mm(w.height),
-                            area(a),
-                        ],
-                    },
-                ));
+                let mut cells = vec![
+                    e.name.clone(),
+                    name(w.level),
+                    material(e),
+                    mm(w.length()),
+                    mm(w.thickness),
+                    mm(w.height),
+                    area(a),
+                ];
+                if layered {
+                    let asm = w
+                        .assembly
+                        .and_then(|id| model.get(id))
+                        .map_or_else(|| "-".to_string(), |a| a.name.clone());
+                    cells.insert(3, asm);
+                }
+                rows.push((elevation(e), String::new(), Row { id: e.id, cells }));
             }
-            (
-                columns,
-                vec![
-                    format!("{} walls", rows.len()),
-                    String::new(),
-                    String::new(),
-                    mm(total_length),
-                    String::new(),
-                    String::new(),
-                    area(total_area),
-                ],
-            )
+            let mut totals = vec![
+                format!("{} walls", rows.len()),
+                String::new(),
+                String::new(),
+                mm(total_length),
+                String::new(),
+                String::new(),
+                area(total_area),
+            ];
+            if layered {
+                totals.insert(3, String::new());
+            }
+            (columns, totals)
         }
         ScheduleCategory::Slabs => {
             let columns = vec![
@@ -494,6 +511,22 @@ mod tests {
         assert!(csv.starts_with("Name,Level,Material,Length"));
         assert!(csv.contains("GF Wall 1,Ground Floor,Brick,10000,300,3000"));
         assert!(csv.trim_end().ends_with("m²"));
+    }
+
+    #[test]
+    fn layered_walls_list_their_assembly() {
+        let m = creabim_core::sample::layered_house();
+        let walls = schedule(&m, ScheduleCategory::Walls);
+        assert_eq!(walls.columns[3].title, "Assembly");
+        let row = walls
+            .rows
+            .iter()
+            .find(|r| r.cells[0] == "GF Wall 1")
+            .unwrap();
+        assert_eq!(row.cells[2], "Block, concrete", "listed by its core");
+        assert_eq!(row.cells[3], "Exterior wall 365, brick cavity");
+        assert_eq!(row.cells[5], "365");
+        assert_eq!(walls.totals.len(), walls.columns.len());
     }
 
     #[test]

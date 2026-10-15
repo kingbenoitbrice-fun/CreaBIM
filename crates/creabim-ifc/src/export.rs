@@ -188,6 +188,8 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
     let mut wall_refs: HashMap<ElementId, (Ref, Ref)> = HashMap::new(); // entity, placement
     let joins = creabim_core::wall_joins(model);
     let mut by_material: HashMap<ElementId, Vec<Ref>> = HashMap::new();
+    // layered elements, associated with their assembly's layer set instead
+    let mut layered: Vec<(Ref, ElementId, LayerUse)> = Vec::new();
     // boolean cuts: cutters are construction aids and stay out; what they
     // cut is written as its final shape, tessellated
     let cuts = creabim_geom::scene::cuts(model);
@@ -196,7 +198,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         HashMap::new()
     } else {
         let targets: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.0).collect();
-        creabim_geom::scene::build_scene(model)
+        creabim_geom::scene::element_scene(model)
             .into_iter()
             .filter(|i| targets.contains(&i.id))
             .map(|i| (i.id, i.mesh))
@@ -224,12 +226,10 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 // footprint in wall-local coordinates, following its joins
                 let ends = joins.get(&e.id).copied().unwrap_or_default();
                 let t = wall.thickness / 2.0;
-                let local = [
-                    DVec2::new(ends.start_u(1.0), t),
-                    DVec2::new(ends.end_u(wall, 1.0), t),
-                    DVec2::new(ends.end_u(wall, -1.0), -t),
-                    DVec2::new(ends.start_u(-1.0), -t),
-                ];
+                let asm = creabim_core::assembly_of(model, e);
+                // a layered wall's core may run on past its faces at a T
+                let core = asm.map_or((-t, t), |(_, a)| creabim_core::assembly::wall_core(a, wall));
+                let local = ends.local_outline(wall, core);
                 let mut pts: Vec<Ref> = local
                     .iter()
                     .map(|p| c.w.add("IFCCARTESIANPOINT", point2(p.x, p.y)))
@@ -271,7 +271,11 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let r = product(&mut c, "IFCWALL", e, pl, shape, ",$,.STANDARD.");
                 wall_refs.insert(e.id, (r, pl));
                 contained.entry(Some(wall.level)).or_default().push(r);
-                if let Some((m, _)) = creabim_core::material_of(model, e) {
+                if let Some((a, _)) = asm {
+                    // layers run across the wall from its exterior face
+                    let (sense, offset) = if wall.flip { (false, t) } else { (true, -t) };
+                    layered.push((r, a.id, LayerUse::Usage("AXIS2", sense, offset)));
+                } else if let Some((m, _)) = creabim_core::material_of(model, e) {
                     by_material.entry(m.id).or_default().push(r);
                 }
             }
@@ -309,7 +313,10 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 };
                 let r = product(&mut c, "IFCSLAB", e, pl, shape, ",$,.FLOOR.");
                 contained.entry(Some(slab.level)).or_default().push(r);
-                if let Some((m, _)) = creabim_core::material_of(model, e) {
+                if let Some((a, _)) = creabim_core::assembly_of(model, e) {
+                    // layers run down from the top
+                    layered.push((r, a.id, LayerUse::Usage("AXIS3", false, slab.top_offset)));
+                } else if let Some((m, _)) = creabim_core::material_of(model, e) {
                     by_material.entry(m.id).or_default().push(r);
                 }
             }
@@ -371,7 +378,10 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let (class, tail) = member_entity(k);
                 let r = product(&mut c, class, e, pl, shape, tail);
                 contained.entry(level).or_default().push(r);
-                if let Some((m, _)) = creabim_core::material_of(model, e) {
+                if let Some((a, _)) = creabim_core::assembly_of(model, e) {
+                    // a roof's shape isn't a straight extrusion: the set itself
+                    layered.push((r, a.id, LayerUse::Set));
+                } else if let Some((m, _)) = creabim_core::material_of(model, e) {
                     by_material.entry(m.id).or_default().push(r);
                 }
             }
@@ -460,6 +470,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
 
     // Materials, each associated with the elements made of it. Unused ones
     // are written too, so the project's material library goes along.
+    let mut material_refs: HashMap<ElementId, Ref> = HashMap::new();
     for e in model.iter() {
         let users = by_material.get(&e.id);
         let ElementKind::Material(mat) = &e.kind else {
@@ -477,6 +488,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             "IFCMATERIAL",
             format!("{},{},{category}", string(&e.name), string(&description)),
         );
+        material_refs.insert(e.id, m);
         // the look, as a surface style on the material: colour,
         // transparency, roughness and whether it is a metal
         let [r, g, b] = mat.color.map(|v| real(v as f64));
@@ -516,6 +528,73 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 format!("{g},$,$,$,{},{m}", list(users)),
             );
         }
+    }
+
+    // Assemblies as layer sets, unused ones too; each layered element gets
+    // a usage saying how the set lies in it (walls across, slabs down).
+    let mut layer_sets: HashMap<ElementId, Ref> = HashMap::new();
+    for e in model.iter() {
+        let ElementKind::Assembly(a) = &e.kind else {
+            continue;
+        };
+        if a.layers.is_empty() {
+            continue;
+        }
+        let layers: Vec<Ref> = a
+            .layers
+            .iter()
+            .map(|l| {
+                let m = l
+                    .material
+                    .and_then(|m| material_refs.get(&m))
+                    .map_or("$".to_string(), |r| r.to_string());
+                let air = l.function == creabim_core::LayerFunction::AirGap;
+                c.w.add(
+                    "IFCMATERIALLAYER",
+                    format!(
+                        "{m},{},{},{},$,{},$",
+                        real(l.thickness),
+                        if air { ".T." } else { ".F." },
+                        string(l.function.label()),
+                        string(l.function.ifc_category())
+                    ),
+                )
+            })
+            .collect();
+        let description = match a.description.trim() {
+            "" => "$".to_string(),
+            d => string(d),
+        };
+        let set = c.w.add(
+            "IFCMATERIALLAYERSET",
+            format!("{},{},{description}", list(&layers), string(&e.name)),
+        );
+        layer_sets.insert(e.id, set);
+    }
+    for (product, assembly, how) in &layered {
+        let Some(&set) = layer_sets.get(assembly) else {
+            continue;
+        };
+        let relating = match how {
+            LayerUse::Set => set,
+            LayerUse::Usage(axis, positive, offset) => c.w.add(
+                "IFCMATERIALLAYERSETUSAGE",
+                format!(
+                    "{set},.{axis}.,{},{},$",
+                    if *positive {
+                        ".POSITIVE."
+                    } else {
+                        ".NEGATIVE."
+                    },
+                    real(*offset)
+                ),
+            ),
+        };
+        let g = c.guid();
+        c.w.add(
+            "IFCRELASSOCIATESMATERIAL",
+            format!("{g},$,$,$,({product}),{relating}"),
+        );
     }
 
     // Spatial structure.
@@ -558,6 +637,16 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         string("CreaBIM"),
     );
     c.w.finish(&header)
+}
+
+/// How a layered element takes its assembly's layer set.
+enum LayerUse {
+    /// Through an `IfcMaterialLayerSetUsage`: the axis the layers run
+    /// along, whether they run its positive way, and where the first
+    /// layer starts from the element's reference line.
+    Usage(&'static str, bool, f64),
+    /// The set itself, for shapes that aren't straight extrusions.
+    Set,
 }
 
 /// A triangle mesh as an `IfcTriangulatedFaceSet`, its corners taken into

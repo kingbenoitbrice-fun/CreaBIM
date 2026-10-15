@@ -153,6 +153,10 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
                     if factor.z <= 0.0 {
                         return None;
                     }
+                    // a mirror keeps the exterior on the same side of the building
+                    if factor.x * factor.y < 0.0 {
+                        w.flip = !w.flip;
+                    }
                     let level = elevation(Some(w.level));
                     let base = level + w.base_offset;
                     w.base_offset = center.z + (base - center.z) * factor.z - level;
@@ -285,6 +289,7 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
         ElementKind::Sheet(_)
         | ElementKind::Viewport(_)
         | ElementKind::Material(_)
+        | ElementKind::Assembly(_)
         | ElementKind::Dimension(_)
         | ElementKind::Tag(_)
         | ElementKind::Note(_)

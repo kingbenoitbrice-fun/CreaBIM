@@ -156,6 +156,46 @@ impl Document {
         Ok(())
     }
 
+    /// Commit `tx`, folding it into the last step when that has the same
+    /// label and both only replace elements: dragging a value in a field
+    /// is then one undo step, even when it changes several elements.
+    pub fn commit_merged(&mut self, tx: Transaction) -> Result<(), ModelError> {
+        let replaces =
+            |t: &Transaction| t.ops.iter().all(|o| matches!(o, crate::Op::Replace { .. }));
+        let mergeable = self.redo.is_empty()
+            && replaces(&tx)
+            && matches!(self.undo.last(), Some(Step { tx: t, .. }) if t.label == tx.label && replaces(t));
+        if !mergeable {
+            return self.commit(tx);
+        }
+        if tx.ops.is_empty() {
+            return Ok(());
+        }
+        tx.apply(&mut self.model)?;
+        let step = self.undo.last_mut().expect("a step to merge into");
+        // what each element was before the first edit, and is now
+        let mut befores: Vec<Element> = vec![];
+        for o in step.tx.ops.iter().chain(&tx.ops) {
+            if let crate::Op::Replace { before, .. } = o {
+                if !befores.iter().any(|b| b.id == before.id) {
+                    befores.push(before.clone());
+                }
+            }
+        }
+        step.tx.ops = befores
+            .into_iter()
+            .filter_map(|before| {
+                let after = self.model.get(before.id)?.clone();
+                (after != before).then_some(crate::Op::Replace { before, after })
+            })
+            .collect();
+        step.id = StepId::next();
+        if step.tx.ops.is_empty() {
+            self.undo.pop();
+        }
+        Ok(())
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

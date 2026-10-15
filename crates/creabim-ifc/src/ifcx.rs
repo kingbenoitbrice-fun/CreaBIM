@@ -49,10 +49,11 @@ const CLASS_URI: &str = "https://identifier.buildingsmart.org/uri/buildingsmart/
 /// building → storeys → elements, each with its class, mesh, transform,
 /// name and a few properties.
 pub fn export_ifcx(model: &Model) -> String {
-    let scene: HashMap<ElementId, creabim_geom::TriMesh> = creabim_geom::build_scene(model)
-        .into_iter()
-        .map(|s| (s.id, s.mesh))
-        .collect();
+    let scene: HashMap<ElementId, creabim_geom::TriMesh> =
+        creabim_geom::scene::element_scene(model)
+            .into_iter()
+            .map(|s| (s.id, s.mesh))
+            .collect();
     let mut nodes: Vec<J> = Vec::new();
     // ids for nodes CreaBIM has no element for, stable across exports
     let base = model.levels().next().map_or(ElementId::NIL, |(e, _)| e.id);
@@ -163,6 +164,13 @@ pub fn export_ifcx(model: &Model) -> String {
                 attrs.insert(CREABIM.into(), creabim);
                 nodes.push(node(&path, Names::default(), Map::new(), attrs));
                 continue; // materials are roots, inherited by what is made of them
+            }
+            ElementKind::Assembly(_) => {
+                // a root of its own, which the layered elements name in
+                // their CreaBIM parameters
+                attrs.insert(CREABIM.into(), creabim);
+                nodes.push(node(&path, Names::default(), Map::new(), attrs));
+                continue;
             }
             k if creabim_core::members::is_member(k) => {
                 let level = creabim_core::members::level_of(k);
@@ -757,9 +765,43 @@ pub fn import_ifcx(json: &str) -> Result<ImportResult, ImportError> {
             }
         }
     }
+    // assemblies, and the materials of their layers that nothing else uses
+    let mut assemblies = vec![];
+    for (path, raw) in &r.raw {
+        let Some((name, kind @ ElementKind::Assembly(_))) = creabim_element(&raw.attributes) else {
+            continue;
+        };
+        if let ElementKind::Assembly(a) = &kind {
+            for m in a.layers.iter().filter_map(|l| l.material) {
+                let mp = path_of(m);
+                if b.material_ids.contains_key(&mp) {
+                    continue;
+                }
+                if let Some(mr) = r.raw.get(&mp) {
+                    let attrs = mr.attributes.clone();
+                    b.material(&mp, &attrs);
+                }
+            }
+        }
+        let id = b.id(path);
+        assemblies.push(Element {
+            id,
+            name,
+            kind,
+            source: None,
+        });
+    }
     b.objects(objects);
     let mut warnings = b.warnings;
-    let elements = [b.materials, b.levels, b.grids, b.main, b.openings].concat();
+    let elements = [
+        b.materials,
+        assemblies,
+        b.levels,
+        b.grids,
+        b.main,
+        b.openings,
+    ]
+    .concat();
     let model = build_model(elements, &mut warnings)?;
     Ok(ImportResult {
         model,
@@ -942,7 +984,8 @@ impl Builder {
                     // groups first, so their lines find them
                     ElementKind::GridGroup(_) => self.grids.insert(0, e),
                     ElementKind::Grid(_) => self.grids.push(e),
-                    ElementKind::Level(_) | ElementKind::Material(_) => {}
+                    ElementKind::Level(_) | ElementKind::Material(_) | ElementKind::Assembly(_) => {
+                    }
                     _ => self.main.push(e),
                 }
                 continue;
@@ -997,6 +1040,8 @@ impl Builder {
                             height: z1 - z0,
                             base_offset: z0 - elev,
                             material,
+                            assembly: None,
+                            flip: false,
                         }),
                     });
                     continue;
@@ -1018,6 +1063,7 @@ impl Builder {
                                 material,
                                 top_offset: 0.0,
                                 bulges: vec![],
+                                assembly: None,
                             }),
                         });
                         continue;
