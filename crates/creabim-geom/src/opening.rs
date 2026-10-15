@@ -1,0 +1,346 @@
+//! Doors and windows built inside their wall openings: a frame round the
+//! edge, glass set back in it (split into panes by glazing bars), and for a
+//! door a leaf with a handle. Every part is a box in the opening's own
+//! frame, so the 3D view, drawings and IFC export share one description.
+
+use crate::wall::Cut;
+use crate::TriMesh;
+use creabim_core::{Opening, OpeningFrame, OpeningKind, Wall};
+use glam::{DVec2, DVec3};
+
+/// What a part of a door or window is, which decides how it is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Part {
+    /// Frame members and glazing bars, in the opening's material.
+    Frame,
+    /// A door's leaf, in the opening's material.
+    Leaf,
+    Glass,
+    Handle,
+}
+
+/// One part as a box in opening coordinates: `x` along the wall from the
+/// opening's left edge, `y` across the wall from its centre line (towards
+/// the wall's left, where a door swings), `z` up from the opening's bottom.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PartBox {
+    pub part: Part,
+    pub lo: DVec3,
+    pub hi: DVec3,
+}
+
+/// Glass thickness, kept thin but solid so drawings show it.
+const GLASS: f64 = 0.02;
+
+/// The opening as built: the rectangle it fills in the wall (clipped to
+/// the wall) and its frame fitted to that size.
+#[derive(Clone, Copy, Debug)]
+pub struct Fitted {
+    pub cut: Cut,
+    pub frame: OpeningFrame,
+}
+
+impl Fitted {
+    pub fn of(o: &Opening, wall: &Wall) -> Option<Fitted> {
+        let cut = Cut::of(o, wall)?;
+        let frame = o
+            .frame
+            .fitted(cut.u1 - cut.u0, cut.v1 - cut.v0, wall.thickness);
+        Some(Fitted { cut, frame })
+    }
+
+    pub fn width(&self) -> f64 {
+        self.cut.u1 - self.cut.u0
+    }
+
+    pub fn height(&self) -> f64 {
+        self.cut.v1 - self.cut.v0
+    }
+
+    /// A door leaf's thickness.
+    pub fn leaf(&self) -> f64 {
+        (self.frame.depth * 0.6).min(0.045)
+    }
+}
+
+/// Every part of a door or window, in opening coordinates.
+pub fn opening_boxes(o: &Opening, wall: &Wall) -> Vec<PartBox> {
+    let Some(f) = Fitted::of(o, wall) else {
+        return vec![];
+    };
+    let (w, h) = (f.width(), f.height());
+    let fw = f.frame.width;
+    let hd = f.frame.depth / 2.0;
+    let mut out = Vec::new();
+    let mut add = |part, lo: DVec3, hi: DVec3| {
+        if (hi - lo).min_element() > 1e-6 {
+            out.push(PartBox { part, lo, hi });
+        }
+    };
+    let b = DVec3::new;
+    // jambs and head, round every opening
+    add(Part::Frame, b(0.0, -hd, 0.0), b(fw, hd, h));
+    add(Part::Frame, b(w - fw, -hd, 0.0), b(w, hd, h));
+    add(Part::Frame, b(fw, -hd, h - fw), b(w - fw, hd, h));
+    match o.kind {
+        OpeningKind::Window => {
+            // the sill member, then glazing bars splitting the glass
+            add(Part::Frame, b(fw, -hd, 0.0), b(w - fw, hd, fw));
+            let (x0, x1, z0, z1) = (fw, w - fw, fw, h - fw);
+            let (na, nu) = (f.frame.panes_across, f.frame.panes_up);
+            let bar = fw * 0.6;
+            let bd = hd * 0.7;
+            // pane edges along x and z: between bars, bars centred on the splits
+            let edges = |a: f64, z: f64, n: u32| -> Vec<(f64, f64)> {
+                let step = (z - a) / n as f64;
+                (0..n)
+                    .map(|i| {
+                        let lo = a + step * i as f64 + if i > 0 { bar / 2.0 } else { 0.0 };
+                        let hi =
+                            a + step * (i + 1) as f64 - if i + 1 < n { bar / 2.0 } else { 0.0 };
+                        (lo, hi)
+                    })
+                    .collect()
+            };
+            let xs = edges(x0, x1, na);
+            let zs = edges(z0, z1, nu);
+            for pair in xs.windows(2) {
+                add(Part::Frame, b(pair[0].1, -bd, z0), b(pair[1].0, bd, z1));
+            }
+            for &(xa, xb) in &xs {
+                for pair in zs.windows(2) {
+                    add(Part::Frame, b(xa, -bd, pair[0].1), b(xb, bd, pair[1].0));
+                }
+                for &(za, zb) in &zs {
+                    add(Part::Glass, b(xa, -GLASS / 2.0, za), b(xb, GLASS / 2.0, zb));
+                }
+            }
+        }
+        OpeningKind::Door => {
+            // the leaf, flush with the frame's face on the side it opens to
+            let gap = 0.004;
+            let lt = f.leaf();
+            let (l0, l1) = (fw + gap, w - fw - gap);
+            add(Part::Leaf, b(l0, hd - lt, 0.01), b(l1, hd, h - fw - gap));
+            // a lever handle on each face, on the side away from the hinge
+            if l1 - l0 > 0.3 && h > 1.2 {
+                let x = l1 - 0.07;
+                let z = 1.0f64.min(h * 0.45);
+                let (f0, f1) = (hd - lt, hd);
+                for (r0, r1, a0, a1) in [
+                    (f1, f1 + 0.012, f1 + 0.045, f1 + 0.062),
+                    (f0 - 0.012, f0, f0 - 0.062, f0 - 0.045),
+                ] {
+                    add(
+                        Part::Handle,
+                        b(x - 0.025, r0, z - 0.04),
+                        b(x + 0.025, r1, z + 0.04),
+                    );
+                    add(
+                        Part::Handle,
+                        b(x - 0.008, r0.min(a0), z - 0.008),
+                        b(x + 0.008, r1.max(a1), z + 0.008),
+                    );
+                    add(
+                        Part::Handle,
+                        b(x - 0.13, a0, z - 0.01),
+                        b(x + 0.01, a1, z + 0.01),
+                    );
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Opening coordinates → model coordinates, for an opening in `wall`
+/// standing on a level at `level_z`.
+pub fn to_model(o: &Opening, wall: &Wall, level_z: f64) -> Option<impl Fn(DVec3) -> DVec3> {
+    let c = Cut::of(o, wall)?;
+    let d = wall.direction();
+    let n = DVec2::new(-d.y, d.x);
+    let start = wall.start;
+    let z0 = level_z + wall.base_offset + c.v0;
+    Some(move |p: DVec3| (start + d * (c.u0 + p.x) + n * p.y).extend(z0 + p.z))
+}
+
+/// The opening's parts as meshes in model coordinates, one per kind of part.
+pub fn opening_meshes(o: &Opening, wall: &Wall, level_z: f64) -> Vec<(Part, TriMesh)> {
+    let Some(at) = to_model(o, wall, level_z) else {
+        return vec![];
+    };
+    let mut out: Vec<(Part, TriMesh)> = Vec::new();
+    for pb in opening_boxes(o, wall) {
+        let i = match out.iter().position(|(p, _)| *p == pb.part) {
+            Some(i) => i,
+            None => {
+                out.push((pb.part, TriMesh::default()));
+                out.len() - 1
+            }
+        };
+        add_box(&mut out[i].1, pb.lo, pb.hi, &at);
+    }
+    out
+}
+
+/// A closed box from `lo` to `hi`, its corners mapped through `at` (a
+/// rigid map, so the faces stay square).
+fn add_box(m: &mut TriMesh, lo: DVec3, hi: DVec3, at: &dyn Fn(DVec3) -> DVec3) {
+    let c = |x: f64, y: f64, z: f64| at(DVec3::new(x, y, z));
+    let o = at(DVec3::ZERO);
+    let axis = |v: DVec3| at(v) - o;
+    let (ex, ey, ez) = (axis(DVec3::X), axis(DVec3::Y), axis(DVec3::Z));
+    let (a, b) = (lo, hi);
+    m.add_quad(
+        [
+            c(a.x, a.y, a.z),
+            c(a.x, b.y, a.z),
+            c(a.x, b.y, b.z),
+            c(a.x, a.y, b.z),
+        ],
+        -ex,
+    );
+    m.add_quad(
+        [
+            c(b.x, a.y, a.z),
+            c(b.x, b.y, a.z),
+            c(b.x, b.y, b.z),
+            c(b.x, a.y, b.z),
+        ],
+        ex,
+    );
+    m.add_quad(
+        [
+            c(a.x, a.y, a.z),
+            c(b.x, a.y, a.z),
+            c(b.x, a.y, b.z),
+            c(a.x, a.y, b.z),
+        ],
+        -ey,
+    );
+    m.add_quad(
+        [
+            c(a.x, b.y, a.z),
+            c(b.x, b.y, a.z),
+            c(b.x, b.y, b.z),
+            c(a.x, b.y, b.z),
+        ],
+        ey,
+    );
+    m.add_quad(
+        [
+            c(a.x, a.y, a.z),
+            c(b.x, a.y, a.z),
+            c(b.x, b.y, a.z),
+            c(a.x, b.y, a.z),
+        ],
+        -ez,
+    );
+    m.add_quad(
+        [
+            c(a.x, a.y, b.z),
+            c(b.x, a.y, b.z),
+            c(b.x, b.y, b.z),
+            c(a.x, b.y, b.z),
+        ],
+        ez,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use creabim_core::ElementId;
+
+    fn wall() -> Wall {
+        Wall {
+            level: ElementId::new(),
+            start: DVec2::new(0.0, 0.0),
+            end: DVec2::new(5.0, 0.0),
+            thickness: 0.3,
+            height: 3.0,
+            base_offset: 0.0,
+            material: None,
+        }
+    }
+
+    fn opening(kind: OpeningKind, frame: OpeningFrame) -> Opening {
+        Opening {
+            host: ElementId::new(),
+            kind,
+            offset: 1.0,
+            sill: if kind == OpeningKind::Door { 0.0 } else { 0.9 },
+            width: 1.2,
+            height: if kind == OpeningKind::Door { 2.1 } else { 1.3 },
+            material: None,
+            frame,
+        }
+    }
+
+    fn count(boxes: &[PartBox], part: Part) -> usize {
+        boxes.iter().filter(|b| b.part == part).count()
+    }
+
+    #[test]
+    fn a_window_has_a_frame_round_set_back_glass() {
+        let o = opening(OpeningKind::Window, OpeningFrame::default());
+        let boxes = opening_boxes(&o, &wall());
+        assert_eq!(count(&boxes, Part::Frame), 4);
+        assert_eq!(count(&boxes, Part::Glass), 1);
+        let glass = boxes.iter().find(|b| b.part == Part::Glass).unwrap();
+        // the glass fills the frame's inside, behind its faces
+        assert!((glass.lo.x - 0.06).abs() < 1e-9 && (glass.hi.x - 1.14).abs() < 1e-9);
+        assert!(glass.hi.y < 0.05 && glass.lo.y > -0.05);
+        // everything stays inside the opening
+        for b in &boxes {
+            assert!(b.lo.x >= -1e-9 && b.hi.x <= 1.2 + 1e-9);
+            assert!(b.lo.z >= -1e-9 && b.hi.z <= 1.3 + 1e-9);
+        }
+    }
+
+    #[test]
+    fn panes_split_the_glass_with_bars() {
+        let frame = OpeningFrame {
+            panes_across: 3,
+            panes_up: 2,
+            ..OpeningFrame::default()
+        };
+        let boxes = opening_boxes(&opening(OpeningKind::Window, frame), &wall());
+        assert_eq!(count(&boxes, Part::Glass), 6);
+        // four frame members, two upright bars, a cross bar in each column
+        assert_eq!(count(&boxes, Part::Frame), 4 + 2 + 3);
+        let glass: f64 = boxes
+            .iter()
+            .filter(|b| b.part == Part::Glass)
+            .map(|b| (b.hi.x - b.lo.x) * (b.hi.z - b.lo.z))
+            .sum();
+        let bar = 0.06 * 0.6;
+        let inside = (1.2 - 0.12 - 2.0 * bar) * (1.3 - 0.12 - bar);
+        assert!((glass - inside).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_door_has_a_leaf_and_handles_but_no_sill() {
+        let o = opening(OpeningKind::Door, OpeningFrame::default());
+        let boxes = opening_boxes(&o, &wall());
+        assert_eq!(count(&boxes, Part::Frame), 3);
+        assert_eq!(count(&boxes, Part::Leaf), 1);
+        assert_eq!(count(&boxes, Part::Glass), 0);
+        assert!(count(&boxes, Part::Handle) >= 2);
+        let meshes = opening_meshes(&o, &wall(), 0.0);
+        // every part is a closed box
+        for (_, m) in &meshes {
+            assert!(m.volume() > 0.0);
+        }
+    }
+
+    #[test]
+    fn the_frame_fits_a_thin_wall() {
+        let mut w = wall();
+        w.thickness = 0.05;
+        let o = opening(OpeningKind::Window, OpeningFrame::default());
+        for b in opening_boxes(&o, &w) {
+            assert!(b.lo.y >= -0.025 - 1e-9 && b.hi.y <= 0.025 + 1e-9);
+        }
+    }
+}

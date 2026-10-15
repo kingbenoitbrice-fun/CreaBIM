@@ -984,6 +984,7 @@ impl<'a> Importer<'a> {
                 width,
                 height,
                 material,
+                frame: Default::default(),
             }),
         });
     }

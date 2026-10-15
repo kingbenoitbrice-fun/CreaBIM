@@ -1403,11 +1403,51 @@ impl CreaBimApp {
                 let s = snapper.snap(&snap_cfg, p, &project, from, free)?;
                 Some((s.p, s))
             };
+            // masses, for the face of their own mesh a picked triangle is
+            let faces_on = self
+                .plan
+                .modal
+                .as_ref()
+                .is_some_and(|m| m.works_on == crate::modal::Target::Face);
+            let masses: HashMap<ElementId, creabim_core::FreeMesh> = if faces_on {
+                self.doc
+                    .model()
+                    .iter()
+                    .filter_map(|e| match &e.kind {
+                        ElementKind::FreeMesh(m) => Some((e.id, m.clone())),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            };
+            let pick_face = |p: egui::Pos2| -> Option<crate::modal::FacePick> {
+                let (o, d) = ray(p);
+                let f = pick::pick_face(scene, o.as_vec3(), d.as_vec3())?;
+                let mesh_face = match masses.get(&f.hit.id) {
+                    Some(m) => {
+                        let ev = m.evaluated();
+                        let face = pick::face_of_triangle(&ev.mesh, f.hit.triangle)?;
+                        ev.source.get(face).copied().flatten()
+                    }
+                    _ => None,
+                };
+                Some(crate::modal::FacePick {
+                    id: f.hit.id,
+                    face: creabim_core::pushpull::FaceRef {
+                        point: f.point,
+                        normal: f.normal,
+                        mesh_face,
+                    },
+                    tris: f.triangles,
+                })
+            };
             let map = PaneMap {
                 to_model: &to_model,
                 project: &project,
                 look: ray(rect.center()).1,
                 snap: &snap,
+                pick_face: Some(&pick_face),
             };
             let ctx = ui.ctx().clone();
             let shift = ui.input(|i| i.modifiers.shift);
@@ -1456,6 +1496,9 @@ impl CreaBimApp {
                         self.plan.modal = None;
                     }
                 }
+                if let Some(m) = &self.plan.modal {
+                    self.plan.move_target = m.works_on;
+                }
             }
             ui.ctx().request_repaint();
             return;
@@ -1484,6 +1527,7 @@ impl CreaBimApp {
                         self.plan.pivot,
                         self.plan.cursor,
                         flow,
+                        self.plan.move_target,
                     ) {
                         Ok((m, targets)) => {
                             if targets != ids {
@@ -3319,6 +3363,29 @@ impl CreaBimApp {
                 }
                 if self.material_combo(ui, &mut o.material) {
                     label = "Material";
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("Frame").strong());
+                if num(ui, "Frame width", &mut o.frame.width, 0.01, 0.5) {
+                    label = "Frame width"
+                }
+                if num(ui, "Frame depth", &mut o.frame.depth, 0.02, 1.0) {
+                    label = "Frame depth"
+                }
+                if o.kind == creabim_core::OpeningKind::Window {
+                    let panes = |ui: &mut egui::Ui, text: &str, v: &mut u32| {
+                        ui.horizontal(|ui| {
+                            ui.label(text);
+                            ui.add(egui::DragValue::new(v).range(1..=12)).changed()
+                        })
+                        .inner
+                    };
+                    if panes(ui, "Panes across", &mut o.frame.panes_across) {
+                        label = "Window panes"
+                    }
+                    if panes(ui, "Panes up", &mut o.frame.panes_up) {
+                        label = "Window panes"
+                    }
                 }
             }
             ElementKind::View(v) if matches!(v.kind, ViewKind::Schedule { .. }) => {

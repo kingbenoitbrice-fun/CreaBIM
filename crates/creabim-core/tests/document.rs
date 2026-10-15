@@ -37,6 +37,7 @@ fn door(host: ElementId) -> Element {
             width: 0.9,
             height: 2.1,
             material: None,
+            frame: Default::default(),
         }),
     )
 }

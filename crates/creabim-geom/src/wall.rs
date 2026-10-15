@@ -165,6 +165,7 @@ mod tests {
             width: w,
             height: h,
             material: None,
+            frame: Default::default(),
         }
     }
 

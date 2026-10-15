@@ -810,6 +810,52 @@ pub struct Opening {
     /// What the door or window is made of; none draws it in its default colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<ElementId>,
+    /// Its frame, glazing bars and leaf.
+    #[serde(default, skip_serializing_if = "OpeningFrame::is_default")]
+    pub frame: OpeningFrame,
+}
+
+/// How a door or window is built inside its opening: a frame round the
+/// edge, a window's glass split into panes by glazing bars, a door's leaf.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpeningFrame {
+    /// Face width of the frame members, seen from the front.
+    pub width: f64,
+    /// Depth of the frame through the wall (at most the wall's thickness).
+    pub depth: f64,
+    /// Window panes side by side and one above the other, split by bars.
+    pub panes_across: u32,
+    pub panes_up: u32,
+}
+
+impl Default for OpeningFrame {
+    fn default() -> Self {
+        Self {
+            width: 0.06,
+            depth: 0.1,
+            panes_across: 1,
+            panes_up: 1,
+        }
+    }
+}
+
+impl OpeningFrame {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The frame kept to what fits an opening `w` × `h` in a wall `t` thick:
+    /// members no wider than a third of the opening, at least one pane.
+    pub fn fitted(&self, w: f64, h: f64, t: f64) -> Self {
+        let fw = self.width.clamp(0.01, (w.min(h) / 3.0).max(0.01));
+        Self {
+            width: fw,
+            depth: self.depth.clamp(0.02, t.max(0.02)),
+            panes_across: self.panes_across.clamp(1, 12),
+            panes_up: self.panes_up.clamp(1, 12),
+        }
+    }
 }
 
 /// A freely modelled object, edited Blender-style, that still carries BIM
@@ -1238,5 +1284,26 @@ mod tests {
         v.browser_order = Some(3);
         let text = serde_json::to_string(&v).unwrap();
         assert_eq!(serde_json::from_str::<View>(&text).unwrap(), v);
+    }
+
+    #[test]
+    fn openings_from_older_files_get_a_default_frame() {
+        let host = serde_json::to_string(&ElementId::new()).unwrap();
+        let old = format!(
+            r#"{{"host":{host},"kind":"Window","offset":1.0,"sill":0.9,"width":1.2,"height":1.3}}"#
+        );
+        let o: Opening = serde_json::from_str(&old).unwrap();
+        assert_eq!(o.frame, OpeningFrame::default());
+        // a default frame writes nothing; a changed one round-trips
+        assert!(!serde_json::to_string(&o).unwrap().contains("frame"));
+        let mut o = o;
+        o.frame.panes_across = 3;
+        let text = serde_json::to_string(&o).unwrap();
+        assert_eq!(serde_json::from_str::<Opening>(&text).unwrap(), o);
+        // a frame missing some fields fills the rest in
+        let partial = old.replace("}", r#","frame":{"width":0.08}}"#);
+        let o: Opening = serde_json::from_str(&partial).unwrap();
+        assert_eq!(o.frame.width, 0.08);
+        assert_eq!(o.frame.depth, OpeningFrame::default().depth);
     }
 }
