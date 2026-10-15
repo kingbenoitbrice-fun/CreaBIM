@@ -124,6 +124,20 @@ impl SnapSettings {
         }
     }
 
+    /// Only the point snaps of these (ends, middles, crossings, centres),
+    /// for where a drag grabs an element.
+    pub fn points_only(self) -> Self {
+        Self {
+            perpendicular: false,
+            nearest: false,
+            grid_lines: false,
+            guides: false,
+            axis: false,
+            increment: false,
+            ..self
+        }
+    }
+
     /// Is this kind of snap wanted?
     pub fn allows(&self, kind: SnapKind) -> bool {
         self.on

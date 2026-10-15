@@ -1,7 +1,7 @@
-//! The Slab tool's ways of drawing a slab, picked in a small bar at a
-//! pane's top-left corner: click a polygon (with arcs), drag out a
-//! rectangle, fill the room under the pointer, or turn a flat sketch into a
-//! slab.
+//! The Slab tool's ways of drawing a slab, picked in the tool options of
+//! the top bar (or, with the classic panels, a small bar at a pane's
+//! top-left corner): click a polygon (with arcs), drag out a rectangle,
+//! fill the room under the pointer, or turn a flat sketch into a slab.
 
 use crate::outline::NEW_SLAB_THICKNESS;
 use crate::planview::PlanState;
@@ -59,6 +59,29 @@ impl SlabMode {
     }
 }
 
+fn top_bar_id() -> egui::Id {
+    egui::Id::new("tool options in the top bar")
+}
+
+fn pick_id() -> egui::Id {
+    egui::Id::new("slab mode picked")
+}
+
+/// Tool options are shown in the top bar's own row (the web interface)
+/// rather than over the views; set each frame by the app.
+pub fn set_options_in_top_bar(ctx: &egui::Context, on: bool) {
+    ctx.data_mut(|d| d.insert_temp(top_bar_id(), on));
+}
+
+pub fn options_in_top_bar(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp(top_bar_id())).unwrap_or(false)
+}
+
+/// A mode, or Line / Arc, picked in the top bar, for the next frame.
+pub fn pick(ctx: &egui::Context, mode: Option<SlabMode>, arc: Option<bool>) {
+    ctx.data_mut(|d| d.insert_temp(pick_id(), (mode, arc)));
+}
+
 /// The mode bar (and Line / Arc while clicking a polygon) in a pane's
 /// top-left corner, and the 1–4, A and L keys. `modes` is false where only
 /// Line / Arc apply (redrawing a slab outline). Choosing From sketch with a
@@ -75,6 +98,12 @@ pub fn controls(
 ) -> Option<String> {
     let ctx = ui.ctx().clone();
     let (mut mode, mut arc) = (state.slab_mode, state.slab_arc);
+    let picked: Option<(Option<SlabMode>, Option<bool>)> =
+        ctx.data_mut(|d| d.remove_temp(pick_id()));
+    if let Some((m, a)) = picked {
+        mode = m.filter(|_| modes).unwrap_or(mode);
+        arc = a.unwrap_or(arc);
+    }
     let lines = !modes || mode == SlabMode::Polygon;
     if !ctx.egui_wants_keyboard_input() && ui.rect_contains_pointer(rect) {
         ctx.input(|i| {
@@ -94,33 +123,35 @@ pub fn controls(
             }
         });
     }
-    egui::Area::new(egui::Id::new(("slab modes", pane)))
-        .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
-        .order(egui::Order::Foreground)
-        .show(&ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if modes {
-                        for m in SlabMode::ALL {
-                            if ui.selectable_label(mode == m, m.label()).clicked() {
-                                mode = m;
+    if !options_in_top_bar(&ctx) {
+        egui::Area::new(egui::Id::new(("slab modes", pane)))
+            .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
+            .order(egui::Order::Foreground)
+            .show(&ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if modes {
+                            for m in SlabMode::ALL {
+                                if ui.selectable_label(mode == m, m.label()).clicked() {
+                                    mode = m;
+                                }
                             }
                         }
-                    }
-                    if mode == SlabMode::Polygon || !modes {
-                        if modes {
-                            ui.separator();
+                        if mode == SlabMode::Polygon || !modes {
+                            if modes {
+                                ui.separator();
+                            }
+                            if ui.selectable_label(!arc, "Line (L)").clicked() {
+                                arc = false;
+                            }
+                            if ui.selectable_label(arc, "Arc (A)").clicked() {
+                                arc = true;
+                            }
                         }
-                        if ui.selectable_label(!arc, "Line (L)").clicked() {
-                            arc = false;
-                        }
-                        if ui.selectable_label(arc, "Arc (A)").clicked() {
-                            arc = true;
-                        }
-                    }
+                    });
                 });
             });
-        });
+    }
     let mut msg = None;
     if arc != state.slab_arc {
         state.slab_arc = arc;

@@ -45,6 +45,15 @@ fn shape_id() -> egui::Id {
     egui::Id::new("sketch shape")
 }
 
+fn pick_id() -> egui::Id {
+    egui::Id::new("sketch shape picked")
+}
+
+/// Pick the shape from the top bar's tool options, for the next frame.
+pub fn pick_shape(ctx: &egui::Context, s: Shape) {
+    ctx.data_mut(|d| d.insert_temp(pick_id(), s));
+}
+
 /// The shape the Sketch tool draws, shared by every pane.
 pub fn shape(ctx: &egui::Context) -> Shape {
     ctx.data(|d| d.get_temp(shape_id())).unwrap_or_default()
@@ -60,6 +69,10 @@ pub fn shape_controls(
 ) -> Option<String> {
     let ctx = ui.ctx().clone();
     let mut chosen = shape(&ctx);
+    // picked in the top bar's tool options
+    if let Some(s) = ctx.data_mut(|d| d.remove_temp::<Shape>(pick_id())) {
+        chosen = s;
+    }
     if !ctx.egui_wants_keyboard_input() && ui.rect_contains_pointer(rect) {
         ctx.input(|i| {
             for s in Shape::ALL {
@@ -69,20 +82,22 @@ pub fn shape_controls(
             }
         });
     }
-    egui::Area::new(egui::Id::new(("sketch shapes", pane)))
-        .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
-        .order(egui::Order::Foreground)
-        .show(&ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for s in Shape::ALL {
-                        if ui.selectable_label(chosen == s, s.label()).clicked() {
-                            chosen = s;
+    if !crate::slabtool::options_in_top_bar(&ctx) {
+        egui::Area::new(egui::Id::new(("sketch shapes", pane)))
+            .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
+            .order(egui::Order::Foreground)
+            .show(&ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for s in Shape::ALL {
+                            if ui.selectable_label(chosen == s, s.label()).clicked() {
+                                chosen = s;
+                            }
                         }
-                    }
+                    });
                 });
             });
-        });
+    }
     let before = shape(&ctx);
     let mut msg = None;
     // a circle is a sketch of its own

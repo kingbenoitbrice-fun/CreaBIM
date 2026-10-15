@@ -939,6 +939,82 @@ impl CreaBimApp {
         }
     }
 
+    /// The grid line under `p` in the 3D view (a bubble, or its line at a
+    /// level), with the point on it under the pointer, for picking and
+    /// dragging it.
+    pub(super) fn grid_line_near(
+        &self,
+        p: egui::Pos2,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+    ) -> Option<(ElementId, DVec3)> {
+        self.grid_hit_3d(p, project, None)
+    }
+
+    /// Where the pointer holds grid line `id` in the 3D view, if it is on
+    /// that line or its bubble (other grids crossing there don't count).
+    pub(super) fn grid_grab(
+        &self,
+        p: egui::Pos2,
+        id: ElementId,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+    ) -> Option<DVec3> {
+        self.grid_hit_3d(p, project, Some(id)).map(|h| h.1)
+    }
+
+    fn grid_hit_3d(
+        &self,
+        p: egui::Pos2,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        only: Option<ElementId>,
+    ) -> Option<(ElementId, DVec3)> {
+        let zs = self.grid_heights_3d();
+        let hi = zs[zs.len() - 1];
+        // a bubble is the deliberate target: it wins over lines passing by
+        let bubble = self
+            .bubbles_3d()
+            .into_iter()
+            .filter(|(id, ..)| only.is_none_or(|o| o == *id))
+            .filter_map(|(id, text, _, at)| {
+                let c = project(at)?;
+                let r = BUBBLE_R_3D * creabim_geom::plan::bubble_scale(&text) as f32;
+                let d = c.distance(p);
+                (d <= r + 2.0).then_some((id, d))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(id, _)| id);
+        if let Some(id) = bubble {
+            let g = match self.doc.model().get(id).map(|e| &e.kind) {
+                Some(ElementKind::Grid(g)) => g.clone(),
+                _ => return None,
+            };
+            // the bubble end nearest the pointer
+            let near = [g.start, g.end]
+                .into_iter()
+                .filter_map(|e| Some((e, project(e.extend(hi))?.distance(p))))
+                .min_by(|a, b| a.1.total_cmp(&b.1))?;
+            return Some((id, near.0.extend(hi)));
+        }
+        let mut best: Option<(f32, ElementId, DVec3)> = None;
+        for (id, g, _) in self.grids_3d() {
+            if only.is_some_and(|o| o != id) {
+                continue;
+            }
+            for z in &zs {
+                let (a, b) = (g.start.extend(*z), g.end.extend(*z));
+                let (Some(sa), Some(sb)) = (project(a), project(b)) else {
+                    continue;
+                };
+                let ab = sb - sa;
+                let t = ((p - sa).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+                let d = (sa + ab * t).distance(p);
+                if d < 6.0 && best.is_none_or(|(bd, _, _)| d < bd) {
+                    best = Some((d, id, a + (b - a) * t as f64));
+                }
+            }
+        }
+        best.map(|(_, id, at)| (id, at))
+    }
+
     /// The grid line whose bubble is under `p` in the 3D view.
     pub(super) fn grid_bubble_near(
         &self,
