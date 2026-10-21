@@ -1007,10 +1007,11 @@ impl Builder {
                     // groups first, so their lines find them
                     ElementKind::GridGroup(_) => self.grids.insert(0, e),
                     ElementKind::Grid(_) => self.grids.push(e),
-                    ElementKind::Level(_) | ElementKind::Material(_) | ElementKind::Assembly(_)
+                    ElementKind::Level(_)
+                    | ElementKind::Material(_)
+                    | ElementKind::Assembly(_)
                     | ElementKind::ElementType(_)
-                    | ElementKind::Shaft(_) => {
-                    }
+                    | ElementKind::Shaft(_) => {}
                     _ => self.main.push(e),
                 }
                 continue;

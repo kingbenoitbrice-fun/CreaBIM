@@ -409,7 +409,9 @@ impl<'a> Importer<'a> {
                 if !p.is("IFCPROPERTYSINGLEVALUE") {
                     continue;
                 }
-                let Some(key) = p.arg(0).as_str() else { continue };
+                let Some(key) = p.arg(0).as_str() else {
+                    continue;
+                };
                 let v = p.arg(2);
                 let number = match v {
                     Value::Typed(t, _) if t.contains("MEASURE") => self.g.length(v),
@@ -558,7 +560,8 @@ impl<'a> Importer<'a> {
             let world = self.g.placement(o.arg(5));
             let mesh = self.g.product_mesh(o, &world);
             if let Some(wall) = self.walls.get(&host).copied() {
-                let Some((offset, sill, width, height)) = opening_in_wall(&wall, &mesh, None) else {
+                let Some((offset, sill, width, height)) = opening_in_wall(&wall, &mesh, None)
+                else {
                     skipped += 1;
                     continue;
                 };

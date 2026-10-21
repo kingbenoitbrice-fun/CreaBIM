@@ -560,8 +560,7 @@ pub fn typed_house() -> Model {
     let back = named("GF Wall 3");
     let is_wall = |e: &Element| matches!(e.kind, ElementKind::Wall(_));
     let outer = pick(&|e| is_wall(e) && !e.name.contains("Partition") && e.id != back);
-    let opening =
-        |e: &Element, kind: OpeningKind| matches!(&e.kind, ElementKind::Opening(o) if o.kind == kind);
+    let opening = |e: &Element, kind: OpeningKind| matches!(&e.kind, ElementKind::Opening(o) if o.kind == kind);
     let on_back = |e: &Element| matches!(&e.kind, ElementKind::Opening(o) if o.host == back);
     let back_openings = pick(&on_back);
     let windows = pick(&|e| opening(e, OpeningKind::Window) && !on_back(e));
@@ -631,7 +630,10 @@ pub fn typed_house() -> Model {
         .insert(hole)
         .insert(shaft);
     // and a hole of the first floor slab's own, for a flue
-    let ff = doc.model().get(named("FF Slab")).expect("a first floor slab");
+    let ff = doc
+        .model()
+        .get(named("FF Slab"))
+        .expect("a first floor slab");
     let mut after = ff.clone();
     if let ElementKind::Slab(s) = &mut after.kind {
         s.holes = vec![polygon::rectangle(

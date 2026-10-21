@@ -361,6 +361,7 @@ impl CreaBimApp {
                 .enabled(targets > 0),
         ]);
         items.extend(self.assemblies_menu());
+        items.extend(self.types_menu());
         items
     }
 

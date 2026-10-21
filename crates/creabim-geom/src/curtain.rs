@@ -126,7 +126,13 @@ mod tests {
     use creabim_core::{GridRule, OpeningKind};
 
     fn wall() -> Wall {
-        let mut w = Wall::new(ElementId::new(), DVec2::ZERO, DVec2::new(3.0, 0.0), 0.15, 3.0);
+        let mut w = Wall::new(
+            ElementId::new(),
+            DVec2::ZERO,
+            DVec2::new(3.0, 0.0),
+            0.15,
+            3.0,
+        );
         w.curtain = Some(CurtainGrid {
             vertical: GridRule::Count(3),
             horizontal: GridRule::Count(2),
@@ -174,7 +180,10 @@ mod tests {
             flip_facing: false,
         };
         let boxes = curtain_boxes(&w, &g, &[&door]);
-        let glass = boxes.iter().filter(|b| b.part == CurtainPart::Glass).count();
+        let glass = boxes
+            .iter()
+            .filter(|b| b.part == CurtainPart::Glass)
+            .count();
         assert_eq!(glass, 4);
     }
 }

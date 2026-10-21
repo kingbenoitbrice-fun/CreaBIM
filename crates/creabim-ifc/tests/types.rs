@@ -66,12 +66,7 @@ fn typed_house_round_trips_through_ifc() {
     let ElementKind::Wall(w) = &curtain.kind else {
         unreachable!()
     };
-    let ElementKind::Wall(w0) = &model
-        .iter()
-        .find(|e| e.name == "GF Wall 3")
-        .unwrap()
-        .kind
-    else {
+    let ElementKind::Wall(w0) = &model.iter().find(|e| e.name == "GF Wall 3").unwrap().kind else {
         unreachable!()
     };
     assert_eq!(w.curtain, w0.curtain);

@@ -188,7 +188,15 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
                         _ => String::new(),
                     });
                 }
-                rows.push((0.0, mark, Row { id: e.id, cells, group: false }));
+                rows.push((
+                    0.0,
+                    mark,
+                    Row {
+                        id: e.id,
+                        cells,
+                        group: false,
+                    },
+                ));
             }
             let what = if kind == OpeningKind::Door {
                 "doors"
@@ -248,7 +256,15 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
                         .map_or_else(|| "-".to_string(), |a| a.name.clone());
                     cells.insert(3, asm);
                 }
-                rows.push((elevation(e), String::new(), Row { id: e.id, cells, group: false }));
+                rows.push((
+                    elevation(e),
+                    String::new(),
+                    Row {
+                        id: e.id,
+                        cells,
+                        group: false,
+                    },
+                ));
             }
             let mut totals = vec![
                 format!("{} walls", rows.len()),

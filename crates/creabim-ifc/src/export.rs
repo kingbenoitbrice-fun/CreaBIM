@@ -138,10 +138,8 @@ impl Ctx {
             format!("{guid},$,{},$,$,{pl},{shape},$,.OPENING.", string(name)),
         );
         let g = self.guid();
-        self.w.add(
-            "IFCRELVOIDSELEMENT",
-            format!("{g},$,$,$,{host},{opening}"),
-        );
+        self.w
+            .add("IFCRELVOIDSELEMENT", format!("{g},$,$,$,{host},{opening}"));
     }
 
     /// A rectangle `xdim` × `ydim` centred at `center` (profile plane),
@@ -283,7 +281,12 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         }
         let cut = cut_meshes.get(&e.id);
         match &e.kind {
-            ElementKind::Wall(wall @ creabim_core::Wall { curtain: Some(grid), .. }) => {
+            ElementKind::Wall(
+                wall @ creabim_core::Wall {
+                    curtain: Some(grid),
+                    ..
+                },
+            ) => {
                 // a curtain wall: no body of its own, aggregating its
                 // mullions (IfcMember) and panels (IfcPlate)
                 let Some(&(_, spl)) = storeys.get(&wall.level) else {
@@ -628,10 +631,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         };
         let opening = c.w.add(
             "IFCOPENINGELEMENT",
-            format!(
-                "{guid},$,{},$,$,{pl},{shape},$,.OPENING.",
-                string(&name)
-            ),
+            format!("{guid},$,{},$,$,{pl},{shape},$,.OPENING.", string(&name)),
         );
         let g = c.guid();
         c.w.add(
@@ -876,10 +876,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             .copied();
         if let Some(m) = relating {
             let g = c.guid();
-            c.w.add(
-                "IFCRELASSOCIATESMATERIAL",
-                format!("{g},$,$,$,({tr}),{m}"),
-            );
+            c.w.add("IFCRELASSOCIATESMATERIAL", format!("{g},$,$,$,({tr}),{m}"));
         }
         if let Some(users) = typed.get(&e.id).filter(|u| !u.is_empty()) {
             let g = c.guid();

@@ -274,6 +274,13 @@ pub fn click(
             if state.tool == crate::planview::Tool::Roof {
                 o.roof = Some((state.members.roof_shape, state.members.roof_pitch));
             }
+            o.shaft = state.tool == crate::planview::Tool::Shaft;
+            let cat = if o.roof.is_some() {
+                creabim_core::TypeCategory::Roof
+            } else {
+                creabim_core::TypeCategory::Slab
+            };
+            o.of_type = state.types.get(&cat).copied().filter(|_| !o.shaft);
             state.outline = Some(o);
             state.status = state.outline.as_ref().map(|o| o.hint());
             Ok(())
@@ -290,6 +297,7 @@ pub fn click(
                     return Ok(());
                 }
                 let (e, label) = crate::memberstool::outline_element(
+                    doc.model(),
                     state,
                     Slab::new(
                         level,
@@ -310,6 +318,7 @@ pub fn click(
                 return Ok(());
             };
             let (e, label) = crate::memberstool::outline_element(
+                doc.model(),
                 state,
                 Slab::new(level, outline, NEW_SLAB_THICKNESS),
             );
@@ -328,6 +337,26 @@ pub fn click(
                 );
                 return Ok(());
             };
+            if state.tool == crate::planview::Tool::Shaft {
+                let Some(ElementKind::Sketch(sk)) = doc.model().get(id).map(|e| &e.kind) else {
+                    return Ok(());
+                };
+                let slab = match creabim_core::slab_from_sketch(doc.model(), sk, NEW_SLAB_THICKNESS)
+                {
+                    Ok(s) => s,
+                    Err(m) => {
+                        state.status = Some(m);
+                        return Ok(());
+                    }
+                };
+                let e = crate::outline::shaft_from_outline(doc.model(), slab.level, slab.outline());
+                selection.only(e.id);
+                state.status = Some("The sketch is now a shaft. Ctrl+Z to undo.".into());
+                let tx = Transaction::new("Shaft from sketch")
+                    .remove_cascade(doc.model(), id)
+                    .insert(e);
+                return doc.commit(tx);
+            }
             let roof = (state.tool == crate::planview::Tool::Roof)
                 .then_some((state.members.roof_shape, state.members.roof_pitch));
             state.status = Some(match from_sketch(doc, id, selection, roof) {

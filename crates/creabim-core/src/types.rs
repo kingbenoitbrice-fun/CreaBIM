@@ -380,8 +380,9 @@ impl ElementType {
                 }
                 s
             }
-            TypeParams::Slab(s) | TypeParams::Roof(s) => name(s.assembly)
-                .unwrap_or_else(|| format!("{} thick", d(s.thickness))),
+            TypeParams::Slab(s) | TypeParams::Roof(s) => {
+                name(s.assembly).unwrap_or_else(|| format!("{} thick", d(s.thickness)))
+            }
             TypeParams::Column(c) => c.profile.label_in(&u),
             TypeParams::Beam(b) => format!("{} × {}", d(b.width), d(b.depth)),
         }
@@ -663,7 +664,10 @@ pub fn types(model: &Model) -> Vec<(ElementId, &str, &ElementType)> {
 }
 
 /// The types elements of `kind` could be.
-pub fn types_for<'a>(model: &'a Model, kind: &ElementKind) -> Vec<(ElementId, &'a str, &'a ElementType)> {
+pub fn types_for<'a>(
+    model: &'a Model,
+    kind: &ElementKind,
+) -> Vec<(ElementId, &'a str, &'a ElementType)> {
     types(model)
         .into_iter()
         .filter(|(_, _, t)| fits(&t.params, kind))
@@ -924,28 +928,56 @@ fn opening(width: f64, height: f64, sill: f64, across: u32, up: u32) -> OpeningT
 /// The starter types: (name, description, parameters from the starter
 /// assemblies' ids).
 pub const STARTERS: &[Starter] = &[
-    ("Generic wall 200", "A plain 200 mm wall", |_| wall(0.2, None)),
-    ("Partition 100", "A plain 100 mm partition", |_| wall(0.1, None)),
-    ("Exterior wall 365, brick cavity", "Built of the cavity wall assembly", |a| {
-        wall(0.365, a.first().copied())
+    ("Generic wall 200", "A plain 200 mm wall", |_| {
+        wall(0.2, None)
     }),
-    ("Interior wall 126, block", "Built of the block partition assembly", |a| {
-        wall(0.126, a.get(1).copied())
+    ("Partition 100", "A plain 100 mm partition", |_| {
+        wall(0.1, None)
     }),
-    ("Curtain wall 1500 grid", "Glazing on a 1.5 m square grid", |_| {
-        curtain(GridRule::Spacing(1.5), GridRule::Spacing(1.5), PanelKind::Glass)
+    (
+        "Exterior wall 365, brick cavity",
+        "Built of the cavity wall assembly",
+        |a| wall(0.365, a.first().copied()),
+    ),
+    (
+        "Interior wall 126, block",
+        "Built of the block partition assembly",
+        |a| wall(0.126, a.get(1).copied()),
+    ),
+    (
+        "Curtain wall 1500 grid",
+        "Glazing on a 1.5 m square grid",
+        |_| {
+            curtain(
+                GridRule::Spacing(1.5),
+                GridRule::Spacing(1.5),
+                PanelKind::Glass,
+            )
+        },
+    ),
+    (
+        "Storefront, 4 bays",
+        "Four equal glazed bays, a transom at 2.4 m",
+        |_| curtain(GridRule::Count(4), GridRule::Spacing(2.4), PanelKind::Glass),
+    ),
+    ("Single door 900 × 2100", "", |_| {
+        TypeParams::Door(opening(0.9, 2.1, 0.0, 1, 1))
     }),
-    ("Storefront, 4 bays", "Four equal glazed bays, a transom at 2.4 m", |_| {
-        curtain(GridRule::Count(4), GridRule::Spacing(2.4), PanelKind::Glass)
+    ("Single door 800 × 2100", "", |_| {
+        TypeParams::Door(opening(0.8, 2.1, 0.0, 1, 1))
     }),
-    ("Single door 900 × 2100", "", |_| TypeParams::Door(opening(0.9, 2.1, 0.0, 1, 1))),
-    ("Single door 800 × 2100", "", |_| TypeParams::Door(opening(0.8, 2.1, 0.0, 1, 1))),
-    ("Wide door 1200 × 2100", "", |_| TypeParams::Door(opening(1.2, 2.1, 0.0, 1, 1))),
+    ("Wide door 1200 × 2100", "", |_| {
+        TypeParams::Door(opening(1.2, 2.1, 0.0, 1, 1))
+    }),
     ("Window 1200 × 1300, two panes", "", |_| {
         TypeParams::Window(opening(1.2, 1.3, 0.9, 2, 1))
     }),
-    ("Window 600 × 1300", "", |_| TypeParams::Window(opening(0.6, 1.3, 0.9, 1, 1))),
-    ("Tall window 900 × 2100", "", |_| TypeParams::Window(opening(0.9, 2.1, 0.1, 1, 3))),
+    ("Window 600 × 1300", "", |_| {
+        TypeParams::Window(opening(0.6, 1.3, 0.9, 1, 1))
+    }),
+    ("Tall window 900 × 2100", "", |_| {
+        TypeParams::Window(opening(0.9, 2.1, 0.1, 1, 3))
+    }),
     ("Slab 200", "A plain 200 mm slab", |_| {
         TypeParams::Slab(SlabType {
             thickness: 0.2,
@@ -953,13 +985,17 @@ pub const STARTERS: &[Starter] = &[
             material: None,
         })
     }),
-    ("Floor 300, concrete", "Built of the concrete floor assembly", |a| {
-        TypeParams::Slab(SlabType {
-            thickness: 0.3,
-            assembly: a.get(2).copied(),
-            material: None,
-        })
-    }),
+    (
+        "Floor 300, concrete",
+        "Built of the concrete floor assembly",
+        |a| {
+            TypeParams::Slab(SlabType {
+                thickness: 0.3,
+                assembly: a.get(2).copied(),
+                material: None,
+            })
+        },
+    ),
     ("Roof 250", "A plain 250 mm roof", |_| {
         TypeParams::Roof(SlabType {
             thickness: 0.25,
@@ -967,13 +1003,17 @@ pub const STARTERS: &[Starter] = &[
             material: None,
         })
     }),
-    ("Pitched roof 288, tiled", "Built of the tiled roof assembly", |a| {
-        TypeParams::Roof(SlabType {
-            thickness: 0.288,
-            assembly: a.get(3).copied(),
-            material: None,
-        })
-    }),
+    (
+        "Pitched roof 288, tiled",
+        "Built of the tiled roof assembly",
+        |a| {
+            TypeParams::Roof(SlabType {
+                thickness: 0.288,
+                assembly: a.get(3).copied(),
+                material: None,
+            })
+        },
+    ),
     ("Column 300 × 300", "", |_| {
         TypeParams::Column(ColumnType {
             profile: Profile::Rectangle {
@@ -1042,6 +1082,20 @@ pub fn add_starters(model: &Model) -> (Transaction, Vec<ElementId>) {
     (tx, ids)
 }
 
+/// Parameters for a new type of `category` (a curtain wall type with
+/// `curtain`): the first starter's of that kind, built of no assembly.
+pub fn default_params(category: TypeCategory, curtain: bool) -> TypeParams {
+    STARTERS
+        .iter()
+        .map(|(_, _, make)| make(&[]))
+        .find(|p| {
+            let t = ElementType::new(p.clone());
+            t.category() == category
+                && t.is_curtain() == (curtain && category == TypeCategory::Wall)
+        })
+        .expect("a starter of every category")
+}
+
 /// The first starter type of a category, or the first type of it.
 pub fn first_of(model: &Model, category: TypeCategory, curtain: bool) -> Option<ElementId> {
     types(model)
@@ -1089,7 +1143,10 @@ mod tests {
             unreachable!()
         };
         let a = t.assembly().unwrap();
-        assert!(matches!(doc.model().get(a).unwrap().kind, ElementKind::Assembly(_)));
+        assert!(matches!(
+            doc.model().get(a).unwrap().kind,
+            ElementKind::Assembly(_)
+        ));
         let TypeParams::Wall(w) = &t.params else {
             unreachable!()
         };
@@ -1104,17 +1161,25 @@ mod tests {
     #[test]
     fn swapping_many_then_editing_the_type_updates_all_but_overrides() {
         let (mut doc, ids) = house();
-        let windows = ids_of(&doc, |k| matches!(k, ElementKind::Opening(o) if o.kind == OpeningKind::Window));
+        let windows = ids_of(
+            &doc,
+            |k| matches!(k, ElementKind::Opening(o) if o.kind == OpeningKind::Window),
+        );
         assert!(windows.len() >= 2);
         let wide = ids[9];
         // doors don't take a window type
         let mut all = windows.clone();
-        all.extend(ids_of(&doc, |k| matches!(k, ElementKind::Opening(o) if o.kind == OpeningKind::Door)));
+        all.extend(ids_of(
+            &doc,
+            |k| matches!(k, ElementKind::Opening(o) if o.kind == OpeningKind::Door),
+        ));
         let (tx, n) = assign(doc.model(), &all, Some(wide));
         assert_eq!(n, windows.len());
         doc.commit(tx).unwrap();
         assert_eq!(instances(doc.model(), wide), windows);
-        assert!(windows.iter().all(|w| (window_width(&doc, *w) - 1.2).abs() < 1e-9));
+        assert!(windows
+            .iter()
+            .all(|w| (window_width(&doc, *w) - 1.2).abs() < 1e-9));
         // one window is made narrower by hand: it overrides its width
         doc.edit(windows[0], "Width", |e| {
             if let ElementKind::Opening(o) = &mut e.kind {
@@ -1122,7 +1187,13 @@ mod tests {
             }
         })
         .unwrap();
-        let r = doc.model().get(windows[0]).unwrap().of_type.clone().unwrap();
+        let r = doc
+            .model()
+            .get(windows[0])
+            .unwrap()
+            .of_type
+            .clone()
+            .unwrap();
         assert_eq!(r.overrides, vec![Param::Width]);
         // the type gets wider and taller: the others follow, the first keeps its width
         let ElementKind::ElementType(mut t) = doc.model().get(wide).unwrap().kind.clone() else {
@@ -1176,7 +1247,15 @@ mod tests {
         assert!((w.thickness - 0.15).abs() < 1e-9);
         assert_eq!(w.height, height, "a swapped wall keeps its height");
         // the instance is not marked as overriding anything
-        assert!(doc.model().get(walls[0]).unwrap().of_type.as_ref().unwrap().overrides.is_empty());
+        assert!(doc
+            .model()
+            .get(walls[0])
+            .unwrap()
+            .of_type
+            .as_ref()
+            .unwrap()
+            .overrides
+            .is_empty());
         // a type made from an element
         let (t, after) = from_element(doc.model(), walls[1], "My wall").unwrap();
         assert_eq!(after.of_type.as_ref().unwrap().id, t.id);
@@ -1202,7 +1281,12 @@ mod tests {
         let back = Model::from_json(&doc.model().to_json()).unwrap();
         assert_eq!(&back, doc.model());
         assert_eq!(
-            back.get(walls[0]).unwrap().of_type.as_ref().unwrap().overrides,
+            back.get(walls[0])
+                .unwrap()
+                .of_type
+                .as_ref()
+                .unwrap()
+                .overrides,
             vec![Param::Thickness]
         );
     }

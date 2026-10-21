@@ -809,7 +809,8 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                             hosted.push((oid, o));
                         }
                     }
-                    let openings: Vec<&creabim_core::Opening> = hosted.iter().map(|h| h.1).collect();
+                    let openings: Vec<&creabim_core::Opening> =
+                        hosted.iter().map(|h| h.1).collect();
                     items.extend(crate::curtain::curtain_plan(e.id, w, g, &openings, cut_v));
                     let d = w.direction();
                     let n = DVec2::new(-d.y, d.x);

@@ -71,7 +71,9 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Wall => "brick-wall",
         Tool::Door => "door-open",
         Tool::Window => "app-window",
+        Tool::Opening => "wall-opening",
         Tool::Slab => "layers-2",
+        Tool::Shaft => "shaft",
         Tool::Mass => "box",
         Tool::Section => "scissors-line-dashed",
         Tool::Elevation => "building-2",
@@ -101,7 +103,9 @@ fn tool_group(t: Tool) -> u8 {
         Tool::Wall
         | Tool::Door
         | Tool::Window
+        | Tool::Opening
         | Tool::Slab
+        | Tool::Shaft
         | Tool::Mass
         | Tool::Column
         | Tool::Beam
@@ -158,6 +162,8 @@ fn group_title(class: &str) -> String {
         "Sketch" => "Sketches".into(),
         "IfcMaterial" => "Materials".into(),
         "IfcMaterialLayerSet" => "Assemblies".into(),
+        "ElementType" => "Types".into(),
+        "IfcOpeningElement" => "Openings and shafts".into(),
         "TextStyle" => "Text styles".into(),
         c => {
             let c = c.strip_prefix("Ifc").unwrap_or(c);
@@ -251,6 +257,7 @@ impl CreaBimApp {
             "menu:Create" => self.create_menu(),
             "underlay" => self.underlay_items(),
             "wall.location" => self.wall_location_items(),
+            "type.tool" => self.tool_type_items(),
             "palette" => self.palette_items(),
             "look" => crate::camera::Look::ALL
                 .iter()
@@ -581,6 +588,18 @@ impl CreaBimApp {
                 }
             }
             if group == 1 {
+                items.push(
+                    Item::new("tool.curtain", "Curtain wall")
+                        .icon("curtain-wall")
+                        .hint("The Wall tool drawing a curtain wall type: mullions and glass on a grid"),
+                );
+                items.push(
+                    Item::new("types.browser", "Types…")
+                        .icon("element-types")
+                        .hint(
+                            "Wall, curtain wall, door, window, slab, roof, column and beam types",
+                        ),
+                );
                 items.push(
                     Item::new("level.add", "Level above the top one")
                         .icon("level")
@@ -1086,7 +1105,12 @@ impl CreaBimApp {
                 }
             }
             "view.shaded" | "view.tag" | "view.reveal" => self.view_action(head),
-            "member" => crate::memberstool::toggle_option(&mut self.plan, arg),
+            "member" => {
+                if arg == "square" || arg == "round" {
+                    self.plan.types.remove(&creabim_core::TypeCategory::Column);
+                }
+                crate::memberstool::toggle_option(&mut self.plan, arg)
+            }
             "slab.mode" => {
                 if let Some(m) = index.and_then(|i| crate::slabtool::SlabMode::ALL.get(i)) {
                     crate::slabtool::pick(ctx, Some(*m), None);
@@ -1294,6 +1318,12 @@ impl CreaBimApp {
             );
         }
         let tool = self.plan.tool;
+        if let Some(name) = self.tool_type_label() {
+            options.push(json!({
+                "kind": "menu", "key": "type.tool", "label": "Type", "value": name,
+                "hint": "The type new elements are drawn as: they share its values, and follow it when it changes",
+            }));
+        }
         if tool == Tool::Wall {
             options.push(json!({
                 "kind": "number", "key": "wall.thickness", "label": "Thickness",
@@ -1577,7 +1607,11 @@ impl CreaBimApp {
             if matches!(e.kind, ElementKind::Units(_) | ElementKind::View(_)) {
                 continue;
             }
-            let class = e.ifc_class().to_string();
+            // every kind of type in one group
+            let class = match e.kind {
+                ElementKind::ElementType(_) => "ElementType".to_string(),
+                _ => e.ifc_class().to_string(),
+            };
             match groups.iter_mut().find(|(c, _)| *c == class) {
                 Some((_, v)) => v.push(e),
                 None => groups.push((class, vec![e])),
@@ -1610,10 +1644,17 @@ impl CreaBimApp {
                     "IfcMaterialLayerSet" => Some(json!([
                         {"id": "asm.browser", "icon": "ellipsis", "hint": "Assemblies: edit layers, add, duplicate, delete, assign"},
                     ])),
+                    "ElementType" => Some(json!([
+                        {"id": "types.browser", "icon": "ellipsis", "hint": "Types: edit, add, duplicate, delete, assign, select instances"},
+                    ])),
                     _ => None,
                 };
+                let icon = match class.as_str() {
+                    "ElementType" => "element-types",
+                    c => icon_name(Icon::of_class(c)),
+                };
                 json!({
-                    "key": class, "title": group_title(&class), "icon": icon_name(Icon::of_class(&class)),
+                    "key": class, "title": group_title(&class), "icon": icon,
                     "open": rank(&class) < 3, "rows": rows, "acts": act,
                 })
             })
@@ -1854,8 +1895,18 @@ impl CreaBimApp {
                     _ => return,
                 };
                 match b["key"].as_str().unwrap_or("") {
-                    "wall.thickness" => self.plan.wall_thickness = v.clamp(0.05, 1.0),
+                    "wall.thickness" => {
+                        // a size of its own: new walls have no type
+                        self.plan.types.remove(&creabim_core::TypeCategory::Wall);
+                        self.plan.wall_thickness = v.clamp(0.05, 1.0)
+                    }
                     k if k.starts_with("member.") => {
+                        if k.contains("column") {
+                            self.plan.types.remove(&creabim_core::TypeCategory::Column);
+                        }
+                        if k.contains("beam") {
+                            self.plan.types.remove(&creabim_core::TypeCategory::Beam);
+                        }
                         crate::memberstool::set_option(&mut self.plan, k, v)
                     }
                     "view.number" => self.set_view_number(v),

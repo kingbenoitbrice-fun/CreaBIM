@@ -174,7 +174,12 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             ElementKind::Slab(_) => [0.70, 0.70, 0.72],
             _ => [0.66, 0.34, 0.26],
         };
-        if let ElementKind::Wall(w @ creabim_core::Wall { curtain: Some(_), .. }) = &e.kind {
+        if let ElementKind::Wall(
+            w @ creabim_core::Wall {
+                curtain: Some(_), ..
+            },
+        ) = &e.kind
+        {
             out.extend(curtain_items(model, e, w));
             continue;
         }
@@ -208,12 +213,7 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                 };
                 let holes = creabim_core::slab::holes_of(model, e);
                 (
-                    slab_mesh_with_holes(
-                        &s.outline(),
-                        &holes,
-                        s.top(level.elevation),
-                        s.thickness,
-                    ),
+                    slab_mesh_with_holes(&s.outline(), &holes, s.top(level.elevation), s.thickness),
                     [0.70, 0.70, 0.72],
                 )
             }
@@ -455,7 +455,9 @@ fn opening_items(
                 (Part::Glass, ..) => (GLASS_COLOR, GLASS_SURFACE),
                 (Part::Handle, ..) => ([0.72, 0.73, 0.75], [0.3, 1.0, 1.0]),
                 (_, _, Some(m)) => m,
-                (Part::Frame, OpeningKind::Window | OpeningKind::Hole, None) => ([0.93, 0.93, 0.91], PLAIN_SURFACE),
+                (Part::Frame, OpeningKind::Window | OpeningKind::Hole, None) => {
+                    ([0.93, 0.93, 0.91], PLAIN_SURFACE)
+                }
                 (Part::Frame, OpeningKind::Door, None) => ([0.50, 0.35, 0.22], PLAIN_SURFACE),
                 (Part::Leaf, _, None) => ([0.62, 0.45, 0.30], PLAIN_SURFACE),
             };
@@ -688,7 +690,7 @@ mod tests {
     fn a_slab_with_a_hole_loses_its_volume() {
         let outer = creabim_core::polygon::rectangle(DVec2::ZERO, DVec2::new(4.0, 4.0));
         let hole = creabim_core::polygon::rectangle(DVec2::new(1.0, 1.0), DVec2::new(2.0, 3.0));
-        let m = slab_mesh_with_holes(&outer, &[hole.clone()], 0.0, 0.25);
+        let m = slab_mesh_with_holes(&outer, std::slice::from_ref(&hole), 0.0, 0.25);
         assert!((m.volume() - 14.0 * 0.25).abs() < 1e-5, "{}", m.volume());
         // the plan cut at mid-depth has the hole in it
         let cut = crate::slice::slice(&m, -0.1);

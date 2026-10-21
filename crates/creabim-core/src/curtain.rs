@@ -132,7 +132,10 @@ pub struct FaceRect {
 
 impl FaceRect {
     fn overlaps(&self, o: &FaceRect) -> bool {
-        self.u0 < o.u1 - 1e-6 && o.u0 < self.u1 - 1e-6 && self.v0 < o.v1 - 1e-6 && o.v0 < self.v1 - 1e-6
+        self.u0 < o.u1 - 1e-6
+            && o.u0 < self.u1 - 1e-6
+            && self.v0 < o.v1 - 1e-6
+            && o.v0 < self.v1 - 1e-6
     }
 }
 
@@ -358,12 +361,13 @@ mod tests {
         };
         let l = g.layout(3.0, 3.0, &[door]);
         assert_eq!(l.panels.len(), 4);
-        assert!(!l
-            .mullions
-            .iter()
-            .any(|m| m.rect.overlaps(&door)));
+        assert!(!l.mullions.iter().any(|m| m.rect.overlaps(&door)));
         assert_eq!(
-            l.panels.iter().find(|p| (p.bay, p.row) == (2, 1)).unwrap().kind,
+            l.panels
+                .iter()
+                .find(|p| (p.bay, p.row) == (2, 1))
+                .unwrap()
+                .kind,
             PanelKind::Solid
         );
     }

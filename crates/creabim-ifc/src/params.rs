@@ -67,7 +67,11 @@ fn rule_from(p: &Props, keys: [&str; 2], fallback: GridRule) -> GridRule {
 pub(crate) fn curtain_props(g: &CurtainGrid) -> Vec<(&'static str, Prop)> {
     let mut out = vec![];
     rule_props(&mut out, ["VerticalSpacing", "VerticalCount"], g.vertical);
-    rule_props(&mut out, ["HorizontalSpacing", "HorizontalCount"], g.horizontal);
+    rule_props(
+        &mut out,
+        ["HorizontalSpacing", "HorizontalCount"],
+        g.horizontal,
+    );
     out.push(("MullionWidth", Prop::Length(g.mullion_width)));
     out.push(("MullionDepth", Prop::Length(g.mullion_depth)));
     out.push(("PanelThickness", Prop::Length(g.panel_thickness)));
@@ -86,8 +90,12 @@ pub(crate) fn curtain_from(p: &Props) -> Option<CurtainGrid> {
     let g = CurtainGrid {
         vertical: rule_from(p, ["VerticalSpacing", "VerticalCount"], d.vertical),
         horizontal: rule_from(p, ["HorizontalSpacing", "HorizontalCount"], d.horizontal),
-        mullion_width: len(p, "MullionWidth").filter(|v| *v > 0.0).unwrap_or(d.mullion_width),
-        mullion_depth: len(p, "MullionDepth").filter(|v| *v > 0.0).unwrap_or(d.mullion_depth),
+        mullion_width: len(p, "MullionWidth")
+            .filter(|v| *v > 0.0)
+            .unwrap_or(d.mullion_width),
+        mullion_depth: len(p, "MullionDepth")
+            .filter(|v| *v > 0.0)
+            .unwrap_or(d.mullion_depth),
         panel_thickness: len(p, "PanelThickness")
             .filter(|v| *v > 0.0)
             .unwrap_or(d.panel_thickness),
@@ -126,7 +134,10 @@ pub(crate) fn type_props(t: &ElementType) -> Vec<(&'static str, Prop)> {
     match &t.params {
         TypeParams::Wall(w) => {
             out.push(("Thickness", Prop::Length(w.thickness)));
-            out.push(("LocationLine", Prop::Label(location_label(w.location).into())));
+            out.push((
+                "LocationLine",
+                Prop::Label(location_label(w.location).into()),
+            ));
             if let Some(h) = w.height {
                 out.push(("DefaultHeight", Prop::Length(h)));
             }
@@ -191,7 +202,9 @@ pub(crate) fn type_from(category: TypeCategory, curtain: bool, p: &Props) -> Typ
                 })
                 .unwrap_or_default();
             TypeParams::Wall(WallType {
-                thickness: curtain.as_ref().map_or(l("Thickness", 0.2), |c| c.mullion_depth),
+                thickness: curtain
+                    .as_ref()
+                    .map_or(l("Thickness", 0.2), |c| c.mullion_depth),
                 assembly: None,
                 material: None,
                 location,
@@ -206,7 +219,9 @@ pub(crate) fn type_from(category: TypeCategory, curtain: bool, p: &Props) -> Typ
             let o = OpeningType {
                 width: l("Width", if door { 0.9 } else { 1.2 }),
                 height: l("Height", if door { 2.1 } else { 1.3 }),
-                sill: len(p, "Sill").filter(|v| *v >= 0.0).unwrap_or(if door { 0.0 } else { 0.9 }),
+                sill: len(p, "Sill")
+                    .filter(|v| *v >= 0.0)
+                    .unwrap_or(if door { 0.0 } else { 0.9 }),
                 frame: OpeningFrame {
                     width: l("FrameWidth", d.width),
                     depth: l("FrameDepth", d.depth),
@@ -223,7 +238,14 @@ pub(crate) fn type_from(category: TypeCategory, curtain: bool, p: &Props) -> Typ
         }
         TypeCategory::Slab | TypeCategory::Roof => {
             let s = SlabType {
-                thickness: l("Thickness", if category == TypeCategory::Slab { 0.2 } else { 0.25 }),
+                thickness: l(
+                    "Thickness",
+                    if category == TypeCategory::Slab {
+                        0.2
+                    } else {
+                        0.25
+                    },
+                ),
                 assembly: None,
                 material: None,
             };
@@ -274,7 +296,9 @@ mod tests {
         let model = creabim_core::Model::new();
         let (tx, _) = creabim_core::types::add_starters(&model);
         for op in tx.ops {
-            let creabim_core::Op::Insert(e) = op else { continue };
+            let creabim_core::Op::Insert(e) = op else {
+                continue;
+            };
             let creabim_core::ElementKind::ElementType(t) = &e.kind else {
                 continue;
             };
