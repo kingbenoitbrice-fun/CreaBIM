@@ -41,8 +41,11 @@ pub struct Column {
 
 #[derive(Clone, Debug)]
 pub struct Row {
+    /// The element listed, or for a group heading the type grouped.
     pub id: ElementId,
     pub cells: Vec<String>,
+    /// A heading over the rows of one type, when grouped by type.
+    pub group: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +108,12 @@ pub fn set_material(e: &mut Element, material: Option<ElementId>) {
 
 /// The schedule of one category, rows in mark or model order.
 pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
+    schedule_by(model, category, false)
+}
+
+/// The schedule of one category; `by_type` groups the rows by element
+/// type, each group under a heading row naming the type and its count.
+pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> Schedule {
     let units = model.units();
     let mm = |v: f64| units.dimension(v);
     let area = |v: f64| units.area(v);
@@ -179,7 +188,7 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                         _ => String::new(),
                     });
                 }
-                rows.push((0.0, mark, Row { id: e.id, cells }));
+                rows.push((0.0, mark, Row { id: e.id, cells, group: false }));
             }
             let what = if kind == OpeningKind::Door {
                 "doors"
@@ -239,7 +248,7 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                         .map_or_else(|| "-".to_string(), |a| a.name.clone());
                     cells.insert(3, asm);
                 }
-                rows.push((elevation(e), String::new(), Row { id: e.id, cells }));
+                rows.push((elevation(e), String::new(), Row { id: e.id, cells, group: false }));
             }
             let mut totals = vec![
                 format!("{} walls", rows.len()),
@@ -275,6 +284,7 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                     String::new(),
                     Row {
                         id: e.id,
+                        group: false,
                         cells: vec![
                             e.name.clone(),
                             name(s.level),
@@ -299,7 +309,7 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
         ScheduleCategory::Structure => {
             let columns = vec![
                 col("Name", Some(Field::Name), 30.0, false),
-                col("Type", None, 16.0, false),
+                col("Member", None, 16.0, false),
                 col("Level", None, 28.0, false),
                 col("Material", Some(Field::Material), 30.0, false),
                 col("Section", None, 22.0, false),
@@ -324,6 +334,7 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                     kind.to_string(),
                     Row {
                         id: e.id,
+                        group: false,
                         cells: vec![
                             e.name.clone(),
                             kind.into(),
@@ -350,8 +361,53 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
     };
     // marks sort as text (D01 < D02); walls and slabs by level, then model order
     rows.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    // feet and inches take more room than millimetres
     let mut columns = columns;
+    let mut totals = totals;
+    // the type column shows up once anything listed has a type
+    let type_of = |id: ElementId| {
+        model
+            .get(id)
+            .and_then(|e| creabim_core::types::type_of(model, e))
+            .map(|(t, _)| (t.id, t.name.clone()))
+    };
+    let typed = rows.iter().any(|(_, _, r)| type_of(r.id).is_some());
+    if typed {
+        columns.insert(1, col("Type", None, 44.0, false));
+        for (_, _, r) in &mut rows {
+            let t = type_of(r.id).map_or_else(|| "-".to_string(), |(_, n)| n);
+            r.cells.insert(1, t);
+        }
+        if totals.len() > 1 {
+            totals.insert(1, String::new());
+        }
+    }
+    let mut rows: Vec<Row> = rows.into_iter().map(|(_, _, r)| r).collect();
+    if by_type {
+        // typed groups in name order, untyped last, rows keeping their order
+        let key = |r: &Row| match type_of(r.id) {
+            Some((_, n)) => (0, n),
+            None => (1, String::new()),
+        };
+        rows.sort_by_key(key);
+        let id_of = |r: &Row| type_of(r.id).map(|(id, _)| id);
+        let mut grouped = Vec::with_capacity(rows.len() * 2);
+        for group in rows.chunk_by(|a, b| id_of(a) == id_of(b)) {
+            let t = type_of(group[0].id);
+            let mut cells = vec![String::new(); columns.len()];
+            cells[0] = match &t {
+                Some((_, name)) => format!("{name} ({})", group.len()),
+                None => format!("No type ({})", group.len()),
+            };
+            grouped.push(Row {
+                id: t.map_or(ElementId::NIL, |(id, _)| id),
+                cells,
+                group: true,
+            });
+            grouped.extend(group.iter().cloned());
+        }
+        rows = grouped;
+    }
+    // feet and inches take more room than millimetres
     if units.is_imperial() {
         for c in columns.iter_mut().filter(|c| c.numeric) {
             c.width *= 1.4;
@@ -360,7 +416,7 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
     Schedule {
         category,
         columns,
-        rows: rows.into_iter().map(|(_, _, r)| r).collect(),
+        rows,
         totals,
     }
 }
@@ -555,6 +611,43 @@ mod tests {
         assert!(walls.totals.last().unwrap().ends_with("ft²"));
         // inch marks are quoted in the CSV
         assert!(to_csv(&walls).contains(",\"32'-9 3/4\"\"\","));
+    }
+
+    #[test]
+    fn typed_elements_list_and_group_by_their_type() {
+        let m = creabim_core::sample::typed_house();
+        let windows = schedule(&m, ScheduleCategory::Windows);
+        assert_eq!(windows.columns[1].title, "Type");
+        assert!(windows
+            .rows
+            .iter()
+            .all(|r| r.cells[1] == "Window 1200 × 1300, two panes"));
+        let walls = schedule_by(&m, ScheduleCategory::Walls, true);
+        assert_eq!(walls.totals.len(), walls.columns.len());
+        let groups: Vec<&str> = walls
+            .rows
+            .iter()
+            .filter(|r| r.group)
+            .map(|r| r.cells[0].as_str())
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                "Exterior wall 365, brick cavity (7)",
+                "Interior wall 126, block (1)",
+                "Storefront, 4 bays (1)"
+            ]
+        );
+        // each group heading names its type, the rows under it its instances
+        let first = &walls.rows[0];
+        assert!(matches!(
+            m.get(first.id).map(|e| &e.kind),
+            Some(ElementKind::ElementType(_))
+        ));
+        assert_eq!(walls.rows.len(), 9 + 3);
+        // an untyped project keeps its old table
+        let plain = schedule(&sample_house(), ScheduleCategory::Walls);
+        assert!(plain.columns.iter().all(|c| c.title != "Type"));
     }
 
     #[test]

@@ -1324,7 +1324,12 @@ pub enum ViewKind {
     Axonometric { azimuth: f64, altitude: f64 },
     /// A table of every element in a category, read live from the model.
     /// It is drawn at paper size, whatever the scale.
-    Schedule { category: ScheduleCategory },
+    Schedule {
+        category: ScheduleCategory,
+        /// Rows grouped by element type, under a heading per type.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        by_type: bool,
+    },
 }
 
 impl View {
@@ -1376,7 +1381,10 @@ impl View {
 
     pub fn schedule(category: ScheduleCategory) -> Self {
         Self {
-            kind: ViewKind::Schedule { category },
+            kind: ViewKind::Schedule {
+                category,
+                by_type: false,
+            },
             scale: 1000.0,
             style: ViewStyle::HiddenLine,
             hidden: ViewHidden::default(),

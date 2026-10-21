@@ -377,6 +377,14 @@ impl<'a> Importer<'a> {
         for e in &mut self.out {
             if let Some(r) = &mut e.of_type {
                 if let Some(p) = params.get(&r.id) {
+                    // a door's or window's frame is only written on its type
+                    if let (
+                        creabim_core::TypeParams::Door(t) | creabim_core::TypeParams::Window(t),
+                        ElementKind::Opening(o),
+                    ) = (p, &mut e.kind)
+                    {
+                        o.frame = t.frame;
+                    }
                     r.overrides = creabim_core::types::differences(p, &e.kind);
                 }
             }

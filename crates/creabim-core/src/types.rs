@@ -1206,4 +1206,37 @@ mod tests {
             vec![Param::Thickness]
         );
     }
+
+    #[test]
+    fn the_typed_sample_is_typed_throughout() {
+        let m = crate::sample::typed_house();
+        let named = |n: &str| m.iter().find(|e| e.name == n).unwrap();
+        let typed = m.iter().filter(|e| e.of_type.is_some()).count();
+        assert!(typed > 20, "{typed}");
+        for e in m.iter() {
+            if let Some(r) = &e.of_type {
+                assert!(r.overrides.is_empty(), "{}: {:?}", e.name, r.overrides);
+            }
+        }
+        let back = named("GF Wall 3");
+        assert!(matches!(&back.kind, ElementKind::Wall(w) if w.curtain.is_some()));
+        // the shaft cuts the first floor slab but not the ground floor's
+        let ff = crate::slab::holes_of(&m, named("FF Slab"));
+        let gf = crate::slab::holes_of(&m, named("GF Slab"));
+        assert_eq!((ff.len(), gf.len()), (2, 0));
+    }
+
+    #[test]
+    fn schedule_views_read_without_grouping() {
+        let old = r#"{"Schedule":{"category":"Walls"}}"#;
+        let k: crate::ViewKind = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            k,
+            crate::ViewKind::Schedule {
+                category: crate::ScheduleCategory::Walls,
+                by_type: false
+            }
+        );
+        assert_eq!(serde_json::to_string(&k).unwrap(), old);
+    }
 }

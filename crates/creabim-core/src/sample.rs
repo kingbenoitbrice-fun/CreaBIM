@@ -530,3 +530,116 @@ pub fn layered_house() -> Model {
     doc.commit(tx).expect("attaching keeps the walls valid");
     doc.model().clone()
 }
+
+/// The sample house built of element types: typed walls, doors, windows
+/// and slabs, a storefront curtain wall at the back of the ground floor
+/// with a garden door in one bay, a bare hole through a wall, a stair
+/// shaft through the first floor and a hole in it for a flue.
+pub fn typed_house() -> Model {
+    let mut doc = Document::from_model(sample_house());
+    let (tx, ids) = types::add_starters(doc.model());
+    doc.commit(tx).expect("starter types are valid");
+    let starter = |name: &str| {
+        let i = types::STARTERS
+            .iter()
+            .position(|(n, _, _)| *n == name)
+            .expect("a starter of that name");
+        ids[i]
+    };
+    let model = doc.model().clone();
+    let named = |name: &str| {
+        model
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.id)
+            .expect("the sample has it")
+    };
+    let pick = |f: &dyn Fn(&Element) -> bool| -> Vec<ElementId> {
+        model.iter().filter(|e| f(e)).map(|e| e.id).collect()
+    };
+    let back = named("GF Wall 3");
+    let is_wall = |e: &Element| matches!(e.kind, ElementKind::Wall(_));
+    let outer = pick(&|e| is_wall(e) && !e.name.contains("Partition") && e.id != back);
+    let opening =
+        |e: &Element, kind: OpeningKind| matches!(&e.kind, ElementKind::Opening(o) if o.kind == kind);
+    let on_back = |e: &Element| matches!(&e.kind, ElementKind::Opening(o) if o.host == back);
+    let back_openings = pick(&on_back);
+    let windows = pick(&|e| opening(e, OpeningKind::Window) && !on_back(e));
+    let doors = pick(&|e| opening(e, OpeningKind::Door) && e.name != "Front Door");
+    let slabs = pick(&|e| matches!(e.kind, ElementKind::Slab(_)));
+    // the storefront replaces the back windows
+    doc.commit(Transaction::new("Storefront").remove_all_cascade(doc.model(), &back_openings))
+        .expect("removing windows is valid");
+    for (elements, t) in [
+        (outer, "Exterior wall 365, brick cavity"),
+        (vec![named("GF Partition")], "Interior wall 126, block"),
+        (vec![back], "Storefront, 4 bays"),
+        (windows, "Window 1200 × 1300, two panes"),
+        (doors, "Single door 900 × 2100"),
+        (vec![named("Front Door")], "Wide door 1200 × 2100"),
+        (slabs, "Floor 300, concrete"),
+    ] {
+        let (tx, _) = types::assign(doc.model(), &elements, Some(starter(t)));
+        doc.commit(tx).expect("types fit");
+    }
+
+    // a door in the storefront's second bay
+    let mut door = Element::new(
+        "GF Garden Door",
+        ElementKind::Opening(Opening {
+            host: back,
+            kind: OpeningKind::Door,
+            offset: 3.3,
+            sill: 0.0,
+            width: 0.9,
+            height: 2.1,
+            material: None,
+            frame: Default::default(),
+            flip_hand: false,
+            flip_facing: false,
+        }),
+    );
+    types::stamp(doc.model(), &mut door, starter("Single door 900 × 2100"));
+    // a bare hole through the east wall, for a duct
+    let hole = Element::new(
+        "GF Duct Opening",
+        ElementKind::Opening(Opening {
+            host: named("GF Wall 2"),
+            kind: OpeningKind::Hole,
+            offset: 4.4,
+            sill: 2.2,
+            width: 0.6,
+            height: 0.4,
+            material: None,
+            frame: Default::default(),
+            flip_hand: false,
+            flip_facing: false,
+        }),
+    );
+    let (g, f) = (named("Ground Floor"), named("First Floor"));
+    // a stair shaft from the ground floor up to the first, cutting its slab
+    let shaft = Element::new(
+        "Stair Shaft",
+        ElementKind::Shaft(Shaft::new(
+            g,
+            polygon::rectangle(DVec2::new(1.0, 3.5), DVec2::new(3.6, 5.5)),
+            Some(f),
+        )),
+    );
+    let mut tx = Transaction::new("Typed house")
+        .insert(door)
+        .insert(hole)
+        .insert(shaft);
+    // and a hole of the first floor slab's own, for a flue
+    let ff = doc.model().get(named("FF Slab")).expect("a first floor slab");
+    let mut after = ff.clone();
+    if let ElementKind::Slab(s) = &mut after.kind {
+        s.holes = vec![polygon::rectangle(
+            DVec2::new(7.5, 4.2),
+            DVec2::new(8.1, 4.8),
+        )];
+    }
+    tx = tx.replace(ff.clone(), after);
+    doc.commit(tx).expect("the typed house is valid");
+    doc.model().clone()
+}
