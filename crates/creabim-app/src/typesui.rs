@@ -1037,6 +1037,7 @@ impl CreaBimApp {
                         r,
                         match n {
                             0 => format!("{label}."),
+                            1 => format!("{label}: 1 instance follows."),
                             n => format!("{label}: {} follow.", plural(n, "instance")),
                         },
                     );
@@ -1080,10 +1081,11 @@ impl CreaBimApp {
                     let r = self.doc.commit(tx);
                     self.report(
                         r,
-                        format!(
-                            "Type updated from it: {} follow.",
-                            plural(n, "other instance")
-                        ),
+                        match n {
+                            0 => "Type updated from it.".to_string(),
+                            1 => "Type updated from it: 1 other instance follows.".to_string(),
+                            n => format!("Type updated from it: {n} other instances follow."),
+                        },
                     );
                 }
             }

@@ -3855,6 +3855,61 @@ mod tests {
     use creabim_core::{EditMesh, FreeMesh};
 
     #[test]
+    fn tools_draw_new_elements_as_their_type() {
+        let mut doc = Document::from_model(creabim_core::sample::sample_house());
+        let (tx, ids) = creabim_core::types::add_starters(doc.model());
+        doc.commit(tx).unwrap();
+        let level = doc.model().levels().next().unwrap().0.id;
+        let storefront = ids[5];
+        let window = ids[9];
+        let mut state = PlanState::default();
+        state
+            .types
+            .insert(creabim_core::TypeCategory::Wall, storefront);
+        state
+            .types
+            .insert(creabim_core::TypeCategory::Window, window);
+        let mut sel = Selection::default();
+        let (a, b) = (DVec2::new(0.0, -3.0), DVec2::new(6.0, -3.0));
+        plan_click(&mut doc, level, Tool::Wall, a, &mut state, &mut sel).unwrap();
+        plan_click(&mut doc, level, Tool::Wall, b, &mut state, &mut sel).unwrap();
+        let wall = sel.active.unwrap();
+        let e = doc.model().get(wall).unwrap();
+        assert_eq!(e.of_type.as_ref().map(|r| r.id), Some(storefront));
+        let ElementKind::Wall(w) = &e.kind else {
+            panic!()
+        };
+        assert!(w.curtain.is_some(), "drawn as a curtain wall");
+        // a window clicked into a plain wall takes its type's size
+        let mut sel = Selection::default();
+        plan_click(
+            &mut doc,
+            level,
+            Tool::Window,
+            DVec2::new(5.0, 6.0),
+            &mut state,
+            &mut sel,
+        )
+        .unwrap();
+        let e = doc.model().get(sel.active.unwrap()).unwrap();
+        assert_eq!(e.of_type.as_ref().map(|r| r.id), Some(window));
+        // and the opening tool cuts a bare hole, with no type
+        let mut sel = Selection::default();
+        plan_click(
+            &mut doc,
+            level,
+            Tool::Opening,
+            DVec2::new(10.0, 4.5),
+            &mut state,
+            &mut sel,
+        )
+        .unwrap();
+        let e = doc.model().get(sel.active.unwrap()).unwrap();
+        assert!(matches!(&e.kind, ElementKind::Opening(o) if o.kind == OpeningKind::Hole));
+        assert!(e.of_type.is_none());
+    }
+
+    #[test]
     fn a_dimension_attaches_to_a_mass_corner_and_follows_it() {
         let mut doc = Document::from_model(creabim_core::sample::sample_house());
         let (view, v) = doc

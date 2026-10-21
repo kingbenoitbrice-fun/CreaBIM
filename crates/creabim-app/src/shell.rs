@@ -466,6 +466,9 @@ impl CreaBimApp {
             Item::new("new.layered", "New layered sample house")
                 .icon("house")
                 .hint("Walls, floors and a roof built from layered assemblies, the upper walls attached to the roof"),
+            Item::new("new.typed", "New typed sample house")
+                .icon("house")
+                .hint("Walls, doors, windows and slabs of element types, a storefront curtain wall, a wall opening, a stair shaft and a slab hole"),
             Item::new("new.sheet", "New sheet").icon("file-text"),
             Item::sub("New schedule", schedule_items()).icon("table-2"),
             Item::Separator,
@@ -950,6 +953,11 @@ impl CreaBimApp {
             "new.layered" => {
                 self.load_model(creabim_core::sample::layered_house());
                 self.status = "Loaded the layered sample house.".into();
+            }
+            "new.typed" => {
+                self.load_model(creabim_core::sample::typed_house());
+                self.status =
+                    "Loaded the typed sample house: see Materials › Types… for its types.".into();
             }
             "new.sample" => {
                 self.load_model(sample_house());
