@@ -1,3 +1,4 @@
+use crate::params::{curtain_props, type_props, Prop, CURTAIN_PSET, TYPE_PSET};
 use crate::step::{list, point2, point3, real, string, Ref, StepWriter};
 use creabim_core::{Element, ElementId, ElementKind, Model, OpeningKind};
 use glam::{DVec2, DVec3};
@@ -79,6 +80,68 @@ impl Ctx {
             "IFCSHAPEREPRESENTATION",
             format!("{},'Body',{},{}", self.body, string(kind), list(items)),
         )
+    }
+
+    /// A property set of single values.
+    fn pset(&mut self, name: &str, props: &[(&'static str, Prop)]) -> Ref {
+        let refs: Vec<Ref> = props
+            .iter()
+            .map(|(k, v)| {
+                self.w.add(
+                    "IFCPROPERTYSINGLEVALUE",
+                    format!("{},$,{},$", string(k), v.step()),
+                )
+            })
+            .collect();
+        let g = self.guid();
+        self.w.add(
+            "IFCPROPERTYSET",
+            format!("{g},$,{},$,{}", string(name), list(&refs)),
+        )
+    }
+
+    /// A property set, given to `objects`.
+    fn pset_on(&mut self, objects: &[Ref], name: &str, props: &[(&'static str, Prop)]) {
+        let set = self.pset(name, props);
+        let g = self.guid();
+        self.w.add(
+            "IFCRELDEFINESBYPROPERTIES",
+            format!("{g},$,$,$,{},{set}", list(objects)),
+        );
+    }
+
+    /// A polygon in plan extruded `depth` up from height `z`.
+    fn plan_extrusion(&mut self, pts: &[DVec2], z: f64, depth: f64) -> Ref {
+        let mut refs: Vec<Ref> = pts
+            .iter()
+            .map(|p| self.w.add("IFCCARTESIANPOINT", point2(p.x, p.y)))
+            .collect();
+        refs.push(refs[0]);
+        let poly = self.w.add("IFCPOLYLINE", list(&refs));
+        let prof = self
+            .w
+            .add("IFCARBITRARYCLOSEDPROFILEDEF", format!(".AREA.,$,{poly}"));
+        let pos = self.placement3d(DVec3::new(0.0, 0.0, z), None, None);
+        self.w.add(
+            "IFCEXTRUDEDAREASOLID",
+            format!("{prof},{pos},{},{}", self.z_axis, real(depth)),
+        )
+    }
+
+    /// An IfcOpeningElement of shape `solid` (in `host_pl`'s frame) voiding `host`.
+    fn void(&mut self, host: Ref, host_pl: Ref, solid: Ref, name: &str, guid: Option<String>) {
+        let pl = self.local_placement(Some(host_pl), DVec3::ZERO, None);
+        let shape = self.shape("SweptSolid", &[solid]);
+        let guid = guid.unwrap_or_else(|| self.guid());
+        let opening = self.w.add(
+            "IFCOPENINGELEMENT",
+            format!("{guid},$,{},$,$,{pl},{shape},$,.OPENING.", string(name)),
+        );
+        let g = self.guid();
+        self.w.add(
+            "IFCRELVOIDSELEMENT",
+            format!("{g},$,$,$,{host},{opening}"),
+        );
     }
 
     /// A rectangle `xdim` × `ydim` centred at `center` (profile plane),
@@ -206,6 +269,13 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
     };
     let elevation =
         |l: Option<ElementId>| l.and_then(|l| model.level(l)).map_or(0.0, |l| l.elevation);
+    // the products of each element type
+    let mut typed: HashMap<ElementId, Vec<Ref>> = HashMap::new();
+    let mut of_type = |e: &Element, r: Ref| {
+        if let Some(t) = &e.of_type {
+            typed.entry(t.id).or_default().push(r);
+        }
+    };
 
     for e in model.iter() {
         if cutters.contains(&e.id) {
@@ -213,6 +283,81 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         }
         let cut = cut_meshes.get(&e.id);
         match &e.kind {
+            ElementKind::Wall(wall @ creabim_core::Wall { curtain: Some(grid), .. }) => {
+                // a curtain wall: no body of its own, aggregating its
+                // mullions (IfcMember) and panels (IfcPlate)
+                let Some(&(_, spl)) = storeys.get(&wall.level) else {
+                    continue;
+                };
+                let d = wall.direction();
+                let pl = c.local_placement(
+                    Some(spl),
+                    DVec3::new(wall.start.x, wall.start.y, wall.base_offset),
+                    Some(DVec3::new(d.x, d.y, 0.0)),
+                );
+                let r = c.w.add(
+                    "IFCCURTAINWALL",
+                    format!(
+                        "{},$,{},$,$,{pl},$,$,.NOTDEFINED.",
+                        string(&e.id.ifc_guid()),
+                        string(&e.name)
+                    ),
+                );
+                wall_refs.insert(e.id, (r, pl));
+                wall_axes.insert(e.id, 0.0);
+                contained.entry(Some(wall.level)).or_default().push(r);
+                of_type(e, r);
+                let openings: Vec<&creabim_core::Opening> = model
+                    .dependents(e.id)
+                    .into_iter()
+                    .filter_map(|o| match &model.get(o)?.kind {
+                        ElementKind::Opening(o) => Some(o),
+                        _ => None,
+                    })
+                    .collect();
+                let mut parts = vec![];
+                let mut solid_parts = vec![];
+                for b in creabim_geom::curtain::curtain_boxes(wall, grid, &openings) {
+                    use creabim_geom::curtain::CurtainPart;
+                    let size = b.hi - b.lo;
+                    let ppl = c.local_placement(Some(pl), b.lo, None);
+                    let pos = c.placement3d(DVec3::ZERO, None, None);
+                    let solid =
+                        c.rect_extrusion(size.truncate() / 2.0, size.x, size.y, pos, size.z);
+                    let shape = c.shape("SweptSolid", &[solid]);
+                    let (class, tail, what) = match b.part {
+                        CurtainPart::Mullion => ("IFCMEMBER", ",$,.MULLION.", "mullion"),
+                        CurtainPart::Glass => ("IFCPLATE", ",$,.CURTAIN_PANEL.", "glass"),
+                        CurtainPart::Panel => ("IFCPLATE", ",$,.CURTAIN_PANEL.", "panel"),
+                    };
+                    let g = c.guid();
+                    let p = c.w.add(
+                        class,
+                        format!(
+                            "{g},$,{},$,$,{ppl},{shape}{tail}",
+                            string(&format!("{} {what}", e.name))
+                        ),
+                    );
+                    parts.push(p);
+                    if b.part != CurtainPart::Glass {
+                        solid_parts.push(p);
+                    }
+                }
+                if !parts.is_empty() {
+                    let g = c.guid();
+                    c.w.add(
+                        "IFCRELAGGREGATES",
+                        format!("{g},$,$,$,{r},{}", list(&parts)),
+                    );
+                }
+                if let Some((m, _)) = creabim_core::material_of(model, e) {
+                    by_material.entry(m.id).or_default().extend(solid_parts);
+                }
+                let mut props = curtain_props(grid);
+                props.push(("Length", Prop::Length(wall.length())));
+                props.push(("Height", Prop::Length(wall.height)));
+                c.pset_on(&[r], CURTAIN_PSET, &props);
+            }
             ElementKind::Wall(wall) => {
                 let Some(&(_, spl)) = storeys.get(&wall.level) else {
                     continue;
@@ -303,6 +448,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     format!("$,$,({body_rep},{axis_rep})"),
                 );
                 let r = product(&mut c, "IFCWALL", e, pl, shape, ",$,.STANDARD.");
+                of_type(e, r);
                 wall_refs.insert(e.id, (r, pl));
                 contained.entry(Some(wall.level)).or_default().push(r);
                 if let Some((a, _)) = asm {
@@ -351,7 +497,14 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     None => c.shape("SweptSolid", &[solid]),
                 };
                 let r = product(&mut c, "IFCSLAB", e, pl, shape, ",$,.FLOOR.");
+                of_type(e, r);
                 contained.entry(Some(slab.level)).or_default().push(r);
+                // holes, and shafts passing through, as openings voiding it
+                for (i, h) in creabim_core::slab::holes_of(model, e).iter().enumerate() {
+                    let z = slab.top_offset - slab.thickness - 0.05;
+                    let solid = c.plan_extrusion(h, z, slab.thickness + 0.1);
+                    c.void(r, pl, solid, &format!("{} hole {}", e.name, i + 1), None);
+                }
                 if let Some((a, _)) = creabim_core::assembly_of(model, e) {
                     // layers run down from the top
                     layered.push((r, a.id, LayerUse::Usage("AXIS3", false, slab.top_offset)));
@@ -416,7 +569,17 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let shape = c.shape("Tessellation", &[fs]);
                 let (class, tail) = member_entity(k);
                 let r = product(&mut c, class, e, pl, shape, tail);
+                of_type(e, r);
                 contained.entry(level).or_default().push(r);
+                if let ElementKind::Roof(roof) = k {
+                    // the mesh has its holes already; say so for other tools
+                    let vt = roof.vertical_thickness();
+                    let z = roof.base_offset - vt - 0.1;
+                    for (i, h) in creabim_core::slab::holes_of(model, e).iter().enumerate() {
+                        let solid = c.plan_extrusion(h, z, roof.peak() + vt + 0.2);
+                        c.void(r, pl, solid, &format!("{} hole {}", e.name, i + 1), None);
+                    }
+                }
                 if let Some((a, _)) = creabim_core::assembly_of(model, e) {
                     // a roof's shape isn't a straight extrusion: the set itself
                     layered.push((r, a.id, LayerUse::Set));
@@ -456,12 +619,18 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             wall.thickness + 2.0 * eps,
         );
         let shape = c.shape("SweptSolid", &[solid]);
-        let guid = c.guid();
+        // a bare hole is the opening itself, under its own id
+        let hole = o.kind == OpeningKind::Hole;
+        let (guid, name) = if hole {
+            (string(&e.id.ifc_guid()), e.name.clone())
+        } else {
+            (c.guid(), format!("{} opening", e.name))
+        };
         let opening = c.w.add(
             "IFCOPENINGELEMENT",
             format!(
                 "{guid},$,{},$,$,{pl},{shape},$,.OPENING.",
-                string(&format!("{} opening", e.name))
+                string(&name)
             ),
         );
         let g = c.guid();
@@ -469,6 +638,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             "IFCRELVOIDSELEMENT",
             format!("{g},$,$,$,{wall_r},{opening}"),
         );
+        if hole {
+            continue;
+        }
 
         // the door or window itself: its frame, glass, leaf and handle,
         // each part a box, placed where the opening starts in the wall. A
@@ -524,8 +696,10 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     real(o.width)
                 ),
             ),
+            OpeningKind::Hole => continue,
         };
         let fill = product(&mut c, class, e, fill_pl, fill_shape, &tail);
+        of_type(e, fill);
         let g = c.guid();
         c.w.add("IFCRELFILLSELEMENT", format!("{g},$,$,$,{opening},{fill}"));
         if let Some((m, _)) = creabim_core::material_of(model, e) {
@@ -665,6 +839,55 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             "IFCRELASSOCIATESMATERIAL",
             format!("{g},$,$,$,({product}),{relating}"),
         );
+    }
+
+    // Element types, each with its shared parameters, its material or
+    // layer set, and the elements of the type.
+    for e in model.iter() {
+        let ElementKind::ElementType(t) = &e.kind else {
+            continue;
+        };
+        let set = c.pset(TYPE_PSET, &type_props(t));
+        let description = match t.description.trim() {
+            "" => "$".to_string(),
+            d => string(d),
+        };
+        let head = format!(
+            "{},$,{},{description},$,({set}),$,$,$",
+            string(&e.id.ifc_guid()),
+            string(&e.name)
+        );
+        use creabim_core::TypeParams as P;
+        let (class, tail) = match &t.params {
+            P::Wall(w) if w.curtain.is_some() => ("IFCCURTAINWALLTYPE", ",.NOTDEFINED."),
+            P::Wall(_) => ("IFCWALLTYPE", ",.STANDARD."),
+            P::Door(_) => ("IFCDOORTYPE", ",.DOOR.,.SINGLE_SWING_LEFT.,.F.,$"),
+            P::Window(_) => ("IFCWINDOWTYPE", ",.WINDOW.,.SINGLE_PANEL.,.F.,$"),
+            P::Slab(_) => ("IFCSLABTYPE", ",.FLOOR."),
+            P::Roof(_) => ("IFCROOFTYPE", ",.NOTDEFINED."),
+            P::Column(_) => ("IFCCOLUMNTYPE", ",.COLUMN."),
+            P::Beam(_) => ("IFCBEAMTYPE", ",.BEAM."),
+        };
+        let tr = c.w.add(class, format!("{head}{tail}"));
+        let relating = t
+            .assembly()
+            .and_then(|a| layer_sets.get(&a))
+            .or_else(|| t.material().and_then(|m| material_refs.get(&m)))
+            .copied();
+        if let Some(m) = relating {
+            let g = c.guid();
+            c.w.add(
+                "IFCRELASSOCIATESMATERIAL",
+                format!("{g},$,$,$,({tr}),{m}"),
+            );
+        }
+        if let Some(users) = typed.get(&e.id).filter(|u| !u.is_empty()) {
+            let g = c.guid();
+            c.w.add(
+                "IFCRELDEFINESBYTYPE",
+                format!("{g},$,$,$,{},{tr}", list(users)),
+            );
+        }
     }
 
     // Spatial structure.

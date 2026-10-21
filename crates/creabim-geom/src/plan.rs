@@ -801,6 +801,28 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                     }
                     continue;
                 }
+                if let Some(g) = &w.curtain {
+                    // mullions and panels, and the doors in them
+                    let mut hosted: Vec<(ElementId, &creabim_core::Opening)> = vec![];
+                    for oid in model.dependents(e.id) {
+                        if let Some(ElementKind::Opening(o)) = model.get(oid).map(|x| &x.kind) {
+                            hosted.push((oid, o));
+                        }
+                    }
+                    let openings: Vec<&creabim_core::Opening> = hosted.iter().map(|h| h.1).collect();
+                    items.extend(crate::curtain::curtain_plan(e.id, w, g, &openings, cut_v));
+                    let d = w.direction();
+                    let n = DVec2::new(-d.y, d.x);
+                    let plain = |u: f64, s: f64| w.start + d * u + n * s;
+                    for (oid, o) in hosted {
+                        if let Some(c) = Cut::of(o, w) {
+                            if cut_v > c.v0 && cut_v < c.v1 {
+                                items.extend(opening_symbol(oid, o, w, &c, cut_v, &plain));
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let mut gaps: Vec<(f64, f64)> = Vec::new();
                 for oid in model.dependents(e.id) {
                     let Some(oe) = model.get(oid) else { continue };
@@ -868,17 +890,41 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                 // cut when the plan plane passes through it, else seen below
                 let bottom = s.top_offset - s.thickness;
                 let cut = bottom < cut_height && cut_height < s.top_offset;
-                items.insert(
-                    0,
-                    PlanItem::Polygon {
-                        id: e.id,
-                        pen: if cut { Pen::Cut } else { Pen::Projection },
-                        points: s.outline(),
-                    },
-                );
+                let holes = creabim_core::slab::holes_of(model, e);
+                if cut {
+                    // one outline with its holes bridged in, so the fill leaves them open
+                    items.insert(
+                        0,
+                        PlanItem::Polygon {
+                            id: e.id,
+                            pen: Pen::Cut,
+                            points: creabim_core::polygon::bridged(&s.outline(), &holes),
+                        },
+                    );
+                } else {
+                    items.insert(
+                        0,
+                        PlanItem::Polygon {
+                            id: e.id,
+                            pen: Pen::Projection,
+                            points: s.outline(),
+                        },
+                    );
+                    for h in &holes {
+                        items.extend(hole_marks(e.id, h, Pen::Projection));
+                    }
+                }
             }
             k if on_level && creabim_core::members::is_member(k) => {
                 items.extend(crate::members::member_plan(model, e, cut_height));
+            }
+            ElementKind::Shaft(sh) => {
+                // on every plan it passes through, crossed, to pick it by
+                let z = model.level(level).map_or(0.0, |l| l.elevation);
+                let (z0, z1) = sh.span(model);
+                if z0 - 1e-6 <= z && z < z1 - 1e-6 {
+                    items.extend(hole_marks(e.id, &sh.boundary, Pen::Symbol));
+                }
             }
             ElementKind::Sketch(sk) if sk.level == Some(level) => {
                 items.extend(sketch_items(e.id, sk, &|p| p));
@@ -971,6 +1017,37 @@ pub fn underlay_items(model: &Model, level: ElementId, cut_height: f64) -> Vec<P
                 end,
             }),
             _ => {}
+        }
+    }
+    out
+}
+
+/// A hole through a slab, roof or shaft as plans draw it: its outline
+/// and a cross corner to corner.
+pub fn hole_marks(id: ElementId, hole: &[DVec2], pen: Pen) -> Vec<PlanItem> {
+    let mut out = vec![PlanItem::Polygon {
+        id,
+        pen,
+        points: hole.to_vec(),
+    }];
+    let n = hole.len();
+    if n >= 4 {
+        // the two diagonals of its box, kept inside it
+        let lo = hole.iter().copied().reduce(DVec2::min).unwrap_or_default();
+        let hi = hole.iter().copied().reduce(DVec2::max).unwrap_or_default();
+        let far = |p: DVec2| {
+            hole.iter()
+                .copied()
+                .min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)))
+                .unwrap_or(p)
+        };
+        for (a, b) in [(lo, hi), (DVec2::new(lo.x, hi.y), DVec2::new(hi.x, lo.y))] {
+            out.push(PlanItem::Line {
+                id,
+                pen: Pen::Symbol,
+                a: far(a),
+                b: far(b),
+            });
         }
     }
     out
@@ -1165,6 +1242,8 @@ fn opening_symbol(
         }
     }
     match o.kind {
+        // a bare hole is just the gap in the wall
+        OpeningKind::Hole => {}
         OpeningKind::Window => {
             // the wall faces carry on across, over the sill
             let t = w.thickness / 2.0;

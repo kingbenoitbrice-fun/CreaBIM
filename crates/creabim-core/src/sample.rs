@@ -79,6 +79,7 @@ pub fn sample_house() -> Model {
                 top_offset: 0.0,
                 bulges: vec![],
                 assembly: None,
+                holes: vec![],
             }),
         ));
         for i in 0..4 {
@@ -98,6 +99,7 @@ pub fn sample_house() -> Model {
                     top: Default::default(),
                     disallow_join: [false; 2],
                     attach_top: vec![],
+                    curtain: None,
                 }),
             );
             let id = wall.id;
@@ -175,6 +177,7 @@ pub fn sample_house() -> Model {
             top: Default::default(),
             disallow_join: [false; 2],
             attach_top: vec![],
+            curtain: None,
         }),
     );
     let pid = part.id;

@@ -140,6 +140,7 @@ pub fn fit(
                 top: Default::default(),
                 disallow_join: [false; 2],
                 attach_top: vec![],
+                curtain: None,
             }))
         }
         Assign::Slab => {
@@ -170,6 +171,7 @@ pub fn fit(
                 top_offset: hi.z - elevation,
                 bulges: vec![],
                 assembly: None,
+                holes: vec![],
             }))
         }
         Assign::Door | Assign::Window => {

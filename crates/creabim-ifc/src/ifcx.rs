@@ -786,6 +786,7 @@ pub fn import_ifcx(json: &str) -> Result<ImportResult, ImportError> {
             name,
             kind,
             source: None,
+            of_type: None,
         });
     }
     b.objects(objects);
@@ -839,6 +840,7 @@ impl Builder {
                 name,
                 kind,
                 source: None,
+                of_type: None,
             },
             _ => {
                 let name = attrs
@@ -871,6 +873,7 @@ impl Builder {
                         false,
                     )),
                     name,
+                    of_type: None,
                 }
             }
         };
@@ -916,6 +919,7 @@ impl Builder {
                     elevation: z,
                     height,
                 }),
+                of_type: None,
             });
             level_of.insert(i, (id, z));
         }
@@ -973,6 +977,7 @@ impl Builder {
                     name,
                     kind,
                     source: None,
+                    of_type: None,
                 };
                 match &e.kind {
                     // hosted elements go after their hosts
@@ -1043,7 +1048,9 @@ impl Builder {
                             top: Default::default(),
                             disallow_join: [false; 2],
                             attach_top: vec![],
+                            curtain: None,
                         }),
+                        of_type: None,
                     });
                     continue;
                 }
@@ -1065,7 +1072,9 @@ impl Builder {
                                 top_offset: 0.0,
                                 bulges: vec![],
                                 assembly: None,
+                                holes: vec![],
                             }),
+                            of_type: None,
                         });
                         continue;
                     }
@@ -1103,6 +1112,7 @@ impl Builder {
                             flip_hand: false,
                             flip_facing: false,
                         }),
+                        of_type: None,
                     });
                     continue;
                 }
@@ -1126,6 +1136,7 @@ impl Builder {
                     material,
                     ..FreeMesh::new(Some(level), DVec3::new(at.x, at.y, at.z - elev), mesh)
                 }),
+                of_type: None,
             });
         }
         if spaces > 0 {

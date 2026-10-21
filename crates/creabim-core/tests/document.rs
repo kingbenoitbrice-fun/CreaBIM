@@ -28,6 +28,7 @@ fn wall(level: ElementId) -> Element {
             top: Default::default(),
             disallow_join: [false; 2],
             attach_top: vec![],
+            curtain: None,
         }),
     )
 }

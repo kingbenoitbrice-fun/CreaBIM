@@ -64,3 +64,74 @@ fn point_in_triangle(p: DVec2, a: DVec2, b: DVec2, c: DVec2) -> bool {
     let d3 = (a - c).perp_dot(p - c);
     d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0
 }
+
+/// Is `p` inside the polygon (even-odd)?
+pub fn contains(poly: &[DVec2], p: DVec2) -> bool {
+    let mut inside = false;
+    let n = poly.len();
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+/// One simple polygon for an outline with holes: the outline made
+/// counter-clockwise and each hole, clockwise, joined to it by a zero-width
+/// bridge through the closest pair of corners. Triangulating it fills the
+/// outline and leaves the holes empty.
+pub fn bridged(outer: &[DVec2], holes: &[Vec<DVec2>]) -> Vec<DVec2> {
+    let mut out = outer.to_vec();
+    if signed_area2(&out) < 0.0 {
+        out.reverse();
+    }
+    for h in holes.iter().filter(|h| h.len() >= 3) {
+        let mut h = h.clone();
+        if signed_area2(&h) > 0.0 {
+            h.reverse();
+        }
+        let mut best = (f64::MAX, 0, 0);
+        for (i, a) in out.iter().enumerate() {
+            for (j, b) in h.iter().enumerate() {
+                let d = a.distance_squared(*b);
+                if d < best.0 {
+                    best = (d, i, j);
+                }
+            }
+        }
+        let (_, i, j) = best;
+        let mut next = out[..=i].to_vec();
+        next.extend(h[j..].iter().copied());
+        next.extend(h[..=j].iter().copied());
+        next.extend(out[i..].iter().copied());
+        out = next;
+    }
+    out
+}
+
+/// A rectangle's corners, counter-clockwise, from two opposite corners.
+pub fn rectangle(a: DVec2, b: DVec2) -> Vec<DVec2> {
+    let (lo, hi) = (a.min(b), a.max(b));
+    vec![lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)]
+}
+
+#[cfg(test)]
+mod hole_tests {
+    use super::*;
+
+    #[test]
+    fn a_bridged_outline_triangulates_round_its_hole() {
+        let outer = rectangle(DVec2::ZERO, DVec2::new(4.0, 4.0));
+        let hole = rectangle(DVec2::new(1.0, 1.0), DVec2::new(2.0, 3.0));
+        let p = bridged(&outer, &[hole]);
+        assert_eq!(p.len(), 4 + 4 + 2);
+        let area: f64 = triangulate(&p)
+            .iter()
+            .map(|t| signed_area2(&[p[t[0]], p[t[1]], p[t[2]]]) / 2.0)
+            .sum();
+        assert!((area - 14.0).abs() < 1e-9, "{area}");
+        assert!(contains(&outer, DVec2::new(1.5, 2.0)));
+    }
+}

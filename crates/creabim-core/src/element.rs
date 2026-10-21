@@ -24,6 +24,10 @@ pub struct Element {
     /// file updates the element in place instead of adding a copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Source>,
+    /// The element type it is an instance of (a wall type, a door type...),
+    /// and which of the type's parameters it sets for itself.
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub of_type: Option<crate::types::TypeRef>,
 }
 
 /// An object in another file that an element mirrors.
@@ -46,6 +50,7 @@ impl Element {
             name: name.into(),
             kind,
             source: None,
+            of_type: None,
         }
     }
 
@@ -96,6 +101,11 @@ impl Element {
             ElementKind::TextStyle(_) => vec![],
             ElementKind::SheetTemplate(_) => vec![],
             ElementKind::Units(_) => vec![],
+            // types are soft too: an element whose type is gone keeps its values
+            ElementKind::ElementType(_) => vec![],
+            // a shaft's top level is soft: without it the shaft stops at
+            // its own level's height
+            ElementKind::Shaft(s) => vec![s.level],
             ElementKind::Sketch(s) => s.level.into_iter().collect(),
             ElementKind::Cut(c) => vec![c.target, c.cutter],
             ElementKind::Guide(g) => g.level.into_iter().collect(),
@@ -111,12 +121,16 @@ impl Element {
         match &self.kind {
             ElementKind::Level(_) => "IfcBuildingStorey",
             ElementKind::Grid(_) | ElementKind::GridGroup(_) => "IfcGrid",
+            ElementKind::Wall(w) if w.curtain.is_some() => "IfcCurtainWall",
             ElementKind::Wall(_) => "IfcWall",
             ElementKind::Slab(_) => "IfcSlab",
             ElementKind::Opening(o) => match o.kind {
                 OpeningKind::Door => "IfcDoor",
                 OpeningKind::Window => "IfcWindow",
+                OpeningKind::Hole => "IfcOpeningElement",
             },
+            ElementKind::Shaft(_) => "IfcOpeningElement",
+            ElementKind::ElementType(t) => t.ifc_class(),
             ElementKind::FreeMesh(m) => &m.ifc_class,
             // Views are documentation, not building elements; they are not exported to IFC.
             ElementKind::View(_) => "View",
@@ -166,6 +180,9 @@ impl Element {
                 }
             }
             ElementKind::Wall(w) => {
+                if let Some(c) = &w.curtain {
+                    c.validate()?;
+                }
                 positive(w.thickness, "wall thickness")?;
                 positive(w.height, "wall height")?;
                 if let WallTop::UpToLevel { offset, .. } = w.top {
@@ -187,7 +204,7 @@ impl Element {
                 if s.boundary.len() < 3 && !(arcs && s.boundary.len() == 2) {
                     return Err("slab boundary needs at least 3 points, or 2 and an arc".into());
                 }
-                Ok(())
+                crate::slab::check_holes(&s.holes)
             }
             ElementKind::Opening(o) => {
                 positive(o.width, "opening width")?;
@@ -278,6 +295,8 @@ impl Element {
             ElementKind::SheetTemplate(t) => t.validate(),
             ElementKind::Units(_) => Ok(()),
             ElementKind::Assembly(a) => a.validate(),
+            ElementKind::ElementType(t) => t.validate(),
+            ElementKind::Shaft(s) => s.validate(),
             ElementKind::Sketch(s) => s.check(),
             ElementKind::Cut(c) => {
                 if c.target == c.cutter {
@@ -333,6 +352,11 @@ pub enum ElementKind {
     Assembly(crate::assembly::Assembly),
     /// The project's units: one per project, read through [`crate::Model::units`].
     Units(crate::units::Units),
+    /// A named set of shared parameters (a wall type, a door type...) that
+    /// elements are instances of: editing it changes all of them.
+    ElementType(crate::types::ElementType),
+    /// A vertical hole through every slab and roof between two levels.
+    Shaft(crate::slab::Shaft),
 }
 
 impl ElementKind {
@@ -365,6 +389,8 @@ impl ElementKind {
             ElementKind::GridGroup(_) => "GridGroup",
             ElementKind::Assembly(_) => "Assembly",
             ElementKind::Units(_) => "Units",
+            ElementKind::ElementType(_) => "ElementType",
+            ElementKind::Shaft(_) => "Shaft",
         }
     }
 }
@@ -698,6 +724,10 @@ pub struct Wall {
     /// top follows its underside instead of stopping at `height`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attach_top: Vec<ElementId>,
+    /// A curtain wall: a grid of mullions holding glass or solid panels
+    /// instead of a solid wall. Its thickness is the mullions' depth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curtain: Option<crate::curtain::CurtainGrid>,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -782,6 +812,7 @@ impl Wall {
             top: WallTop::Unconnected,
             disallow_join: [false; 2],
             attach_top: vec![],
+            curtain: None,
         }
     }
 
@@ -817,6 +848,10 @@ pub struct Slab {
     /// top down. With one, the slab's thickness is the assembly's total.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assembly: Option<ElementId>,
+    /// Holes cut through it (a stair well, a duct), each a polygon in plan
+    /// inside the outline. Shafts cut more; see [`crate::slab::holes_of`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holes: Vec<Vec<DVec2>>,
 }
 
 impl Slab {
@@ -830,6 +865,7 @@ impl Slab {
             top_offset: 0.0,
             bulges: vec![],
             assembly: None,
+            holes: vec![],
         }
     }
 
@@ -863,9 +899,14 @@ impl Slab {
         out
     }
 
-    /// Plan area of the outline, arcs included.
+    /// Plan area of the outline, arcs included, less its own holes.
     pub fn area(&self) -> f64 {
-        crate::polygon::signed_area2(&self.outline()).abs() / 2.0
+        let holes: f64 = self
+            .holes
+            .iter()
+            .map(|h| crate::polygon::signed_area2(h).abs() / 2.0)
+            .sum();
+        (crate::polygon::signed_area2(&self.outline()).abs() / 2.0 - holes).max(0.0)
     }
 
     /// Height of the top face, given the level's elevation.
@@ -938,9 +979,11 @@ impl Slab {
 pub enum OpeningKind {
     Door,
     Window,
+    /// A bare rectangular hole with nothing in it.
+    Hole,
 }
 
-/// A door or window cut into a host wall.
+/// A door or window cut into a host wall, or a bare hole.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Opening {
     pub host: ElementId,
@@ -977,7 +1020,7 @@ impl Opening {
         let interior_left = !wall.flip;
         let left = match self.kind {
             OpeningKind::Door => interior_left,
-            OpeningKind::Window => !interior_left,
+            OpeningKind::Window | OpeningKind::Hole => !interior_left,
         };
         left != self.flip_facing
     }
