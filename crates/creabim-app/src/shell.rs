@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 const TOP_H: f32 = 113.0;
 const STATUS_H: f32 = 30.0;
 /// Size of the 3D view's navigation buttons.
-const NAV_W: f32 = 292.0;
+const NAV_W: f32 = 372.0;
 const NAV_H: f32 = 34.0;
 
 pub(super) struct Shell {
@@ -34,6 +34,8 @@ pub(super) struct Shell {
     context_3d: bool,
     /// Give the popup the keyboard once it is shown (the palette).
     focus_popup: bool,
+    /// The ground grid spacing being typed, while its window is open.
+    pub ground_custom: Option<String>,
 }
 
 impl Default for Shell {
@@ -49,6 +51,7 @@ impl Default for Shell {
             menu_3d: false,
             context_3d: false,
             focus_popup: false,
+            ground_custom: None,
         }
     }
 }
@@ -165,6 +168,26 @@ fn group_title(class: &str) -> String {
             }
         }
     }
+}
+
+/// The icon of a schedule of `c`.
+fn schedule_icon(c: ScheduleCategory) -> &'static str {
+    match c {
+        ScheduleCategory::Doors => "door-open",
+        ScheduleCategory::Windows => "app-window",
+        ScheduleCategory::Walls => "brick-wall",
+        ScheduleCategory::Slabs => "layers-2",
+        ScheduleCategory::Structure => "rectangle-vertical",
+    }
+}
+
+/// The New schedule submenu, one entry a category.
+fn schedule_items() -> Vec<Item> {
+    ScheduleCategory::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, c)| Item::new(format!("new.schedule:{i}"), c.label()).icon(schedule_icon(*c)))
+        .collect()
 }
 
 fn command_icon(c: Command) -> &'static str {
@@ -432,24 +455,18 @@ impl CreaBimApp {
             Item::new("new.empty", "New empty project").icon("file-plus"),
             Item::new("new.sample", "New sample house").icon("house"),
             Item::new("new.sheet", "New sheet").icon("file-text"),
-            Item::sub(
-                "New schedule",
-                ScheduleCategory::ALL
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| Item::new(format!("new.schedule:{i}"), c.label()))
-                    .collect(),
-            ),
+            Item::sub("New schedule", schedule_items()).icon("table-2"),
             Item::Separator,
             Item::new("open", "Open…")
                 .key("Ctrl+O")
                 .icon("folder-open")
                 .hint("Open a .creabim, .ifc or .ifcx file. Other files (.blend, .FCStd) are linked into this project."),
-            Item::sub("Open recent", recent),
+            Item::sub("Open recent", recent).icon("folder"),
         ];
         if self.shell.web.is_none() {
             items.push(
                 Item::new("open.path", "Open the path in the File box")
+                    .icon("folder-open")
                     .hint("For typing or pasting a path instead of browsing."),
             );
         }
@@ -458,7 +475,7 @@ impl CreaBimApp {
                 .key("Ctrl+S")
                 .icon("save")
                 .hint("Save as a .creabim project file, with its undo history."),
-            Item::new("saveas", "Save as…"),
+            Item::new("saveas", "Save as…").icon("save"),
             Item::Separator,
             Item::Header("Project".into()),
             Item::new("units", "Project units…")
@@ -482,27 +499,33 @@ impl CreaBimApp {
         ]);
         let linked = crate::files::linked_files(self.doc.model());
         if !linked.is_empty() {
-            items.push(Item::sub(
-                "Reload a linked file",
-                linked
-                    .iter()
-                    .enumerate()
-                    .map(|(i, f)| Item::new(format!("reload:{i}"), file_label(f)))
-                    .collect(),
-            ));
+            items.push(
+                Item::sub(
+                    "Reload a linked file",
+                    linked
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| Item::new(format!("reload:{i}"), file_label(f)))
+                        .collect(),
+                )
+                .icon("refresh-cw"),
+            );
         }
         items.extend([
             Item::Separator,
             Item::Header("Export".into()),
             Item::new("export.ifc4", "IFC4 (.ifc)").icon("upload"),
             Item::new("export.ifcx", "IFC5 (.ifcx, alpha)")
+                .icon("upload")
                 .hint("The new JSON-based IFC. Its schema is still an alpha, so other tools may not read it yet."),
             Item::new("export.glb", "glTF (.glb) for Blender")
+                .icon("box")
                 .hint("Every element as a mesh with its CreaBIM id, so edits saved in Blender come back to the same elements."),
             Item::new("export.fcstd", "FreeCAD (.FCStd)")
+                .icon("cuboid")
                 .hint("Every element as a solid with its BIM type and CreaBIM id; open it in FreeCAD, edit, save, and link it back."),
             Item::new("export.pdf", "Sheets as PDF").icon("file-text"),
-            Item::new("export.svg", "This view or sheet as SVG"),
+            Item::new("export.svg", "This view or sheet as SVG").icon("file"),
         ]);
         items
     }
@@ -528,7 +551,7 @@ impl CreaBimApp {
         items.push(Item::Separator);
         let mut pivot = self.menu_items("pivot");
         pivot.insert(0, Item::Header("Rotate and scale about".into()));
-        items.push(Item::sub("Pivot", pivot));
+        items.push(Item::sub("Pivot", pivot).icon("crosshair"));
         items
     }
 
@@ -566,14 +589,7 @@ impl CreaBimApp {
             }
             if group == 2 {
                 items.push(Item::new("new.sheet", "Sheet").icon("file-text"));
-                items.push(Item::sub(
-                    "Schedule",
-                    ScheduleCategory::ALL
-                        .iter()
-                        .enumerate()
-                        .map(|(i, c)| Item::new(format!("new.schedule:{i}"), c.label()))
-                        .collect(),
-                ));
+                items.push(Item::sub("Schedule", schedule_items()).icon("table-2"));
             }
         }
         items
@@ -623,7 +639,7 @@ impl CreaBimApp {
     }
 
     /// The 3D view's navigation buttons.
-    fn nav_state(&self) -> Value {
+    pub(super) fn nav_state(&self) -> Value {
         let b = |id: &str, icon: &str, hint: &str, on: bool| json!({"id": id, "icon": icon, "hint": hint, "on": on});
         let sel = self.selection.is_some();
         let mut fitsel = b("nav.fitsel", "scan", "Frame the selection (.)", false);
@@ -643,6 +659,14 @@ impl CreaBimApp {
                 b("ground.grid", "grid-3x3",
                   if self.shell.settings.ground_grid { "Ground grid shown: click to hide it" } else { "Ground grid hidden: click to show it" },
                   self.shell.settings.ground_grid),
+                b("xray", "xray",
+                  if self.shell.settings.xray { "X-ray on: click for solid surfaces (Alt+Z)" } else { "X-ray: see through walls, slabs and roofs to what is inside them (Alt+Z)" },
+                  self.shell.settings.xray),
+            ],
+            "menus": [
+                {"key": "vis3d", "icon": if self.vis3d.is_empty() { "eye" } else { "eye-off" },
+                 "label": "Show", "on": !self.vis3d.is_empty(),
+                 "hint": "What the 3D view shows: grids, annotation, guides, sketches and every category"},
             ],
             "look": {"key": "look", "hint": "Look from the top, a side or the corner"},
         })
@@ -650,7 +674,7 @@ impl CreaBimApp {
 
     /// The View menu: where the 2D view goes and how the 3D view looks,
     /// with the longer lists in submenus so it stays short.
-    fn view_menu(&self) -> Vec<Item> {
+    pub(super) fn view_menu(&self) -> Vec<Item> {
         let place = |p: PlanPlacement, i: u8, label: &str| {
             Item::new(format!("placement:{i}"), label).checked(self.placement == p)
         };
@@ -668,6 +692,7 @@ impl CreaBimApp {
             Item::new("layout.swap", "2D view first").checked(self.layout.swapped),
         ];
         let now = ground_spacing(self.shell.settings.ground_grid_spacing);
+        let custom = !GROUND_SPACINGS.iter().any(|s| (now - s).abs() < 1e-9);
         let mut ground = vec![Item::new("ground.grid", "Show the ground grid")
             .checked(self.shell.settings.ground_grid)
             .hint(
@@ -680,6 +705,18 @@ impl CreaBimApp {
                 .checked((now - s).abs() < 1e-9)
                 .keep_open()
         }));
+        ground.push(
+            Item::new(
+                "ground.custom",
+                if custom {
+                    format!("Custom: {}…", crate::units::len(now))
+                } else {
+                    "Custom…".to_string()
+                },
+            )
+            .checked(custom)
+            .hint("Type any spacing, in the project's units"),
+        );
         let mut camera = vec![
             Item::new("nav.orbitsel", "Orbit around the selection")
                 .checked(self.orbit_selection)
@@ -713,9 +750,11 @@ impl CreaBimApp {
             place(PlanPlacement::Window, 1, "In its own window"),
             place(PlanPlacement::Overlay, 2, "Overlaid in the 3D workspace"),
             place(PlanPlacement::Hidden, 3, "Hidden"),
-            Item::sub("Docked layout", layout),
+            Item::sub("Docked layout", layout).icon("columns-2"),
             Item::new("plan3d", "Show the 2D view in 3D space").checked(self.plan_in_3d),
-            Item::sub("Underlay", self.underlay_items()).enabled(self.active_plan().is_some()),
+            Item::sub("Underlay", self.underlay_items())
+                .icon("layers")
+                .enabled(self.active_plan().is_some()),
             Item::new("levels", "Levels…").icon("level").hint(
                 "Add, rename, move and delete levels, and make their floor plans, from any view",
             ),
@@ -729,14 +768,34 @@ impl CreaBimApp {
                 .icon("scan")
                 .enabled(self.selection.is_some()),
             Item::sub(
-                "3D view shows",
+                "3D view visibility",
                 self.visibility_items(super::gridvis::VisTarget::Window3d),
-            ),
-            Item::sub("Camera", camera),
-            Item::sub("Ground grid", ground),
+            )
+            .icon("eye"),
+            Item::new("xray", "X-ray")
+                .key("Alt+Z")
+                .checked(self.shell.settings.xray)
+                .icon("xray")
+                .hint("Walls, slabs, roofs and masses see-through, so beams, columns and what is inside them show"),
+            Item::sub("Camera", camera).icon("axis-3d"),
+            Item::sub("Ground grid", ground).icon("grid-3x3"),
+            Item::Separator,
+            Item::Header("Every view".into()),
+            Item::new("guides.toggle", "Guides")
+                .key("Shift+G")
+                .checked(!self.shell.settings.guides_hidden)
+                .icon("slash")
+                .hint("Hide the guides in every view without deleting them, and bring them back"),
+            Item::sub(
+                "2D view visibility",
+                self.vis_target(false)
+                    .map(|t| self.visibility_items(t))
+                    .unwrap_or_default(),
+            )
+            .icon("eye"),
             Item::Separator,
             Item::Header("Interface".into()),
-            Item::sub("Theme", themes),
+            Item::sub("Theme", themes).icon("palette"),
             Item::new("palette", "Command palette")
                 .key("Ctrl+K")
                 .icon("search"),
@@ -790,6 +849,11 @@ impl CreaBimApp {
                     self.plan.tool = *t;
                     self.plan.cancel();
                     self.status = t.hint().into();
+                    if *t == Tool::Guide && self.shell.settings.guides_hidden {
+                        // drawing guides you can't see helps no one
+                        self.set_guides_hidden(false);
+                        self.status = format!("Guides shown again. {}", t.hint());
+                    }
                     if *t == Tool::Level && !self.shows_section() {
                         // level lines need a section or elevation; anywhere
                         // else the levels are edited in their window
@@ -967,6 +1031,12 @@ impl CreaBimApp {
                     "Ground grid hidden.".into()
                 };
             }
+            "xray" => self.set_xray(!self.shell.settings.xray),
+            "guides.toggle" => self.set_guides_hidden(!self.shell.settings.guides_hidden),
+            "ground.custom" => {
+                let now = ground_spacing(self.shell.settings.ground_grid_spacing);
+                self.shell.ground_custom = Some(crate::units::len(now));
+            }
             "ground.spacing" => {
                 if let Some(v) = index.and_then(|i| GROUND_SPACINGS.get(i)) {
                     let s = &mut self.shell.settings;
@@ -1006,7 +1076,7 @@ impl CreaBimApp {
                     web.hide_all(self.shell.classic);
                 }
             }
-            "view.shaded" | "view.tag" => self.view_action(head),
+            "view.shaded" | "view.tag" | "view.reveal" => self.view_action(head),
             "member" => crate::memberstool::toggle_option(&mut self.plan, arg),
             "slab.mode" => {
                 if let Some(m) = index.and_then(|i| crate::slabtool::SlabMode::ALL.get(i)) {
@@ -1161,6 +1231,7 @@ impl CreaBimApp {
                     .edit_merged(id, "Change view", |e| e.kind = ElementKind::View(v.clone()));
                 self.report(r, "View changed.");
             }
+            "view.reveal" => self.toggle_hidden_elements(id),
             "view.tag" => {
                 let r = planview::tag_openings(&mut self.doc, id);
                 self.status = match r {
@@ -1360,6 +1431,11 @@ impl CreaBimApp {
                         "hint": "Shade the view's surfaces",
                     }));
                 }
+                options.push(json!({
+                    "kind": "toggle", "id": "view.reveal", "label": "Hidden",
+                    "on": v.show_hidden, "icon": "xray",
+                    "hint": "Show elements hidden inside others (a beam in a wall) with dashed lines",
+                }));
             }
             options.push(json!({
                 "kind": "button", "id": "view.tag", "label": "Tag openings", "icon": "tag",
@@ -2127,6 +2203,8 @@ pub(super) fn style(ctx: &egui::Context, theme: Theme) {
         s.spacing.item_spacing = egui::vec2(8.0, 6.0);
         s.spacing.button_padding = egui::vec2(8.0, 3.0);
         s.spacing.interact_size.y = 24.0;
+        // a slider's track thick enough to read as one
+        s.spacing.slider_rail_height = 6.0;
         s.text_styles
             .insert(TextStyle::Body, FontId::proportional(13.0));
         s.text_styles
@@ -2136,8 +2214,17 @@ pub(super) fn style(ctx: &egui::Context, theme: Theme) {
     });
 }
 
+/// `a` moved `t` of the way to `b`.
+fn mix(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    egui::Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
 /// egui's look, matched to the web interface so the properties panel and
-/// the views' own controls sit with it.
+/// the views' own controls sit with it. Every control has a fill and an
+/// outline that stand out from the window it is in, so a button reads as
+/// a button, a dropdown as a field with its arrow, a text box as a box and
+/// a slider as a track; hovering strengthens both.
 pub(super) fn visuals(theme: Theme) -> egui::Visuals {
     use egui::{CornerRadius, Stroke};
     let p = theme.palette();
@@ -2149,11 +2236,14 @@ pub(super) fn visuals(theme: Theme) -> egui::Visuals {
     v.panel_fill = p.panel;
     v.window_fill = p.panel2;
     v.faint_bg_color = p.panel2;
-    v.extreme_bg_color = if p.dark { p.bg } else { p.panel2 };
+    v.extreme_bg_color = p.field;
+    v.text_edit_bg_color = Some(p.field);
+    v.slider_trailing_fill = true;
     v.window_stroke = Stroke::new(1.0, p.border);
     v.window_corner_radius = CornerRadius::same(8);
     v.menu_corner_radius = CornerRadius::same(8);
-    v.selection.bg_fill = p.accent.gamma_multiply(if p.dark { 0.45 } else { 0.25 });
+    // also the filled part of a slider's track
+    v.selection.bg_fill = p.accent.gamma_multiply(if p.dark { 0.45 } else { 0.4 });
     v.selection.stroke = Stroke::new(1.0, p.accent);
     v.hyperlink_color = p.accent;
     v.weak_text_color = Some(p.muted);
@@ -2163,20 +2253,31 @@ pub(super) fn visuals(theme: Theme) -> egui::Visuals {
     w.noninteractive.fg_stroke.color = p.text;
     w.noninteractive.bg_fill = p.panel;
     w.inactive.fg_stroke.color = p.text;
-    for (state, fill) in [
-        (&mut w.inactive, p.raise),
-        (&mut w.hovered, p.raise2),
-        (&mut w.active, p.raise2),
-        (&mut w.open, p.raise),
+    // buttons, dropdowns and slider tracks are filled a step off the
+    // window; text fields stay light (dark in the dark themes), so the two
+    // read apart
+    let control = if p.dark {
+        p.raise
+    } else {
+        mix(p.panel, p.raise2, 0.7)
+    };
+    let hover = if p.dark {
+        p.raise2
+    } else {
+        mix(p.raise2, p.edge, 0.6)
+    };
+    for (state, fill, edge) in [
+        (&mut w.inactive, control, p.edge),
+        (&mut w.hovered, hover, p.muted),
+        (&mut w.active, hover, p.accent),
+        (&mut w.open, control, p.accent),
     ] {
         state.bg_fill = fill;
         state.weak_bg_fill = fill;
         state.corner_radius = CornerRadius::same(6);
-        state.bg_stroke = Stroke::NONE;
+        state.bg_stroke = Stroke::new(1.0, edge);
     }
     w.noninteractive.corner_radius = CornerRadius::same(6);
-    w.hovered.bg_stroke = Stroke::new(1.0, p.border);
-    w.active.bg_stroke = Stroke::new(1.0, p.accent);
     v
 }
 

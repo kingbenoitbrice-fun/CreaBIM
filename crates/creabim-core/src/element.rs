@@ -1044,6 +1044,10 @@ pub struct View {
     /// dragging it; `None` keeps it in the automatic order (plans by level).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_order: Option<u32>,
+    /// Draw what is hidden inside other elements (a beam in a wall, a stud
+    /// wall in a cavity) with dashed hidden lines.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub show_hidden: bool,
 }
 
 /// What a plan shows faintly under its own level (Revit's underlay).
@@ -1159,6 +1163,7 @@ impl View {
             hidden: ViewHidden::default(),
             underlay: Underlay::None,
             browser_order: None,
+            show_hidden: false,
         }
     }
 
@@ -1175,6 +1180,7 @@ impl View {
             hidden: ViewHidden::default(),
             underlay: Underlay::None,
             browser_order: None,
+            show_hidden: false,
         }
     }
 }
@@ -1188,6 +1194,7 @@ impl View {
             hidden: ViewHidden::default(),
             underlay: Underlay::None,
             browser_order: None,
+            show_hidden: false,
         }
     }
 
@@ -1199,6 +1206,7 @@ impl View {
             hidden: ViewHidden::default(),
             underlay: Underlay::None,
             browser_order: None,
+            show_hidden: false,
         }
     }
 

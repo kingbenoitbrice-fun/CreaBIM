@@ -218,6 +218,12 @@ pub fn centre(model: &Model, id: ElementId) -> Option<DVec3> {
             let c = mesh.vertices.iter().copied().sum::<DVec3>() / n;
             c + m.origin + DVec3::Z * m.level.map_or(0.0, elevation)
         }
+        // columns, beams, roofs, stairs and railings: the middle of their shape
+        k if creabim_core::members::is_member(k) => {
+            let (mesh, _) = crate::members::member_mesh(model, e)?;
+            let (lo, hi) = mesh.bounds()?;
+            ((lo + hi) / 2.0).as_dvec3()
+        }
         _ => return None,
     })
 }
@@ -242,6 +248,19 @@ pub fn tag_text(model: &Model, id: ElementId) -> (String, bool) {
         ),
         ElementKind::Wall(w) => (with_material(w.thickness), false),
         ElementKind::Slab(s) => (with_material(s.thickness), false),
+        ElementKind::Column(c) => (c.profile.label_in(&units), false),
+        ElementKind::Beam(b) => (
+            format!(
+                "{} × {}",
+                units.dimension(b.width),
+                units.dimension(b.depth)
+            ),
+            false,
+        ),
+        ElementKind::Roof(r) => (
+            format!("{} {:.0}°", with_material(r.thickness), r.pitch),
+            false,
+        ),
         _ => (e.name.clone(), false),
     }
 }
