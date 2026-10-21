@@ -25,6 +25,8 @@ use std::collections::HashMap;
 
 #[path = "assemblies.rs"]
 mod assemblies;
+#[path = "drafting.rs"]
+mod drafting;
 #[path = "gridvis.rs"]
 mod gridvis;
 #[path = "levelsui.rs"]
@@ -142,8 +144,8 @@ pub struct CreaBimApp {
     /// or exports), and a count of changes to them.
     hidden: std::collections::HashSet<ElementId>,
     hidden_rev: u64,
-    /// What the 3D view leaves out (categories, grid groups, elements),
-    /// for the session.
+    /// What the 3D view leaves out (categories, grid groups, elements).
+    /// Its categories are kept in the settings, the rest for the session.
     vis3d: creabim_core::ViewHidden,
     /// What Ctrl+C copied, for pasting when the system clipboard has none.
     clipboard: Vec<Element>,
@@ -156,6 +158,8 @@ pub struct CreaBimApp {
     asm: assemblies::AssembliesUi,
     /// The Levels manager and the Project units dialog.
     levels: levelsui::LevelsUi,
+    /// The annotation styles and sheet templates windows.
+    drafting: drafting::DraftingUi,
     /// Orbit about the selection rather than the middle of the view.
     orbit_selection: bool,
     /// Where the 3D view was drawn last frame, for its navigation buttons.
@@ -171,7 +175,18 @@ impl CreaBimApp {
             .wgpu_render_state
             .as_ref()
             .map(|rs| Viewport3d::new(&rs.device));
-        let mut app = Self {
+        let mut app = Self::blank(viewport);
+        app.shell.theme = theme;
+        app.vis3d.categories = settings.hidden_3d.clone();
+        app.shell.settings = settings;
+        app.load_model(sample_house());
+        app
+    }
+
+    /// The app round an empty document, with default settings and no
+    /// window: [`Self::new`] fills it in, and tests use it as it is.
+    fn blank(viewport: Option<Viewport3d>) -> Self {
+        Self {
             doc: Document::new(),
             selection: Selection::default(),
             face: None,
@@ -210,14 +225,11 @@ impl CreaBimApp {
             mat: Default::default(),
             asm: Default::default(),
             levels: Default::default(),
+            drafting: Default::default(),
             orbit_selection: false,
             rect_3d: None,
             status: "Loaded the sample house. Orbit with left drag, pan with right drag, zoom with the wheel.".into(),
-        };
-        app.shell.theme = theme;
-        app.shell.settings = settings;
-        app.load_model(sample_house());
-        app
+        }
     }
 
     fn load_model(&mut self, model: Model) {
@@ -698,6 +710,20 @@ impl CreaBimApp {
                 if self.plan.snap.on { "off" } else { "on" },
             );
         }
+        // Shift+G: guides on and off everywhere; Alt+Z: X-ray in 3D
+        let (guides_key, xray_key) = ctx.input(|i| {
+            let m = i.modifiers;
+            (
+                m.shift && !m.command && !m.alt && i.key_pressed(egui::Key::G),
+                m.alt && !m.command && !m.shift && i.key_pressed(egui::Key::Z),
+            )
+        });
+        if guides_key && self.plan.modal.is_none() {
+            self.set_guides_hidden(!self.shell.settings.guides_hidden);
+        }
+        if xray_key {
+            self.set_xray(!self.shell.settings.xray);
+        }
         // M: the Move tool
         let m_key = ctx.input(|i| {
             !i.modifiers.command
@@ -876,6 +902,7 @@ impl CreaBimApp {
                             | ElementKind::Viewport(_)
                             | ElementKind::Material(_)
                             | ElementKind::Units(_)
+                            | ElementKind::SheetTemplate(_)
                     )
             })
             .map(|e| e.id)
@@ -1062,8 +1089,18 @@ impl CreaBimApp {
         let mut see_through = Vec::new();
         let highlight = [0.95, 0.55, 0.20];
         let mut ghost_lines: Vec<(DVec3, DVec3, [f32; 3])> = Vec::new();
+        let xray = self.shell.settings.xray;
         for item in &self.scene {
             let selected = self.selection.contains(item.id);
+            // X-ray: what holds others turns see-through with its edges
+            // drawn; the framing that sits in it stays solid
+            let xrayed = xray
+                && !selected
+                && !self
+                    .doc
+                    .model()
+                    .get(item.id)
+                    .is_some_and(|e| is_framing(&e.kind));
             if item.ghost {
                 // cutters show as their outline only
                 let c = if selected {
@@ -1114,9 +1151,20 @@ impl CreaBimApp {
             // a selected element shows solid, whatever it is made of
             let surface = if selected {
                 [item.surface[0], item.surface[1], 1.0]
+            } else if xrayed {
+                [
+                    item.surface[0],
+                    item.surface[1],
+                    XRAY_OPACITY.min(item.surface[2]),
+                ]
             } else {
                 item.surface
             };
+            if xrayed {
+                for (a, b) in snaps::feature_edges(&item.mesh) {
+                    ghost_lines.push((a, b, XRAY_EDGE));
+                }
+            }
             for (i, p) in item.mesh.positions.iter().enumerate() {
                 vertices.push(Vertex {
                     pos: *p,
@@ -1219,7 +1267,7 @@ impl CreaBimApp {
                     overlay.push(line_vertex(to_world(a), c));
                     overlay.push(line_vertex(to_world(b), c));
                 };
-                for it in &plan.items {
+                for it in plan.items.iter().filter(|it| !left_out.contains(&it.id())) {
                     let c = match it {
                         PlanItem::Polygon { pen: Pen::Cut, .. }
                         | PlanItem::Line { pen: Pen::Cut, .. } => [0.85, 0.15, 0.10],
@@ -2693,6 +2741,18 @@ impl CreaBimApp {
             if !self.hidden.is_empty() {
                 drawing.items.retain(|it| !self.hidden.contains(&it.id()));
             }
+            if self.shell.settings.guides_hidden {
+                // kept in the model, left out of every view (and so not snapped to)
+                drawing.items.retain(|it| {
+                    !matches!(
+                        it,
+                        PlanItem::Line {
+                            pen: Pen::Guide,
+                            ..
+                        }
+                    )
+                });
+            }
             let style = PaneStyle {
                 background: Some(background),
                 decorations: true,
@@ -3213,6 +3273,9 @@ impl CreaBimApp {
                 ui.label(egui::RichText::new(format!("View: {name}")).strong());
                 self.visibility_panel(ui, gridvis::VisTarget::View(v));
             }
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("3D view").strong());
+            self.visibility_panel(ui, gridvis::VisTarget::Window3d);
             return;
         };
         let Some(e) = self.doc.model().get(id).cloned() else {
@@ -3574,6 +3637,9 @@ impl CreaBimApp {
                             }
                         }
                     });
+                if let Some(l) = self.sheet_template_ui(ui, sh) {
+                    label = l;
+                }
                 if self.active_view != Some(id) && ui.button("Open this sheet").clicked() {
                     self.active_view = Some(id);
                 }
@@ -3678,6 +3744,17 @@ impl CreaBimApp {
                 if num(ui, what, &mut d.offset, -100.0, 100.0) {
                     label = "Move dimension line"
                 }
+                if d.kind == creabim_core::DimensionKind::Linear {
+                    egui::ComboBox::from_label("Measures")
+                        .selected_text(d.axis.label())
+                        .show_ui(ui, |ui| {
+                            for a in creabim_core::DimAxis::ALL {
+                                if ui.selectable_value(&mut d.axis, a, a.label()).changed() {
+                                    label = "Dimension direction"
+                                }
+                            }
+                        });
+                }
                 match crate::annotate::look_ui(ui, self.doc.model(), &mut d.style, &mut d.color) {
                     crate::annotate::LookEdit::Changed(l) => label = l,
                     crate::annotate::LookEdit::NewStyle => new_style = true,
@@ -3739,6 +3816,27 @@ impl CreaBimApp {
                     ))
                     .weak(),
                 );
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(users > 0, egui::Button::new("Select all using it"))
+                        .clicked()
+                    {
+                        self.select_style_users(id);
+                    }
+                    if ui.button("Annotation styles…").clicked() {
+                        self.open_styles(Some(id));
+                    }
+                });
+            }
+            ElementKind::SheetTemplate(_) => {
+                let users = sheets::sheets(self.doc.model())
+                    .into_iter()
+                    .filter(|(_, s)| s.template == Some(id))
+                    .count();
+                ui.label(egui::RichText::new(format!("Used by {users} sheets.")).weak());
+                if ui.button("Sheet templates…").clicked() {
+                    self.drafting.templates_open = true;
+                }
             }
             ElementKind::Grid(g) => {
                 ui.horizontal(|ui| {
@@ -4311,7 +4409,10 @@ impl eframe::App for CreaBimApp {
         self.materials_window(&ctx);
         self.assemblies_window(&ctx);
         self.levels_window(&ctx);
+        self.styles_window(&ctx);
+        self.templates_window(&ctx);
         self.units_window(&ctx);
+        self.ground_spacing_window(&ctx);
         // a plan in its own window keeps egui's menus
         self.plan.web_menus = false;
 
@@ -4418,14 +4519,38 @@ fn split_panes(l: &mut PaneLayout, ui: &mut egui::Ui, full: Rect) -> (Rect, Rect
 /// The spacings the 3D ground grid offers, in metres.
 const GROUND_SPACINGS: [f64; 6] = [0.25, 0.5, 1.0, 2.0, 5.0, 10.0];
 
+/// The finest and the widest ground grid spacing that can be typed, metres.
+const GROUND_SPACING_RANGE: (f64, f64) = (0.05, 100.0);
+
 /// A usable ground grid spacing: a setting from the file, kept sensible.
 fn ground_spacing(s: f64) -> f64 {
     if s.is_finite() {
-        s.clamp(0.1, 50.0)
+        s.clamp(GROUND_SPACING_RANGE.0, GROUND_SPACING_RANGE.1)
     } else {
         1.0
     }
 }
+
+/// Framing that stays solid in X-ray: columns, beams, stairs and railings,
+/// and masses that stand for them (a pergola's rafters as IfcBeam).
+fn is_framing(k: &ElementKind) -> bool {
+    match k {
+        ElementKind::Column(_)
+        | ElementKind::Beam(_)
+        | ElementKind::Stair(_)
+        | ElementKind::Railing(_) => true,
+        ElementKind::FreeMesh(m) => matches!(
+            m.ifc_class.as_str(),
+            "IfcBeam" | "IfcColumn" | "IfcMember" | "IfcStair" | "IfcRailing"
+        ),
+        _ => false,
+    }
+}
+
+/// How opaque walls, slabs, roofs and masses are in X-ray.
+const XRAY_OPACITY: f32 = 0.18;
+/// The colour of their edges then.
+const XRAY_EDGE: [f32; 3] = [0.30, 0.34, 0.42];
 
 fn plan_bg_color() -> Color32 {
     Color32::from_rgb(252, 252, 250)
@@ -4519,6 +4644,7 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Tag(_) => "tag",
         ElementKind::Note(_) => "note",
         ElementKind::TextStyle(_) => "text style",
+        ElementKind::SheetTemplate(_) => "sheet template",
         ElementKind::Units(_) => "project units",
         ElementKind::View(_) => "view",
         ElementKind::Sheet(_) => "sheet",

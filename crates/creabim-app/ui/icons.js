@@ -102,5 +102,10 @@ window.ICONS = {
 "level": "<path d=\"M2 14h12\" stroke-dasharray=\"3 2\" /> <circle cx=\"18\" cy=\"14\" r=\"3.5\" /> <path d=\"M18 10.5V14h3.5M18 14v3.5h-3.5\" /> <path d=\"M3 7h9\" />",
 "plus": "<path d=\"M5 12h14M12 5v14\" />",
 "sort-by-level": "<path d=\"M3 6h8M3 12h6M3 18h4\" /> <path d=\"M17 4v16M13 16l4 4 4-4\" />",
-"snap-track": "<path d=\"M3 8h18M16 3v18\" stroke-dasharray=\"2.5 2.5\" /> <circle cx=\"16\" cy=\"8\" r=\"2\" />"
+"snap-track": "<path d=\"M3 8h18M16 3v18\" stroke-dasharray=\"2.5 2.5\" /> <circle cx=\"16\" cy=\"8\" r=\"2\" />",
+"align-tool": "<path d=\"M4 3v18\" stroke-dasharray=\"2.5 2\" /> <rect x=\"8\" y=\"5\" width=\"12\" height=\"5\" /> <rect x=\"8\" y=\"14\" width=\"7\" height=\"5\" />",
+"snap-guides": "<path d=\"M2 16h20M7 21 19 3\" stroke-dasharray=\"2.5 2\" /> <circle cx=\"13.7\" cy=\"12\" r=\"2.5\" />",
+"anno-styles": "<path d=\"M3 17h12\" /> <path d=\"m3 14 3 6M12 14l3 6\" /> <circle cx=\"18\" cy=\"17\" r=\"2\" /> <path d=\"M5 4h14M12 4v7\" />",
+"sheet-template": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" /> <path d=\"M11 14h10M11 14v6M16 14v6\" />",
+"xray": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\" /> <rect x=\"8\" y=\"9\" width=\"8\" height=\"6\" stroke-dasharray=\"2 2\" />"
 };

@@ -4,7 +4,7 @@
 //! millimetre, so arrows, gaps and text keep their size on paper.
 
 use crate::paper::{text_width, Anchor};
-use creabim_core::{DimensionKind, Font, TextStyle, Units};
+use creabim_core::{DimensionKind, Font, TagShape, Terminator, TextStyle, Units};
 use glam::DVec2;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -19,7 +19,17 @@ pub struct TextLook {
     pub font: Font,
     pub bold: bool,
     pub italic: bool,
+    /// Dimension line ends; none is each kind's usual one.
+    pub end: Option<Terminator>,
+    /// A leader's end; none is an arrow.
+    pub leader_end: Option<Terminator>,
+    /// Size of the ends, paper mm.
+    pub end_size: f64,
+    pub shape: TagShape,
 }
+
+/// Size of dimension ticks and arrows, paper mm.
+pub const END_SIZE: f64 = 2.5;
 
 impl Default for TextLook {
     fn default() -> Self {
@@ -35,8 +45,90 @@ impl From<TextStyle> for TextLook {
             font: s.font,
             bold: s.bold,
             italic: s.italic,
+            end: s.terminator,
+            leader_end: s.leader_end,
+            end_size: s.end_size.unwrap_or(END_SIZE),
+            shape: s.tag_shape,
         }
     }
+}
+
+/// The marks of a dimension line's or leader's end, in drawing units.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Ends {
+    pub thin: Vec<Vec<DVec2>>,
+    /// Drawn with the heavier tick pen.
+    pub heavy: Vec<Vec<DVec2>>,
+    pub fills: Vec<Vec<DVec2>>,
+}
+
+impl Ends {
+    pub fn extend(&mut self, other: Ends) {
+        self.thin.extend(other.thin);
+        self.heavy.extend(other.heavy);
+        self.fills.extend(other.fills);
+    }
+}
+
+/// Does a line ending in `t` run on a little past its point, as a line
+/// ending in a tick does (arrows end on the point)?
+pub fn runs_past(t: Terminator) -> bool {
+    matches!(
+        t,
+        Terminator::Tick | Terminator::Slash | Terminator::TickDot
+    )
+}
+
+fn circle_pts(c: DVec2, r: f64, n: usize) -> Vec<DVec2> {
+    (0..n)
+        .map(|i| c + DVec2::from_angle(i as f64 / n as f64 * TAU) * r)
+        .collect()
+}
+
+/// The end mark `t` at `tip`, for a line arriving at it along `dir`;
+/// `size` is its length on paper, mm.
+pub fn end_marks(t: Terminator, tip: DVec2, dir: DVec2, size: f64, mm: f64) -> Ends {
+    let d = dir.normalize_or(DVec2::X);
+    let n = d.perp();
+    let s = size * mm;
+    let mut out = Ends::default();
+    let tick = (d + n).normalize() * s / 2.0;
+    let head = |len: f64, half: f64| {
+        let base = tip - d * s * len;
+        vec![tip, base + n * s * half, base - n * s * half]
+    };
+    match t {
+        Terminator::Tick => out.heavy.push(vec![tip - tick, tip + tick]),
+        Terminator::Slash => out.thin.push(vec![tip - tick * 1.2, tip + tick * 1.2]),
+        Terminator::Arrow => out.fills.push(head(1.0, 0.22)),
+        Terminator::ArrowSlim => out.fills.push(head(1.2, 0.12)),
+        Terminator::ArrowOpen => {
+            let h = head(1.0, 0.3);
+            out.thin.push(vec![h[1], tip, h[2]]);
+        }
+        Terminator::ArrowClosed => {
+            let mut h = head(1.0, 0.25);
+            h.push(tip);
+            out.thin.push(h);
+        }
+        Terminator::Dot => out.fills.push(circle_pts(tip, s * 0.2, 16)),
+        Terminator::DotOpen => {
+            let mut c = circle_pts(tip, s * 0.24, 16);
+            c.push(c[0]);
+            out.thin.push(c);
+        }
+        Terminator::Square => {
+            let (a, b) = (d * s * 0.18, n * s * 0.18);
+            out.fills
+                .push(vec![tip - a - b, tip + a - b, tip + a + b, tip - a + b]);
+        }
+        Terminator::TickDot => {
+            out.heavy.push(vec![tip - tick, tip + tick]);
+            out.fills.push(circle_pts(tip, s * 0.13, 12));
+        }
+        Terminator::None => {}
+    }
+    out
 }
 
 impl TextLook {
@@ -204,6 +296,8 @@ pub struct Marks {
     /// Filled arrowheads.
     pub arrows: Vec<[DVec2; 3]>,
     pub texts: Vec<MarkText>,
+    /// Other line ends a style picked: ticks, dots, open arrows.
+    pub ends: Ends,
 }
 
 /// Arrowhead length and half width, paper mm.
@@ -217,6 +311,19 @@ fn arrow(tip: DVec2, dir: DVec2, mm: f64) -> [DVec2; 3] {
     let base = tip - d * ARROW.0 * mm;
     let n = d.perp() * ARROW.1 * mm;
     [tip, base + n, base - n]
+}
+
+impl Marks {
+    /// A line's end at `tip`, arriving along `dir`: `t`, or the usual
+    /// filled arrow.
+    fn end(&mut self, t: Option<Terminator>, tip: DVec2, dir: DVec2, look: &TextLook, mm: f64) {
+        match t.unwrap_or(Terminator::Arrow) {
+            Terminator::Arrow => self
+                .arrows
+                .push(arrow(tip, dir, mm * look.end_size / END_SIZE)),
+            t => self.ends.extend(end_marks(t, tip, dir, look.end_size, mm)),
+        }
+    }
 }
 
 /// A direction's angle turned so text along it reads left to right (or
@@ -248,8 +355,8 @@ fn arc_points(c: DVec2, r: f64, t0: f64, s: f64) -> Vec<DVec2> {
 fn arc_line(out: &mut Marks, c: DVec2, r: f64, t0: f64, s: f64, look: &TextLook, mm: f64) -> DVec2 {
     out.lines.push(arc_points(c, r, t0, s));
     let (p0, p1) = (DVec2::from_angle(t0), DVec2::from_angle(t0 + s));
-    out.arrows.push(arrow(c + p0 * r, -p0.perp(), mm));
-    out.arrows.push(arrow(c + p1 * r, p1.perp(), mm));
+    out.end(look.end, c + p0 * r, -p0.perp(), look, mm);
+    out.end(look.end, c + p1 * r, p1.perp(), look, mm);
     let mid = DVec2::from_angle(t0 + s / 2.0);
     c + mid * (r + (TEXT_GAP + look.size / 2.0) * mm)
 }
@@ -316,9 +423,9 @@ impl Annotation {
                 let end = at + d * extra.max(0.0);
                 let start = if diameter { center - d * r } else { center };
                 out.lines.push(vec![start, end]);
-                out.arrows.push(arrow(at, d, mm));
+                out.end(look.end, at, d, look, mm);
                 if diameter {
-                    out.arrows.push(arrow(center - d * r, -d, mm));
+                    out.end(look.end, center - d * r, -d, look, mm);
                 }
                 // a small cross at the centre
                 let c = 1.5 * mm;
@@ -419,7 +526,7 @@ impl Annotation {
                         .last()
                         .and_then(|l| l.iter().rev().nth(1).copied());
                     if let Some(from) = from {
-                        out.arrows.push(arrow(target, target - from, mm));
+                        out.end(look.leader_end, target, target - from, look, mm);
                     }
                 }
             }
@@ -433,6 +540,14 @@ impl Annotation {
         let m = self.marks(mm);
         let mut pts: Vec<DVec2> = m.lines.iter().flatten().copied().collect();
         pts.extend(m.arrows.iter().flatten());
+        pts.extend(
+            m.ends
+                .thin
+                .iter()
+                .chain(&m.ends.heavy)
+                .chain(&m.ends.fills)
+                .flatten(),
+        );
         for t in &m.texts {
             pts.extend(text_box(t, &self.look, mm));
         }

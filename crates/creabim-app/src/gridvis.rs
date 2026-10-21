@@ -4,8 +4,13 @@
 //!
 //! What a view leaves out is stored on the view ([`ViewHidden`]) and edited
 //! through ordinary transactions, so it undoes, saves, and carries over to
-//! the sheets the view is placed on. The 3D view is not a view element: its
-//! settings live in the app for the session.
+//! the sheets the view is placed on. The 3D view is not a view element: the
+//! categories it leaves out are kept in the user's settings, the single
+//! elements it hides for the session.
+//!
+//! Each Visibility menu and panel starts with quick switches for the 2D
+//! objects (grids, annotation, guides, sketches), the ones most often in
+//! the way while modelling.
 
 use super::*;
 use crate::ui_model::Item;
@@ -31,6 +36,54 @@ impl VisTarget {
             VisTarget::View(_) => "vis",
             VisTarget::Window3d => "vis3",
         }
+    }
+}
+
+/// The quick switches of a Visibility menu: groups of categories, by key.
+pub(super) const QUICK: [(&str, &str, &str, &[Category]); 4] = [
+    ("grids", "Grids", "grid-3x3", &[Category::Grids]),
+    (
+        "annotation",
+        "Annotation",
+        "tag",
+        &[
+            Category::Dimensions,
+            Category::Tags,
+            Category::Notes,
+            Category::Levels,
+            Category::SectionMarks,
+        ],
+    ),
+    ("guides", "Guides", "slash", &[Category::Guides]),
+    ("sketches", "Sketches", "pen-tool", &[Category::Sketches]),
+];
+
+/// What a quick switch covers, with "all" for every 2D object.
+fn quick_group(key: &str, in_3d: bool) -> Vec<Category> {
+    if key == "all" {
+        let mut all: Vec<Category> = QUICK.iter().flat_map(|q| q.3.iter().copied()).collect();
+        if in_3d {
+            all.push(Category::Openings);
+        }
+        return all;
+    }
+    if key == "cutters" {
+        return vec![Category::Openings];
+    }
+    QUICK
+        .iter()
+        .find(|q| q.0 == key)
+        .map(|q| q.3.to_vec())
+        .unwrap_or_default()
+}
+
+/// The hint of a quick switch.
+fn quick_hint(key: &str) -> &'static str {
+    match key {
+        "annotation" => "Dimensions, tags, notes, level lines and section marks",
+        "guides" => "Construction guides; Shift+G hides or shows them in every view",
+        "grids" => "Grid lines and their bubbles",
+        _ => "",
     }
 }
 
@@ -78,6 +131,13 @@ impl CreaBimApp {
                 self.hidden_rev += 1;
                 self.snaps_3d = None;
                 self.status = format!("{label} in the 3D view.");
+                // the categories are kept for next time; single elements
+                // are for the session
+                let s = &mut self.shell.settings;
+                if s.hidden_3d != self.vis3d.categories {
+                    s.hidden_3d = self.vis3d.categories.clone();
+                    s.store();
+                }
             }
         }
     }
@@ -94,9 +154,71 @@ impl CreaBimApp {
         }
     }
 
-    /// Elements the 3D view leaves out by its settings.
+    /// Elements the 3D view leaves out by its settings, and the guides
+    /// when they are hidden everywhere.
     pub(super) fn hidden_in_3d(&self) -> HashSet<ElementId> {
-        self.vis3d.hidden_set(self.doc.model())
+        let mut out = self.vis3d.hidden_set(self.doc.model());
+        if self.shell.settings.guides_hidden {
+            out.extend(guide_ids(self.doc.model()));
+        }
+        out
+    }
+
+    /// Hide or show the guides in every view, keeping them.
+    pub(super) fn set_guides_hidden(&mut self, hidden: bool) {
+        let s = &mut self.shell.settings;
+        s.guides_hidden = hidden;
+        s.store();
+        self.hidden_rev += 1;
+        self.snaps_3d = None;
+        let n = guide_ids(self.doc.model()).len();
+        self.status = if hidden {
+            format!("Guides hidden in every view ({n} kept). Shift+G or View > Guides brings them back.")
+        } else {
+            format!("Guides shown ({n}). Shift+G hides them again.")
+        };
+    }
+
+    /// Turn the 3D view's X-ray on or off.
+    pub(super) fn set_xray(&mut self, on: bool) {
+        let s = &mut self.shell.settings;
+        s.xray = on;
+        s.store();
+        self.geometry_key = None;
+        self.status = if on {
+            "X-ray: walls, slabs, roofs and masses are see-through, so beams, columns and what is inside them show. Alt+Z turns it off.".into()
+        } else {
+            "X-ray off.".into()
+        };
+    }
+
+    /// Does the view show elements hidden inside others, dashed?
+    pub(super) fn shows_hidden_elements(&self, id: ElementId) -> bool {
+        self.view(id).is_some_and(|v| v.show_hidden)
+    }
+
+    /// Show or stop showing, dashed, what is hidden inside other elements in
+    /// view `id`. One undo step.
+    pub(super) fn toggle_hidden_elements(&mut self, id: ElementId) {
+        let on = !self.shows_hidden_elements(id);
+        let label = if on {
+            "Show hidden elements"
+        } else {
+            "Stop showing hidden elements"
+        };
+        let r = self.doc.edit(id, label, |e| {
+            if let ElementKind::View(v) = &mut e.kind {
+                v.show_hidden = on;
+            }
+        });
+        self.report(
+            r,
+            if on {
+                "Elements inside others (a beam in a wall) show dashed in this view and on its sheets."
+            } else {
+                "Hidden elements are left out again."
+            },
+        );
     }
 
     /// Hide the selection in `t`: the elements themselves, their
@@ -172,10 +294,82 @@ impl CreaBimApp {
         };
         let p = t.prefix();
         let model = self.doc.model();
-        let mut items = vec![Item::Header(match t {
-            VisTarget::View(_) => "This view shows".into(),
-            VisTarget::Window3d => "The 3D view shows".into(),
-        })];
+        let in_3d = t == VisTarget::Window3d;
+        let shown = |key: &str| {
+            quick_group(key, in_3d)
+                .iter()
+                .all(|c| !h.hides_category(*c))
+        };
+        let mut items = vec![
+            Item::Header(match t {
+                VisTarget::View(_) => "This view shows".into(),
+                VisTarget::Window3d => "The 3D view shows".into(),
+            }),
+            Item::new(format!("{p}.quick:all"), "All 2D objects")
+                .checked(shown("all"))
+                .icon("eye")
+                .keep_open()
+                .hint("Grids, annotation, guides and sketches together"),
+        ];
+        for (key, label, icon, _) in QUICK {
+            items.push(
+                Item::new(format!("{p}.quick:{key}"), label)
+                    .checked(shown(key))
+                    .icon(icon)
+                    .keep_open()
+                    .hint(quick_hint(key)),
+            );
+        }
+        if in_3d {
+            let s = &self.shell.settings;
+            items.extend([
+                Item::new(format!("{p}.quick:cutters"), "Void cutters")
+                    .checked(shown("cutters"))
+                    .icon("square-dashed")
+                    .keep_open()
+                    .hint("The outlines of elements used to cut voids into others"),
+                Item::new("ground.grid", "Ground grid")
+                    .checked(s.ground_grid)
+                    .icon("grid-3x3")
+                    .keep_open(),
+                Item::new("plan3d", "The 2D view in 3D space")
+                    .checked(self.plan_in_3d)
+                    .icon("map")
+                    .keep_open(),
+                Item::Separator,
+                Item::new("xray", "X-ray")
+                    .key("Alt+Z")
+                    .checked(s.xray)
+                    .icon("xray")
+                    .keep_open()
+                    .hint(
+                        "Walls, slabs, roofs and masses see-through, so what is inside them shows",
+                    ),
+            ]);
+        } else if let VisTarget::View(id) = t {
+            items.extend([
+                Item::Separator,
+                Item::new(
+                    format!("vis.reveal:{}", id.0),
+                    "Elements hidden inside others",
+                )
+                .checked(self.shows_hidden_elements(id))
+                .icon("xray")
+                .keep_open()
+                .hint(
+                    "Draw what is inside another element, like a beam in a wall, with dashed lines",
+                ),
+            ]);
+        }
+        if self.shell.settings.guides_hidden {
+            items.push(
+                Item::new("guides.toggle", "Guides are hidden everywhere: show them")
+                    .key("Shift+G")
+                    .icon("slash"),
+            );
+        }
+        items.push(Item::Separator);
+        items.push(Item::Header("Categories".into()));
         for (i, c) in Category::ALL.iter().enumerate() {
             items.push(
                 Item::new(format!("{p}.cat:{i}"), c.label())
@@ -415,6 +609,35 @@ impl CreaBimApp {
                 };
                 let id = by_uuid();
                 match what {
+                    "quick" => {
+                        let group = quick_group(arg, t == VisTarget::Window3d);
+                        if group.is_empty() {
+                            return true;
+                        }
+                        let hide = group.iter().all(|c| !h.hides_category(*c));
+                        let name = match QUICK.iter().find(|q| q.0 == arg) {
+                            Some(q) => q.1.to_lowercase(),
+                            None if arg == "cutters" => "void cutters".into(),
+                            None => "2D objects".into(),
+                        };
+                        let label = format!("{} {name}", if hide { "Hide" } else { "Show" });
+                        self.set_view_hidden(t, &label, |h| {
+                            for c in group {
+                                h.set_category(c, hide);
+                            }
+                        });
+                        if arg == "all" && t == VisTarget::Window3d {
+                            let s = &mut self.shell.settings;
+                            s.ground_grid = !hide;
+                            s.store();
+                            self.geometry_key = None;
+                        }
+                    }
+                    "reveal" => {
+                        if let Some(v) = id {
+                            self.toggle_hidden_elements(v);
+                        }
+                    }
                     "cat" => {
                         if let Some(c) = index.and_then(|i| Category::ALL.get(i)).copied() {
                             let hide = !h.hides_category(c);
@@ -517,7 +740,7 @@ impl CreaBimApp {
             out.push(json!({
                 "kind": "menu", "key": "visibility", "label": "", "value": "Visibility",
                 "icon": "eye",
-                "hint": "What this view shows: categories, grid systems and hidden elements. Sheets show their views the same way.",
+                "hint": "What this view shows: grids, annotation, guides, categories, grid systems and hidden elements. Sheets show their views the same way.",
             }));
         }
         out
@@ -533,6 +756,85 @@ impl CreaBimApp {
         })
     }
 
+    /// Set the 3D ground grid's spacing to a typed length, in any unit.
+    /// Returns what went wrong when it can't be read.
+    pub(super) fn set_ground_spacing_text(&mut self, text: &str) -> Result<f64, String> {
+        let (lo, hi) = GROUND_SPACING_RANGE;
+        let v = crate::units::parse(text)
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .ok_or_else(|| format!("Couldn't read \"{text}\" as a length."))?;
+        if !(lo..=hi).contains(&v) {
+            return Err(format!(
+                "Pick a spacing between {} and {}.",
+                crate::units::len(lo),
+                crate::units::len(hi)
+            ));
+        }
+        let s = &mut self.shell.settings;
+        s.ground_grid_spacing = v;
+        s.ground_grid = true;
+        s.store();
+        self.geometry_key = None;
+        self.status = format!("Ground grid every {}.", crate::units::len(v));
+        Ok(v)
+    }
+
+    /// The little window the ground grid's "Custom…" spacing is typed in.
+    pub(super) fn ground_spacing_window(&mut self, ctx: &egui::Context) {
+        let Some(mut text) = self.shell.ground_custom.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut done = false;
+        let mut error = None;
+        let area = self.mat.area.unwrap_or_else(|| ctx.content_rect());
+        egui::Window::new("Ground grid spacing")
+            .open(&mut open)
+            .default_pos(area.min + Vec2::new(60.0, 80.0))
+            .constrain_to(area)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Any spacing, in the project's units or another (1250, 1.25 m, 4'-0\").",
+                    )
+                    .weak(),
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Every");
+                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(110.0));
+                    if !r.has_focus() && !r.lost_focus() && ui.memory(|m| m.focused().is_none()) {
+                        r.request_focus();
+                    }
+                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("Apply").clicked() || enter {
+                        done = true;
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    for s in GROUND_SPACINGS {
+                        if ui.small_button(crate::units::len(s)).clicked() {
+                            text = crate::units::len(s);
+                            done = true;
+                        }
+                    }
+                });
+            });
+        if done {
+            match self.set_ground_spacing_text(&text) {
+                Ok(_) => return,
+                Err(e) => error = Some(e),
+            }
+        }
+        if let Some(e) = error {
+            self.status = e;
+        }
+        if open {
+            self.shell.ground_custom = Some(text);
+        }
+    }
+
     // ---- properties panel ---------------------------------------------
 
     /// The Visibility section of a view's properties.
@@ -541,6 +843,9 @@ impl CreaBimApp {
             return;
         };
         let mut change: Option<(String, HiddenEdit)> = None;
+        // switches that are not the view's own: run as menu actions
+        let mut extra: Option<&str> = None;
+        let mut reveal = None;
         let title = if h.is_empty() {
             "Visibility".to_string()
         } else {
@@ -549,7 +854,7 @@ impl CreaBimApp {
         };
         egui::CollapsingHeader::new(title)
             .id_salt(("visibility", format!("{t:?}")))
-            .default_open(true)
+            .default_open(t != VisTarget::Window3d)
             .show(ui, |ui| {
                 ui.label(
                     egui::RichText::new(match t {
@@ -558,6 +863,68 @@ impl CreaBimApp {
                     })
                     .weak(),
                 );
+                // the 2D objects first, in groups
+                let in_3d = t == VisTarget::Window3d;
+                ui.horizontal_wrapped(|ui| {
+                    for (key, label, _, _) in QUICK {
+                        let group = quick_group(key, in_3d);
+                        let mut shown = group.iter().all(|c| !h.hides_category(*c));
+                        if ui
+                            .checkbox(&mut shown, label)
+                            .on_hover_text(quick_hint(key))
+                            .changed()
+                        {
+                            let label = format!(
+                                "{} {}",
+                                if shown { "Show" } else { "Hide" },
+                                label.to_lowercase()
+                            );
+                            change = Some((
+                                label,
+                                Box::new(move |h| {
+                                    for c in group {
+                                        h.set_category(c, !shown);
+                                    }
+                                }),
+                            ));
+                        }
+                    }
+                });
+                if in_3d {
+                    ui.horizontal_wrapped(|ui| {
+                        let mut ground = self.shell.settings.ground_grid;
+                        if ui.checkbox(&mut ground, "Ground grid").changed() {
+                            extra = Some("ground.grid");
+                        }
+                        let mut xray = self.shell.settings.xray;
+                        if ui
+                            .checkbox(&mut xray, "X-ray")
+                            .on_hover_text("Walls, slabs, roofs and masses see-through (Alt+Z)")
+                            .changed()
+                        {
+                            extra = Some("xray");
+                        }
+                    });
+                } else if let VisTarget::View(id) = t {
+                    let mut on = self.shows_hidden_elements(id);
+                    if ui
+                        .checkbox(&mut on, "Elements hidden inside others, dashed")
+                        .on_hover_text("A beam in a wall, a stud wall in a cavity: drawn with dashed hidden lines")
+                        .changed()
+                    {
+                        reveal = Some(id);
+                    }
+                }
+                let mut guides = !self.shell.settings.guides_hidden;
+                if ui
+                    .checkbox(&mut guides, "Guides in every view")
+                    .on_hover_text("Hide all guides without deleting them, and bring them back (Shift+G)")
+                    .changed()
+                {
+                    extra = Some("guides.toggle");
+                }
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new("Categories").strong());
                 egui::Grid::new(("vis-cats", format!("{t:?}")))
                     .num_columns(2)
                     .show(ui, |ui| {
@@ -645,6 +1012,20 @@ impl CreaBimApp {
             });
         if let Some((label, f)) = change {
             self.set_view_hidden(t, &label, f);
+        }
+        if let Some(id) = reveal {
+            self.toggle_hidden_elements(id);
+        }
+        match extra {
+            Some("guides.toggle") => self.set_guides_hidden(!self.shell.settings.guides_hidden),
+            Some("xray") => self.set_xray(!self.shell.settings.xray),
+            Some("ground.grid") => {
+                let s = &mut self.shell.settings;
+                s.ground_grid = !s.ground_grid;
+                s.store();
+                self.geometry_key = None;
+            }
+            _ => {}
         }
     }
 
@@ -1039,6 +1420,15 @@ fn grid_count(model: &Model, group: Option<ElementId>) -> usize {
     grid_ids(model, group).len()
 }
 
+/// Every guide in the model.
+pub(super) fn guide_ids(model: &Model) -> Vec<ElementId> {
+    model
+        .iter()
+        .filter(|e| matches!(e.kind, ElementKind::Guide(_)))
+        .map(|e| e.id)
+        .collect()
+}
+
 fn grid_ids(model: &Model, group: Option<ElementId>) -> Vec<ElementId> {
     model
         .iter()
@@ -1051,4 +1441,218 @@ fn grid_ids(model: &Model, group: Option<ElementId>) -> Vec<ElementId> {
 fn swatch(ui: &mut egui::Ui, c: [f32; 3]) {
     let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
     ui.painter().rect_filled(r, 2.0, color32(c));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The app round the sample house, with a guide added.
+    fn app() -> CreaBimApp {
+        let mut app = CreaBimApp::blank(None);
+        app.load_model(sample_house());
+        let guide: creabim_core::Guide = serde_json::from_value(json!({
+            "level": null, "a": [0.0, -2.0, 0.0], "b": [4.0, -2.0, 0.0],
+        }))
+        .unwrap();
+        let e = Element::new("Guide", ElementKind::Guide(guide));
+        app.doc.commit(Transaction::new("Guide").insert(e)).unwrap();
+        app
+    }
+
+    fn checked(items: &[Item], id: &str) -> Option<bool> {
+        items.iter().find_map(|i| match i {
+            Item::Action { id: i, checked, .. } if i == id => *checked,
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_3d_views_quick_switches_hide_grids_annotation_and_guides() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let model = app.doc.model().clone();
+        let grids: Vec<ElementId> = model
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Grid(_)))
+            .map(|e| e.id)
+            .collect();
+        assert!(!grids.is_empty());
+        let items = app.visibility_items(VisTarget::Window3d);
+        assert_eq!(checked(&items, "vis3.quick:grids"), Some(true));
+        app.run_action(&ctx, "vis3.quick:grids");
+        assert!(grids.iter().all(|g| app.hidden_in_3d().contains(g)));
+        // kept for the next session
+        assert!(app.shell.settings.hidden_3d.contains(&Category::Grids));
+        let items = app.visibility_items(VisTarget::Window3d);
+        assert_eq!(checked(&items, "vis3.quick:grids"), Some(false));
+        assert_eq!(checked(&items, "vis3.quick:all"), Some(false));
+        // annotation goes as a group
+        app.run_action(&ctx, "vis3.quick:annotation");
+        for c in [Category::Dimensions, Category::Tags, Category::Notes] {
+            assert!(app.vis3d.hides_category(c));
+        }
+        // everything back, ground grid included
+        app.run_action(&ctx, "vis3.quick:all");
+        assert!(app.vis3d.categories.is_empty());
+        app.run_action(&ctx, "vis3.quick:all");
+        assert!(app.vis3d.hides_category(Category::Guides));
+        assert!(!app.shell.settings.ground_grid);
+        // the 3D view's Visibility is on its navigation bar
+        let nav = app.nav_state();
+        assert_eq!(nav["menus"][0]["key"], "vis3d");
+        assert!(nav["buttons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["id"] == "xray"));
+    }
+
+    #[test]
+    fn guides_hide_everywhere_and_come_back() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let guides = guide_ids(app.doc.model());
+        assert_eq!(guides.len(), 1);
+        app.run_action(&ctx, "guides.toggle");
+        assert!(app.shell.settings.guides_hidden);
+        assert!(app.hidden_in_3d().contains(&guides[0]));
+        // still in the model
+        assert!(app.doc.model().get(guides[0]).is_some());
+        // picking the Guide tool brings them back
+        let i = Tool::ALL.iter().position(|t| *t == Tool::Guide).unwrap();
+        app.run_action(&ctx, &format!("tool:{i}"));
+        assert!(!app.shell.settings.guides_hidden);
+        assert!(!app.hidden_in_3d().contains(&guides[0]));
+    }
+
+    #[test]
+    fn xray_and_hidden_elements_switch_on_and_off() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.run_action(&ctx, "xray");
+        assert!(app.shell.settings.xray);
+        app.run_action(&ctx, "xray");
+        assert!(!app.shell.settings.xray);
+        let plan = app
+            .doc
+            .model()
+            .iter()
+            .find(|e| matches!(&e.kind, ElementKind::View(v) if matches!(v.kind, ViewKind::Plan { .. })))
+            .unwrap()
+            .id;
+        app.active_view = Some(plan);
+        app.run_action(&ctx, "view.reveal");
+        assert!(app.shows_hidden_elements(plan));
+        // one undo step
+        app.run_command(&ctx, crate::commands::Command::Undo, None);
+        assert!(!app.shows_hidden_elements(plan));
+        let items = app.visibility_items(VisTarget::View(plan));
+        assert_eq!(
+            checked(&items, &format!("vis.reveal:{}", plan.0)),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_custom_ground_grid_spacing_is_typed_in_any_unit() {
+        let mut app = app();
+        crate::units::set(creabim_core::Units::metric());
+        assert_eq!(app.set_ground_spacing_text("1250"), Ok(1.25));
+        assert_eq!(app.shell.settings.ground_grid_spacing, 1.25);
+        assert!((app.set_ground_spacing_text("4'").unwrap() - 1.2192).abs() < 1e-9);
+        assert!(app.set_ground_spacing_text("nonsense").is_err());
+        assert!(app.set_ground_spacing_text("1 mm").is_err());
+        // the menu shows it as the custom one
+        let view = app.view_menu();
+        let ground = view
+            .iter()
+            .find_map(|i| match i {
+                Item::Sub { label, items, .. } if label == "Ground grid" => Some(items.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(checked(&ground, "ground.custom"), Some(true));
+    }
+
+    #[test]
+    fn roofs_columns_and_beams_take_tags() {
+        let model = creabim_core::sample::layered_house();
+        for e in model.iter() {
+            let member = creabim_core::members::is_member(&e.kind);
+            if member || matches!(e.kind, ElementKind::Wall(_) | ElementKind::Slab(_)) {
+                assert!(crate::planview::is_taggable(&model, e.id), "{}", e.name);
+            }
+            if matches!(e.kind, ElementKind::View(_) | ElementKind::Level(_)) {
+                assert!(!crate::planview::is_taggable(&model, e.id));
+            }
+        }
+    }
+
+    /// Every icon a menu names, for the check below.
+    fn icons(items: &[Item], out: &mut Vec<(String, &'static str)>) {
+        for i in items {
+            match i {
+                Item::Action { label, icon, .. } => out.push((label.clone(), icon)),
+                Item::Sub {
+                    label, icon, items, ..
+                } => {
+                    out.push((label.clone(), icon));
+                    icons(items, out);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn every_menu_entry_has_an_icon_that_exists() {
+        let app = app();
+        let known = include_str!("../ui/icons.js");
+        for key in [
+            "menu:File",
+            "menu:Edit",
+            "menu:View",
+            "menu:Create",
+            "menu:Materials",
+        ] {
+            let items = app.menu_items(key);
+            // entries on the menu itself, and the submenus they open; check
+            // marks stand in for the icon of on/off entries
+            for i in &items {
+                match i {
+                    Item::Action {
+                        label,
+                        icon,
+                        checked: None,
+                        ..
+                    } => assert!(!icon.is_empty(), "{key}: {label} has no icon"),
+                    Item::Sub { label, icon, .. } => {
+                        assert!(!icon.is_empty(), "{key}: {label} has no icon")
+                    }
+                    _ => {}
+                }
+            }
+            let mut all = vec![];
+            icons(&items, &mut all);
+            for (label, icon) in all.into_iter().filter(|(_, i)| !i.is_empty()) {
+                assert!(
+                    known.contains(&format!("\"{icon}\":")),
+                    "{key}: {label} names {icon}, which icons.js lacks"
+                );
+            }
+        }
+        // the Create menu's schedules too
+        let create = app.menu_items("menu:Create");
+        let schedule = create
+            .iter()
+            .find_map(|i| match i {
+                Item::Sub { label, items, .. } if label == "Schedule" => Some(items.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(schedule
+            .iter()
+            .all(|i| matches!(i, Item::Action { icon, .. } if !icon.is_empty())));
+    }
 }

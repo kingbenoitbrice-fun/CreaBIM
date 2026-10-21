@@ -26,12 +26,15 @@ pub mod pushpull;
 pub mod sample;
 pub mod sketch;
 pub mod slab;
+pub mod titleblock;
 pub mod transform;
 pub mod units;
 pub mod visibility;
 pub mod walls;
 
-pub use annotation::{text_style, DimensionKind, Font, Note, TextStyle};
+pub use annotation::{
+    text_style, DimAxis, DimensionKind, Font, Note, StyleUse, TagShape, Terminator, TextStyle,
+};
 pub use assembly::{assembly_of, Assembly, AssemblyUse, Layer, LayerFunction};
 pub use constraint::{Constraint, SolveError};
 pub use csg::BoolOp;
@@ -52,6 +55,7 @@ pub use modifiers::{Axis, Modifier, ModifierKind};
 pub use ops::{Op, Transaction};
 pub use sketch::{bulge_through, Circle, Curve, SegmentKind};
 pub use slab::{room_outline, slab_from_sketch};
+pub use titleblock::SheetTemplate;
 pub use transform::Xform;
 pub use units::{LengthUnit, Units};
 pub use visibility::{Category, ViewHidden};

@@ -12,7 +12,7 @@ use crate::plan::{Pen, PlanItem, PlanView};
 use crate::SceneItem;
 use creabim_core::{ElementId, ElementKind, Model};
 use glam::{DVec2, DVec3, Vec3};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Drawing coordinates: `x` runs along the section line, `y` is height.
 pub type Drawing = PlanView;
@@ -72,17 +72,35 @@ pub fn section_view_at(
     shaded: bool,
     scale: f64,
 ) -> Drawing {
+    section_view_with(model, start, end, depth, cut, shaded, scale, false)
+}
+
+/// [`section_view_at`], with `reveal` drawing what is hidden inside other
+/// elements (a beam in a wall) dashed.
+#[allow(clippy::too_many_arguments)]
+pub fn section_view_with(
+    model: &Model,
+    start: DVec2,
+    end: DVec2,
+    depth: f64,
+    cut: bool,
+    shaded: bool,
+    scale: f64,
+    reveal: bool,
+) -> Drawing {
     let frame = SectionFrame::new(start, end, depth);
     let scene = crate::scene::drawn_scene(model);
     let mut items = Vec::new();
 
     let project = |p: DVec3| frame.project(p);
+    let revealed = reveal.then(|| revealable(model));
     let (lines, image) = hidden_lines(
         &scene,
         &project,
         frame.depth,
         Some((0.0, frame.length)),
         shaded,
+        revealed.as_ref(),
     );
     items.extend(image);
     items.extend(lines);
@@ -113,6 +131,9 @@ pub fn section_view_at(
     }
 
     crate::plan::clean_up_pieces(model, &mut items, layers);
+    if reveal {
+        crate::plan::reveal_covered(model, &mut items);
+    }
 
     // Sketches between the cut plane and the far edge of the view
     for e in model.iter() {
@@ -249,10 +270,30 @@ impl AxoFrame {
 
 /// A parallel 3D view of the whole model, hidden lines removed, optionally shaded.
 pub fn axonometric_view(model: &Model, azimuth: f64, altitude: f64, shaded: bool) -> Drawing {
+    axonometric_view_with(model, azimuth, altitude, shaded, false)
+}
+
+/// [`axonometric_view`], with `reveal` drawing what is hidden inside other
+/// elements dashed.
+pub fn axonometric_view_with(
+    model: &Model,
+    azimuth: f64,
+    altitude: f64,
+    shaded: bool,
+    reveal: bool,
+) -> Drawing {
     let frame = AxoFrame::new(model, azimuth, altitude);
     let scene = crate::scene::drawn_scene(model);
     let project = |p: DVec3| frame.project(p);
-    let (lines, image) = hidden_lines(&scene, &project, frame.radius * 2.0, None, shaded);
+    let revealed = reveal.then(|| revealable(model));
+    let (lines, image) = hidden_lines(
+        &scene,
+        &project,
+        frame.radius * 2.0,
+        None,
+        shaded,
+        revealed.as_ref(),
+    );
     PlanView {
         items: image.into_iter().chain(lines).collect(),
     }
@@ -260,16 +301,31 @@ pub fn axonometric_view(model: &Model, azimuth: f64, altitude: f64, shaded: bool
 
 type Faces = Vec<(ElementId, [f32; 3], Vec<[DVec3; 3]>)>;
 
+/// The elements a view showing hidden elements draws dashed when they are
+/// inside another: everything but doors and windows, which sit in their
+/// own holes.
+fn revealable(model: &Model) -> HashSet<ElementId> {
+    model
+        .iter()
+        .filter(|e| !matches!(e.kind, ElementKind::Opening(_)))
+        .map(|e| e.id)
+        .collect()
+}
+
 /// Feature edges of `scene` seen through `project`, hidden parts removed.
 /// `project` maps world points to (x, y, depth); only `0..=depth` is drawn,
 /// and with `crop`, only `x` within that range. With `shade`, also returns
-/// an image of the surfaces, lit from the viewer's upper left.
+/// an image of the surfaces, lit from the viewer's upper left. Edges of the
+/// `reveal` elements that are hidden because they are inside another
+/// element (behind its near face and in front of its far one) come back
+/// dashed, as [`Pen::Hidden`].
 fn hidden_lines(
     scene: &[SceneItem],
     project: &dyn Fn(DVec3) -> DVec3,
     depth: f64,
     crop: Option<(f64, f64)>,
     shade: bool,
+    reveal: Option<&HashSet<ElementId>>,
 ) -> (Vec<PlanItem>, Option<PlanItem>) {
     let mut faces: Faces = Vec::new();
     for s in scene {
@@ -281,10 +337,14 @@ fn hidden_lines(
         faces.push((s.id, s.color, tris));
     }
     let (lo, hi) = extents(&faces, crop);
-    let zbuf = DepthBuffer::render(&faces, lo, hi, shade);
+    let mut zbuf = DepthBuffer::render(&faces, lo, hi, shade);
+    if reveal.is_some() {
+        zbuf.render_backs(&faces);
+    }
     let image = zbuf.image();
     let mut items = Vec::new();
-    for s in scene {
+    for (index, s) in scene.iter().enumerate() {
+        let revealed = reveal.is_some_and(|r| r.contains(&s.id));
         for (a, b) in feature_edges(s) {
             let Some((a, b)) = clip_segment(project(a), project(b), 1e-4, depth) else {
                 continue;
@@ -303,6 +363,16 @@ fn hidden_lines(
                     a: p,
                     b: q,
                 });
+            }
+            if revealed {
+                for (p, q) in zbuf.runs(a, b, |p| !zbuf.visible(p) && zbuf.inside_other(p, index)) {
+                    items.push(PlanItem::Line {
+                        id: s.id,
+                        pen: Pen::Hidden,
+                        a: p,
+                        b: q,
+                    });
+                }
             }
         }
     }
@@ -331,6 +401,9 @@ pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
     let mut d = match &v.kind {
         creabim_core::ViewKind::Plan { level, cut_height } => {
             let mut d = crate::plan_view(model, *level, *cut_height);
+            if v.show_hidden {
+                crate::plan::reveal_covered(model, &mut d.items);
+            }
             // another level traced underneath, drawn first so it stays below
             if let Some(under) = v.underlay.level(model, *level) {
                 let mut items = crate::plan::underlay_items(model, under, *cut_height);
@@ -344,9 +417,18 @@ pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
             end,
             depth,
             cut,
-        } => section_view_at(model, *start, *end, *depth, *cut, shaded, v.scale),
+        } => section_view_with(
+            model,
+            *start,
+            *end,
+            *depth,
+            *cut,
+            shaded,
+            v.scale,
+            v.show_hidden,
+        ),
         creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
-            axonometric_view(model, *azimuth, *altitude, shaded)
+            axonometric_view_with(model, *azimuth, *altitude, shaded, v.show_hidden)
         }
         creabim_core::ViewKind::Schedule { category } => {
             let table = crate::schedule::schedule(model, *category);
@@ -575,7 +657,15 @@ struct DepthBuffer {
     depth: Vec<f32>,
     /// Shaded colour per cell, rows from the bottom, when shading.
     rgba: Option<Vec<u8>>,
+    /// Which element (by its index in the faces) is nearest in each cell.
+    nearest: Vec<u32>,
+    /// How deep that element goes in each cell (its far side), once
+    /// [`DepthBuffer::render_backs`] has run.
+    back: Vec<f32>,
 }
+
+/// No element in the cell.
+const EMPTY: u32 = u32::MAX;
 
 /// Direction light comes from, in view coordinates (x right, y up, depth away).
 const LIGHT: DVec3 = DVec3::new(-0.45, 0.65, -0.62);
@@ -593,17 +683,47 @@ impl DepthBuffer {
             h,
             depth: vec![f32::INFINITY; w * h],
             rgba: shade.then(|| vec![0; w * h * 4]),
+            nearest: vec![EMPTY; w * h],
+            back: vec![f32::NEG_INFINITY; w * h],
         };
         let light = LIGHT.normalize();
-        for (_, color, tris) in faces {
+        for (index, (_, color, tris)) in faces.iter().enumerate() {
             for t in tris {
                 let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
                 let lit = 0.55 + 0.45 * n.dot(light).abs();
                 let c = color.map(|c| ((c as f64 * lit).clamp(0.0, 1.0) * 255.0) as u8);
-                buf.raster(t, c);
+                buf.raster(t, c, index as u32);
             }
         }
         buf
+    }
+
+    /// Find how deep the nearest element goes in each cell: the furthest
+    /// of its own faces there.
+    fn render_backs(&mut self, faces: &Faces) {
+        for (index, (_, _, tris)) in faces.iter().enumerate() {
+            for t in tris {
+                self.cover(t, |buf, i, d| {
+                    if buf.nearest[i] == index as u32 && d > buf.back[i] {
+                        buf.back[i] = d;
+                    }
+                });
+            }
+        }
+    }
+
+    /// Is the point inside another element than `own`: behind the near
+    /// face of the element nearest there and in front of its far one?
+    fn inside_other(&self, p: DVec3, own: usize) -> bool {
+        let q = self.to_px(p);
+        let (x, y) = (q.x.floor(), q.y.floor());
+        if x < 0.0 || y < 0.0 || x as usize >= self.w || y as usize >= self.h {
+            return false;
+        }
+        let i = y as usize * self.w + x as usize;
+        let by = self.nearest[i];
+        let z = p.z as f32;
+        by != EMPTY && by != own as u32 && z > self.depth[i] + 0.02 && z < self.back[i] + 0.02
     }
 
     /// The shaded colours as an image item, if shading.
@@ -636,7 +756,20 @@ impl DepthBuffer {
         )
     }
 
-    fn raster(&mut self, t: &[DVec3; 3], color: [u8; 3]) {
+    fn raster(&mut self, t: &[DVec3; 3], color: [u8; 3], index: u32) {
+        self.cover(t, |buf, i, d| {
+            if d < buf.depth[i] {
+                buf.depth[i] = d;
+                buf.nearest[i] = index;
+                if let Some(rgba) = &mut buf.rgba {
+                    rgba[i * 4..i * 4 + 4].copy_from_slice(&[color[0], color[1], color[2], 255]);
+                }
+            }
+        });
+    }
+
+    /// Call `f` with each cell the triangle covers and its depth there.
+    fn cover(&mut self, t: &[DVec3; 3], mut f: impl FnMut(&mut Self, usize, f32)) {
         let [a, b, c] = t.map(|p| self.to_px(p));
         let area = (b - a).truncate().perp_dot((c - a).truncate());
         if area.abs() < 1e-12 {
@@ -656,14 +789,7 @@ impl DepthBuffer {
                     continue;
                 }
                 let d = (w0 * a.z + w1 * b.z + w2 * c.z) as f32;
-                let i = y * self.w + x;
-                if d < self.depth[i] {
-                    self.depth[i] = d;
-                    if let Some(rgba) = &mut self.rgba {
-                        rgba[i * 4..i * 4 + 4]
-                            .copy_from_slice(&[color[0], color[1], color[2], 255]);
-                    }
-                }
+                f(self, y * self.w + x, d);
             }
         }
     }
@@ -686,6 +812,11 @@ impl DepthBuffer {
     }
 
     fn visible_runs(&self, a: DVec3, b: DVec3) -> Vec<(DVec2, DVec2)> {
+        self.runs(a, b, |p| self.visible(p))
+    }
+
+    /// The stretches of `a`-`b` where `keep` holds, in drawing coordinates.
+    fn runs(&self, a: DVec3, b: DVec3, keep: impl Fn(DVec3) -> bool) -> Vec<(DVec2, DVec2)> {
         let len_px = ((b - a).truncate().length() / self.px).ceil().max(1.0) as usize;
         let steps = len_px * 2;
         let mut runs = Vec::new();
@@ -693,7 +824,7 @@ impl DepthBuffer {
         let mut last = 0.0;
         for i in 0..=steps {
             let t = i as f64 / steps as f64;
-            let vis = self.visible(a + (b - a) * t);
+            let vis = keep(a + (b - a) * t);
             match (vis, start) {
                 (true, None) => start = Some(t),
                 (false, Some(s)) => {

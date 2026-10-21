@@ -48,10 +48,11 @@ pub enum Tool {
     Stair,
     Railing,
     Level,
+    Align,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 24] = [
+    pub const ALL: [Tool; 25] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
@@ -76,6 +77,7 @@ impl Tool {
         Tool::Guide,
         Tool::Grid,
         Tool::Level,
+        Tool::Align,
     ];
 
     /// Dimensions, tags and notes: tools that annotate a view.
@@ -109,6 +111,7 @@ impl Tool {
             Tool::Stair => "Stair",
             Tool::Railing => "Railing",
             Tool::Level => "Level",
+            Tool::Align => "Align",
         }
     }
 
@@ -123,7 +126,7 @@ impl Tool {
             Tool::Section => "Click two points for the section line. It looks to the left of the direction you draw.",
             Tool::Elevation => "Click two points for the elevation line, outside the building. It looks to the left of the direction you draw.",
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to wall corners, door and window edges and levels, and stay attached to them.",
-            Tool::Tag => "Click a door, window, wall or slab, then click where its tag goes.",
+            Tool::Tag => "Click a door, window, wall, slab, roof, column, beam, stair or railing, then click where its tag goes.",
             Tool::Angle => "Click two lines (wall faces, edges) for the angle between them, or click the corner and a point on each arm. Then click where the arc goes.",
             Tool::Radius => "Click an arc or circle, or three points on one. Then click where the dimension line goes.",
             Tool::Diameter => "Click an arc or circle, or three points on one. Then click where the dimension line goes.",
@@ -138,6 +141,7 @@ impl Tool {
             Tool::Stair => "Click where the stair starts, then click the way it climbs. It rises to the next level in equal risers.",
             Tool::Railing => "Click inside a stair to rail both its sides, or click the points of a path; click the last point again to finish.",
             Tool::Level => "In a section or elevation, click where the level line starts (its height), then where it ends; its floor plan is made with it. In other views the Levels window opens to add, rename and move levels.",
+            Tool::Align => "Click a reference line (a wall face, slab edge, guide or grid line), then the edge of what to align: it turns parallel and moves flush. In Extend mode a wall, beam or grid line end stretches to the reference instead.",
         }
     }
 
@@ -297,6 +301,25 @@ pub struct PlanState {
     /// the shape's own points, and the point it is resting on (since when).
     rested: (Option<ElementId>, Vec<DVec2>),
     rest: Option<(DVec2, f64)>,
+    /// Snap references in each view: points and edges the pointer rested
+    /// on, that temporary guide lines run from. They stay while you work,
+    /// until rested on again, cleared (Esc with nothing to cancel), or kept.
+    pub refs: HashMap<ElementId, Vec<snaps::Reference>>,
+    /// What the pointer is resting on for a reference: since when, and
+    /// whether that rest has already picked (or dropped) it.
+    ref_rest: Option<(snaps::Reference, f64, bool)>,
+    /// Angled guides every this many degrees through references and the
+    /// start point; 0 for none.
+    pub guide_step: f64,
+    /// The temporary guide under the pointer in the pane it is over, in
+    /// that pane's drawing: what K keeps as a guide.
+    pub hover_guide: Option<(ElementId, snaps::TempGuide)>,
+    /// The Dimension tool's axis; none picks it from where the line goes.
+    pub dim_axis: Option<creabim_core::DimAxis>,
+    /// The axis a dimension is held to while Shift is down.
+    dim_lock: Option<creabim_core::DimAxis>,
+    /// The Align tool's picks so far.
+    pub align: crate::aligntool::AlignState,
 }
 
 impl Default for PlanState {
@@ -340,6 +363,13 @@ impl Default for PlanState {
             chain: (None, vec![]),
             rested: (None, vec![]),
             rest: None,
+            refs: HashMap::new(),
+            ref_rest: None,
+            guide_step: 45.0,
+            hover_guide: None,
+            dim_axis: None,
+            dim_lock: None,
+            align: Default::default(),
         }
     }
 }
@@ -357,6 +387,7 @@ impl PlanState {
         self.members.path.clear();
         self.chain.1.clear();
         self.rested.1.clear();
+        self.align.clear();
     }
 
     /// Is a tool part way through, with clicks to undo?
@@ -370,6 +401,15 @@ impl PlanState {
             || self.outline.is_some()
             || self.armed.is_some()
             || !self.members.path.is_empty()
+            || self.align.has_input()
+    }
+
+    /// Drop every snap reference, and the guides they make.
+    pub fn clear_references(&mut self) -> usize {
+        let n = self.refs.values().map(Vec::len).sum();
+        self.refs.clear();
+        self.ref_rest = None;
+        n
     }
 
     /// Esc or right-click: drop what the tool has so far, or else leave the
@@ -379,6 +419,9 @@ impl PlanState {
             self.cancel();
             self.armed = None;
             self.status = Some("Cancelled. Right-click or Esc again to leave the tool.".into());
+            true
+        } else if self.clear_references() > 0 {
+            self.status = Some("Guide lines cleared. Esc again leaves the tool.".into());
             true
         } else if self.tool != Tool::Select {
             self.tool = Tool::Select;
@@ -506,11 +549,53 @@ pub fn show(
     if style.decorations && kind != PaneKind::Schedule {
         draw_metric_grid(&painter, &xf);
     }
+    // the slabs of a plan's level: a light fill under the rest, stronger
+    // where the pointer is, so they can be seen and clicked
+    let slabs = match kind {
+        PaneKind::Plan { level } => level_slabs(doc.model(), level, plan),
+        _ => vec![],
+    };
+    let hovered_slab = response
+        .hover_pos()
+        .filter(|_| tool == Tool::Select || tool == Tool::Tag)
+        .filter(|_| state.modal.is_none() && !response.dragged())
+        .and_then(|p| {
+            let w = xf.to_world(p);
+            let on = hit_test(&plan.items, w, 6.0 / xf.scale as f64, mm);
+            match on {
+                Some(id) => slabs.iter().any(|(s, _)| *s == id).then_some(id),
+                None => slab_at(&slabs, w),
+            }
+        });
+    for (id, points) in &slabs {
+        let fill = if selection.contains(*id) {
+            SLAB_SELECTED
+        } else if hovered_slab == Some(*id) {
+            SLAB_HOVER
+        } else {
+            SLAB_FILL
+        };
+        fill_polygon(&painter, &xf, points, fill);
+    }
     for item in &plan.items {
         draw_item(&painter, &xf, item, selection.contains(item.id()), mm);
     }
+    if let Some((_, points)) = slabs.iter().find(|(id, _)| Some(*id) == hovered_slab) {
+        // its edge over the walls that sit on it
+        let pts: Vec<Pos2> = points.iter().map(|p| xf.to_screen(*p)).collect();
+        painter.add(egui::Shape::closed_line(pts, Stroke::new(2.0, SLAB_EDGE)));
+    }
     crate::annotate::draw_grips(&painter, &xf, &plan.items, selection);
     crate::sketch::draw_marks_in_pane(&painter, doc.model(), selection.active, kind, &xf);
+    if tool == Tool::Align {
+        let hover = response
+            .hover_pos()
+            .and_then(|p| {
+                crate::aligntool::edge_at(&plan.items, xf.to_world(p), 6.0 / xf.scale as f64)
+            })
+            .map(|(_, a, b)| (a, b));
+        crate::aligntool::draw_picks(&painter, &xf, &state.align, view, hover);
+    }
 
     let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
     // holding Alt picks free of snaps
@@ -553,11 +638,26 @@ pub fn show(
         .or(sketch_last.map(from_pane))
         .or(last)
         .map(|a| a.extend(0.0));
+    // temporary guide lines: from the points and edges rested on in the
+    // drawing tools, and through where the line being drawn starts
+    let guided = matches!(kind, PaneKind::Plan { .. } | PaneKind::Section { .. })
+        && tool != Tool::Select
+        && snap_cfg.allows(SnapKind::OnTempGuide);
+    let guide_from = drawing_from.or(state.dim.first().map(|d| d.1.extend(0.0)));
+    let guides = if guided {
+        let refs = state.refs.get(&view).map_or(&[][..], |r| r.as_slice());
+        snaps::temp_guides(refs, guide_from, state.guide_step)
+    } else {
+        vec![]
+    };
     // the points of the shape being drawn here, for the next to line up with
     let track = {
         let shape = shape_points(state, view, kind, &from_pane);
+        // (with guide lines on, points rested on make guides instead)
         let rested: Vec<DVec3> = match (&state.rested, drawing_from) {
-            ((Some(v), pts), Some(_)) if *v == view => pts.iter().map(|p| p.extend(0.0)).collect(),
+            ((Some(v), pts), Some(_)) if *v == view && !guided => {
+                pts.iter().map(|p| p.extend(0.0)).collect()
+            }
             _ => vec![],
         };
         let shape: Vec<DVec3> = shape.iter().map(|p| p.extend(0.0)).collect();
@@ -565,25 +665,60 @@ pub fn show(
     };
     let tracked = response.hover_pos().and_then(|p| {
         let snapper = &state.snaps.get(&view)?.2;
-        snapper.snap_tracked(
+        snapper.snap_guided(
             &snap_cfg,
             p,
             &pane_project,
             drawing_from,
             &track,
+            &guides,
             Some(xf.to_world(p).extend(0.0)),
         )
     });
-    let tool_snap = tracked.map(|t| t.0);
-    let tool_align = tracked.and_then(|t| t.1);
-    // a point snapped to and rested on while drawing is tracked too
-    rest_on(
-        state,
-        view,
-        tool_snap,
-        drawing_from.is_some(),
-        ui.input(|i| i.time),
-    );
+    let tool_snap = tracked.as_ref().map(|t| t.snap);
+    let tool_align = tracked.as_ref().and_then(|t| t.align);
+    let now = ui.input(|i| i.time);
+    if guided {
+        // rest on a point or edge (or press Q over it) to pick it as a
+        // reference, and again to drop it
+        let under = response.hover_pos().and_then(|p| {
+            let snapper = &state.snaps.get(&view)?.2;
+            let s = snapper.snap(&snap_cfg, p, &pane_project, None, None)?;
+            snapper.reference_at(&s)
+        });
+        let q = response.hovered()
+            && !ui.ctx().egui_wants_keyboard_input()
+            && ui.input(|i| i.key_pressed(egui::Key::Q) && !i.modifiers.command);
+        if let Some(msg) = rest_reference(state, view, under, now, q) {
+            state.status = Some(msg);
+        }
+    } else {
+        // a point snapped to and rested on while drawing is tracked too
+        rest_on(state, view, tool_snap, drawing_from.is_some(), now);
+    }
+    if guided {
+        // the references, and their guides faintly; those a snap follows
+        // are drawn again with it
+        if let Some(refs) = state.refs.get(&view) {
+            snaps::draw_references(&painter, &pane_project, refs);
+        }
+        snaps::draw_guides(&painter, &pane_project, &guides, &[]);
+        if response.hovered() {
+            let on = tracked.as_ref().and_then(|t| t.guides.first().copied());
+            state.hover_guide = on.and_then(|i| guides.get(i)).map(|g| (view, *g));
+        }
+        // K keeps the guide line under the pointer
+        if response.hovered()
+            && !ui.ctx().egui_wants_keyboard_input()
+            && ui.input(|i| i.key_pressed(egui::Key::K) && !i.modifiers.command)
+        {
+            let g = state.hover_guide.filter(|h| h.0 == view).map(|h| h.1);
+            state.status = Some(match keep_guide(doc, kind, g) {
+                Ok(msg) => msg,
+                Err(e) => format!("Couldn't do that: {e}"),
+            });
+        }
+    }
     let hover_world = response.hover_pos().map(|p| match kind {
         PaneKind::Plan { .. } | PaneKind::Section { .. } if !shift => {
             tool_snap.map_or(xf.to_world(p), |s| s.p.truncate())
@@ -638,10 +773,10 @@ pub fn show(
         if o.level == level {
             let o = o.clone();
             let project = |p: DVec3| Some(xf.to_screen(p.truncate()));
-            if let (Some(s), false) = (tool_snap, shift) {
+            if let (Some(t), false) = (&tracked, shift) {
                 let from = o.points.last().map(|a| xf.to_screen(*a));
-                let at = xf.to_screen(s.p.truncate());
-                snaps::draw_tracked(&painter, &project, s, tool_align, at, from);
+                snaps::draw_guides(&painter, &project, &guides, &t.guides);
+                snaps::draw_guided(&painter, &project, t, &guides, from);
             }
             o.draw(&painter, &project, hover_world);
             // keys go to the pane under the pointer, as another pane may
@@ -914,24 +1049,33 @@ pub fn show(
         _ => None,
     };
     let dim_snapper = state.snaps.get(&view).map(|s| &s.2);
-    let dim_hit = match (tool, &view_def, response.hover_pos()) {
-        (t, Some(v), Some(p)) if t == Tool::Dimension || crate::annotate::is_tool(t) => {
-            Some(dim_snap(doc, v, kind, dim_snapper, &snap_cfg, &xf, p))
-        }
+    let dim_guided = match (tool, &view_def, response.hover_pos()) {
+        (t, Some(v), Some(p)) if t == Tool::Dimension || crate::annotate::is_tool(t) => Some(
+            dim_snap_guided(doc, v, kind, dim_snapper, &snap_cfg, &xf, p, &guides),
+        ),
         _ => None,
     };
+    let dim_hit = dim_guided.as_ref().map(|(h, at, k, _)| (*h, *at, *k));
     let accent = Color32::from_rgb(230, 120, 30);
-    if let Some((_, at, k)) = dim_hit {
-        let c = xf.to_screen(at);
+    if let Some((_, at, k, used)) = &dim_guided {
+        let c = xf.to_screen(*at);
         match k {
-            Some(k) if k != SnapKind::Grid => {
+            Some(k) if *k != SnapKind::Grid => {
                 let from = state.dim.first().map(|d| xf.to_screen(d.1));
-                let s = snaps::Snap {
-                    p: at.extend(0.0),
-                    kind: k,
-                    host: None,
+                let hit = snaps::Guided {
+                    snap: snaps::Snap {
+                        p: at.extend(0.0),
+                        kind: *k,
+                        host: None,
+                    },
+                    align: None,
+                    guides: used.clone(),
                 };
-                snaps::draw(&painter, s, c, from);
+                snaps::draw_guides(&painter, &pane_project, &guides, used);
+                snaps::draw_guided(&painter, &pane_project, &hit, &guides, from);
+                if response.hovered() && !used.is_empty() {
+                    state.hover_guide = guides.get(used[0]).map(|g| (view, *g));
+                }
             }
             _ => {
                 painter.circle_stroke(c, 5.0, Stroke::new(1.5, accent));
@@ -939,6 +1083,26 @@ pub fn show(
         }
     }
     let dim_hover = dim_hit.map(|(h, at, _)| (h, at));
+    // the way a linear dimension measures: as set, held with Shift, or
+    // picked from where its line is going
+    let dim_axis = match (state.dim.as_slice(), response.hover_pos()) {
+        ([(_, a), (_, b)], Some(h)) => {
+            let picked = state
+                .dim_axis
+                .unwrap_or_else(|| creabim_core::DimAxis::pick(*a, *b, xf.to_world(h)));
+            if shift {
+                *state.dim_lock.get_or_insert(picked)
+            } else {
+                state.dim_lock = None;
+                picked
+            }
+        }
+        _ => {
+            state.dim_lock = None;
+            state.dim_axis.unwrap_or_default()
+        }
+    };
+    let dim_look = annotate::look_of(doc.model(), state.anno.dim_style, None);
     if crate::annotate::is_tool(tool) {
         let raw = response.hover_pos().map(|p| xf.to_world(p));
         crate::annotate::preview(
@@ -955,11 +1119,25 @@ pub fn show(
     }
     match (state.dim.as_slice(), dim_hover, response.hover_pos()) {
         ([(_, a)], Some((_, b)), _) if a.distance(b) > 1e-6 => {
-            preview_dimension(&painter, &xf, *a, b, 0.0, mm, accent);
+            preview_dimension(&painter, &xf, *a, b, dim_axis, 0.0, &dim_look, mm, accent);
         }
         ([(_, a), (_, b)], _, Some(h)) => {
-            let off = (xf.to_world(h) - *a).dot((*b - *a).normalize_or_zero().perp());
-            preview_dimension(&painter, &xf, *a, *b, off, mm, accent);
+            let off = dim_offset(dim_axis, *a, *b, xf.to_world(h));
+            preview_dimension(&painter, &xf, *a, *b, dim_axis, off, &dim_look, mm, accent);
+            let what = if state.dim_lock.is_some() {
+                format!("{} (held by Shift)", dim_axis.label())
+            } else if state.dim_axis.is_some() {
+                dim_axis.label().to_string()
+            } else {
+                format!("{} (Shift holds it)", dim_axis.label())
+            };
+            painter.text(
+                h + Vec2::new(14.0, 16.0),
+                egui::Align2::LEFT_TOP,
+                what,
+                egui::FontId::proportional(12.0),
+                accent,
+            );
         }
         _ => {}
     }
@@ -1093,7 +1271,13 @@ pub fn show(
                 .or(sketch_last.map(from_pane))
                 .map(|a| xf.to_screen(a));
             let at = xf.to_screen(s.p.truncate());
-            snaps::draw_tracked(&painter, &pane_project, s, tool_align, at, from);
+            match &tracked {
+                Some(t) if !t.guides.is_empty() => {
+                    snaps::draw_guides(&painter, &pane_project, &guides, &t.guides);
+                    snaps::draw_guided(&painter, &pane_project, t, &guides, from);
+                }
+                _ => snaps::draw_tracked(&painter, &pane_project, s, tool_align, at, from),
+            }
         }
     }
     if let Some(p) = hover_world {
@@ -1193,9 +1377,23 @@ pub fn show(
                 Ok(())
             }
             (_, Tool::Dimension) => match (dim_hover, &view_def) {
-                (Some(hp), Some(_)) => dimension_tool(doc, view, hp, raw, state, selection),
+                (Some(hp), Some(_)) => {
+                    dimension_tool(doc, view, hp, raw, dim_axis, state, selection)
+                }
                 _ => Ok(()),
             },
+            (_, Tool::Align) => crate::aligntool::click(
+                doc,
+                view,
+                kind,
+                &plan.items,
+                raw,
+                tool_snap.filter(|_| !shift),
+                6.0 / scale as f64,
+                mm,
+                state,
+                selection,
+            ),
             (_, Tool::Tag) => tag_tool(doc, view, &view_def, picked(), raw, state, selection),
             (_, t) if crate::annotate::is_tool(t) => match &view_def {
                 Some(v) => crate::annotate::click(
@@ -1433,7 +1631,7 @@ fn plan_click(
     selection: &mut Selection,
 ) -> Result<(), creabim_core::ModelError> {
     match tool {
-        Tool::Select => Ok(()),
+        Tool::Select | Tool::Align => Ok(()),
         Tool::Level => {
             state.status = Some(
                 "Level lines are drawn in a section or elevation. Here, add, rename and move levels in the Levels window.".into(),
@@ -1543,7 +1741,18 @@ fn ray_pick(doc: &Document, view: ElementId, kind: PaneKind, p: DVec2) -> Option
     };
     let model = creabim_core::visibility::without(doc.model(), &hidden);
     let (o, d) = match kind {
-        PaneKind::Plan { .. } | PaneKind::Schedule => return None,
+        // in a plan, a click inside a floor picks its slab
+        PaneKind::Plan { level } => {
+            let slabs: Vec<(ElementId, Vec<DVec2>)> = model
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    ElementKind::Slab(s) if s.level == level => Some((e.id, s.outline())),
+                    _ => None,
+                })
+                .collect();
+            return slab_at(&slabs, p);
+        }
+        PaneKind::Schedule => return None,
         PaneKind::Section { start, end } => {
             let look = (end - start).normalize_or_zero().perp();
             let xy = PaneKind::section_point(start, end, p);
@@ -2633,10 +2842,11 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
             offset,
             text,
             look,
+            witness,
             ..
         } => {
             let ink = crate::annotate::ink(look, selected, highlight);
-            draw_dimension(painter, xf, *a, *b, *offset, text, look, mm, ink);
+            draw_dimension(painter, xf, *a, *b, *offset, *witness, text, look, mm, ink);
         }
         PlanItem::Annotation { item, .. } => {
             let ink = crate::annotate::ink(&item.look, selected, highlight);
@@ -2656,11 +2866,15 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
             if let Some((p, q)) = g.leader {
                 painter.line_segment([xf.to_screen(p), xf.to_screen(q)], Stroke::new(1.0, ink));
             }
-            painter.add(egui::Shape::convex_polygon(
-                pts,
-                Color32::WHITE,
-                Stroke::new(1.2, ink),
-            ));
+            if g.closed {
+                painter.add(egui::Shape::convex_polygon(
+                    pts,
+                    Color32::WHITE,
+                    Stroke::new(1.2, ink),
+                ));
+            } else if pts.len() > 1 {
+                painter.add(egui::Shape::line(pts, Stroke::new(1.2, ink)));
+            }
             let px = crate::annotate::text_px(look, mm, xf);
             crate::annotate::text(
                 painter,
@@ -2695,18 +2909,17 @@ fn draw_dimension(
     a: DVec2,
     b: DVec2,
     offset: f64,
+    witness: Option<[DVec2; 2]>,
     text: &str,
     look: &TextLook,
     mm: f64,
     ink: Color32,
 ) {
-    let g = dimension_geometry(a, b, offset, look, mm);
+    let g = dimension_geometry(a, b, offset, witness, look, mm);
     for (p, q) in g.lines {
         painter.line_segment([xf.to_screen(p), xf.to_screen(q)], Stroke::new(1.0, ink));
     }
-    for (p, q) in g.ticks {
-        painter.line_segment([xf.to_screen(p), xf.to_screen(q)], Stroke::new(2.0, ink));
-    }
+    crate::annotate::paint_ends(painter, xf, &g.ends, ink);
     let px = crate::annotate::text_px(look, mm, xf);
     crate::annotate::text(
         painter,
@@ -2720,20 +2933,24 @@ fn draw_dimension(
     );
 }
 
-/// A dimension being drawn.
+/// A dimension being drawn, measuring along `axis`.
 #[allow(clippy::too_many_arguments)]
 fn preview_dimension(
     painter: &egui::Painter,
     xf: &Xf,
     a: DVec2,
     b: DVec2,
+    axis: creabim_core::DimAxis,
     offset: f64,
+    look: &TextLook,
     mm: f64,
     accent: Color32,
 ) {
-    let text = annotate::dimension_text(&crate::units::get(), a, b);
-    let look = TextLook::default();
-    draw_dimension(painter, xf, a, b, offset, &text, &look, mm, accent);
+    let Some((b2, witness)) = annotate::squared(axis, a, b) else {
+        return;
+    };
+    let text = annotate::dimension_text(&crate::units::get(), a, b2);
+    draw_dimension(painter, xf, a, b2, offset, witness, &text, look, mm, accent);
 }
 
 /// The point a dimension click lands on, what it attaches to, and the snap
@@ -2750,6 +2967,30 @@ fn dim_snap(
     xf: &Xf,
     cursor: Pos2,
 ) -> (HostPoint, DVec2, Option<SnapKind>) {
+    let (hp, at, k, _) = dim_snap_guided(doc, view, kind, snapper, cfg, xf, cursor, &[]);
+    (hp, at, k)
+}
+
+/// The line offset of a dimension from `a` to `b` measuring along `axis`
+/// whose line goes through `at`.
+fn dim_offset(axis: creabim_core::DimAxis, a: DVec2, b: DVec2, at: DVec2) -> f64 {
+    let u = axis.direction(a, b).unwrap_or((b - a).normalize_or_zero());
+    (at - a).dot(u.perp())
+}
+
+/// [`dim_snap`] with temporary guides too: where they cross each other
+/// and the drawing's edges. Also returns the guides the point is on.
+#[allow(clippy::too_many_arguments)]
+fn dim_snap_guided(
+    doc: &Document,
+    view: &View,
+    kind: PaneKind,
+    snapper: Option<&Snapper>,
+    cfg: &snaps::SnapSettings,
+    xf: &Xf,
+    cursor: Pos2,
+    guides: &[snaps::TempGuide],
+) -> (HostPoint, DVec2, Option<SnapKind>, Vec<usize>) {
     let model = doc.model();
     let p = xf.to_world(cursor);
     let tol = 10.0 / xf.scale as f64;
@@ -2790,18 +3031,74 @@ fn dim_snap(
         }
     }
     let project = |q: DVec3| Some(xf.to_screen(q.truncate()));
-    let hit = snapper.and_then(|s| s.snap(cfg, cursor, &project, None, Some(p.extend(0.0))));
-    let (host, at, kind) = match (best, hit) {
+    let hit = snapper.and_then(|s| {
+        s.snap_guided(
+            cfg,
+            cursor,
+            &project,
+            None,
+            &[],
+            guides,
+            Some(p.extend(0.0)),
+        )
+    });
+    let (host, at, kind, used) = match (best, hit) {
         // a nearer corner of something else beats the wall's
         (Some((d, host, q)), h)
-            if h.is_none_or(|h| !h.kind.is_point() || h.p.truncate().distance(p) >= d) =>
+            if h.as_ref().is_none_or(|h| {
+                !h.snap.kind.is_point() || h.snap.p.truncate().distance(p) >= d
+            }) =>
         {
-            (Some(host), q, Some(SnapKind::Endpoint))
+            (Some(host), q, Some(SnapKind::Endpoint), vec![])
         }
-        (_, Some(h)) => (h.host, h.p.truncate(), Some(h.kind)),
-        (_, None) => (None, p, None),
+        (_, Some(h)) => (
+            h.snap.host,
+            h.snap.p.truncate(),
+            Some(h.snap.kind),
+            h.guides,
+        ),
+        (_, None) => (None, p, None, vec![]),
     };
-    (annotate::attach(model, view, host, at), at, kind)
+    (annotate::attach(model, view, host, at), at, kind, used)
+}
+
+/// Keep a temporary guide line as a guide element: in a plan on its
+/// level, in a section on the section's plane.
+fn keep_guide(
+    doc: &mut Document,
+    kind: PaneKind,
+    guide: Option<snaps::TempGuide>,
+) -> Result<String, creabim_core::ModelError> {
+    let Some(g) = guide else {
+        return Ok("Point at a guide line first, then press K to keep it.".into());
+    };
+    let snaps::GuideShape::Line { p, d } = g.shape else {
+        return Ok("Only straight guide lines can be kept; circles stay temporary.".into());
+    };
+    let (level, a, b) = match kind {
+        PaneKind::Plan { level } => {
+            let z = doc.model().level(level).map_or(0.0, |l| l.elevation);
+            (Some(level), p.extend(z), (p + d).extend(z))
+        }
+        PaneKind::Section { start, end } => {
+            let space = Space::Section { start, end };
+            (
+                None,
+                pane_to_model(space, p, 0.0),
+                pane_to_model(space, p + d, 0.0),
+            )
+        }
+        _ => return Ok(String::new()),
+    };
+    let e = Element::new(
+        format!("Guide ({})", g.kind.label().to_lowercase()),
+        ElementKind::Guide(creabim_core::Guide { level, a, b }),
+    );
+    doc.commit(Transaction::new("Keep guide line").insert(e))?;
+    Ok(format!(
+        "Kept the {} guide line. It stays until you delete it.",
+        g.kind.label().to_lowercase()
+    ))
 }
 
 /// A click with the Dimension tool: first point, second point, then where the line goes.
@@ -2810,6 +3107,7 @@ fn dimension_tool(
     view: ElementId,
     hit: (HostPoint, DVec2),
     raw: DVec2,
+    axis: creabim_core::DimAxis,
     state: &mut PlanState,
     selection: &mut Selection,
 ) -> Result<(), creabim_core::ModelError> {
@@ -2828,11 +3126,18 @@ fn dimension_tool(
             let (a, pa) = state.dim[0];
             let (b, pb) = state.dim[1];
             state.dim.clear();
-            let offset = (raw - pa).dot((pb - pa).normalize_or_zero().perp());
-            let e = Element::new(
-                "Dimension",
-                ElementKind::Dimension(Dimension::linear(view, a, b, offset)),
-            );
+            // a horizontal or vertical one needs its points apart that way
+            let axis = if axis.direction(pa, pb).is_some() {
+                axis
+            } else {
+                creabim_core::DimAxis::Aligned
+            };
+            let offset = dim_offset(axis, pa, pb, raw);
+            let mut d = Dimension::linear(view, a, b, offset);
+            d.axis = axis;
+            let e = state
+                .anno
+                .styled(Element::new("Dimension", ElementKind::Dimension(d)));
             selection.only(e.id);
             doc.commit(Transaction::new("Add dimension").insert(e))
         }
@@ -2852,17 +3157,13 @@ fn tag_tool(
     let Some(v) = v else { return Ok(()) };
     match state.tag_host.take() {
         None => {
-            let taggable = picked.filter(|id| {
-                matches!(
-                    doc.model().get(*id).map(|e| &e.kind),
-                    Some(
-                        ElementKind::Opening(_)
-                            | ElementKind::Wall(_)
-                            | ElementKind::Slab(_)
-                            | ElementKind::FreeMesh(_)
-                    )
-                )
-            });
+            let taggable = picked.filter(|id| is_taggable(doc.model(), *id));
+            if picked.is_some() && taggable.is_none() {
+                state.status = Some(
+                    "That can't take a tag: pick a door, window, wall, slab, roof, column, beam, stair or railing."
+                        .into(),
+                );
+            }
             state.tag_host = taggable;
             Ok(())
         }
@@ -2873,14 +3174,33 @@ fn tag_tool(
             ) else {
                 return Ok(());
             };
-            let e = Element::new(
+            let e = state.anno.styled(Element::new(
                 "Tag",
                 ElementKind::Tag(Tag::new(view, host, raw - proj.project(c))),
-            );
+            ));
             selection.only(e.id);
             doc.commit(Transaction::new("Add tag").insert(e))
         }
     }
+}
+
+/// Can the Tag tool tag element `id`? Building elements can; views,
+/// annotation and the like can't.
+pub fn is_taggable(model: &creabim_core::Model, id: ElementId) -> bool {
+    matches!(
+        model.get(id).map(|e| &e.kind),
+        Some(
+            ElementKind::Opening(_)
+                | ElementKind::Wall(_)
+                | ElementKind::Slab(_)
+                | ElementKind::FreeMesh(_)
+                | ElementKind::Roof(_)
+                | ElementKind::Column(_)
+                | ElementKind::Beam(_)
+                | ElementKind::Stair(_)
+                | ElementKind::Railing(_)
+        )
+    ) && annotate::centre(model, id).is_some()
 }
 
 /// Tag every door and window in a view that has no tag there yet, just
@@ -3081,6 +3401,48 @@ fn snap(
 }
 
 /// Fill a possibly concave polygon.
+/// A slab's fill in its level's plan, under the pointer, and selected.
+const SLAB_FILL: Color32 = Color32::from_rgba_unmultiplied_const(70, 110, 170, 30);
+const SLAB_HOVER: Color32 = Color32::from_rgba_unmultiplied_const(60, 110, 200, 70);
+const SLAB_SELECTED: Color32 = Color32::from_rgba_unmultiplied_const(240, 140, 50, 60);
+/// The edge of the slab under the pointer.
+const SLAB_EDGE: Color32 = Color32::from_rgb(60, 110, 200);
+
+/// The slabs of `level` the plan's drawing shows in projection (not cut
+/// through), with their outlines.
+fn level_slabs(
+    model: &creabim_core::Model,
+    level: ElementId,
+    plan: &Drawing,
+) -> Vec<(ElementId, Vec<DVec2>)> {
+    plan.items
+        .iter()
+        .filter_map(|it| match it {
+            PlanItem::Polygon {
+                id,
+                pen: Pen::Projection,
+                points,
+            } if matches!(
+                model.get(*id).map(|e| &e.kind),
+                Some(ElementKind::Slab(s)) if s.level == level
+            ) =>
+            {
+                Some((*id, points.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The slab whose outline holds `p`; the smallest when they overlap.
+fn slab_at(slabs: &[(ElementId, Vec<DVec2>)], p: DVec2) -> Option<ElementId> {
+    slabs
+        .iter()
+        .filter(|(_, pts)| point_in_polygon(p, pts))
+        .min_by(|a, b| signed_area(&a.1).abs().total_cmp(&signed_area(&b.1).abs()))
+        .map(|(id, _)| *id)
+}
+
 fn fill_polygon(painter: &egui::Painter, xf: &Xf, points: &[DVec2], fill: Color32) {
     let mut mesh = egui::Mesh::default();
     for p in points {
@@ -3332,6 +3694,55 @@ fn shape_points(
         ((Some(l), pts), Some(_)) if Some(*l) == level => pts.clone(),
         _ => vec![],
     }
+}
+
+/// Rest on a point or edge for a moment (or press Q over it) and it becomes
+/// a snap reference in this view, its guide lines showing; rest on one
+/// again and it goes. Returns a status message when one is picked or
+/// dropped.
+fn rest_reference(
+    state: &mut PlanState,
+    view: ElementId,
+    under: Option<snaps::Reference>,
+    now: f64,
+    key: bool,
+) -> Option<String> {
+    const DWELL: f64 = 0.6;
+    let Some(r) = under else {
+        state.ref_rest = None;
+        return None;
+    };
+    let toggle = match state.ref_rest {
+        Some((q, since, done)) if q.same(&r) => {
+            let due = !done && (key || now - since > DWELL);
+            state.ref_rest = Some((q, since, done || due));
+            due
+        }
+        _ => {
+            state.ref_rest = Some((r, now, key));
+            key
+        }
+    };
+    if !toggle {
+        return None;
+    }
+    let refs = state.refs.entry(view).or_default();
+    let what = match r {
+        snaps::Reference::Point { .. } => "point",
+        snaps::Reference::Edge { arc: Some(_), .. } => "arc",
+        snaps::Reference::Edge { .. } => "edge",
+    };
+    if let Some(i) = refs.iter().position(|q| q.same(&r)) {
+        refs.remove(i);
+        return Some(format!("Dropped the {what}'s guide lines."));
+    }
+    refs.push(r);
+    if refs.len() > snaps::MAX_REFERENCES {
+        refs.remove(0);
+    }
+    Some(format!(
+        "Guide lines from this {what}: where they cross snaps. Rest on it again to drop them, K keeps one, Esc clears them all."
+    ))
 }
 
 /// While drawing, a point snapped to and rested on for a moment joins the

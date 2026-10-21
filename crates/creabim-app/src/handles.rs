@@ -974,6 +974,7 @@ pub fn interact(
                             | ElementKind::Tag(_)
                             | ElementKind::Note(_)
                             | ElementKind::TextStyle(_)
+                            | ElementKind::SheetTemplate(_)
                             | ElementKind::Level(_)
                             | ElementKind::Sheet(_)
                             | ElementKind::Viewport(_)

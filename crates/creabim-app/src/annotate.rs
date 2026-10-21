@@ -7,11 +7,12 @@ use crate::selection::Selection;
 use crate::snaps::SnapKind;
 use creabim_core::{
     Dimension, DimensionKind, Document, Element, ElementId, ElementKind, Font, HostPoint, Model,
-    ModelError, Note, TextStyle, Transaction, View,
+    ModelError, Note, StyleUse, TagShape, Terminator, TextStyle, Transaction, View,
 };
 use creabim_geom::annotate::attach;
 use creabim_geom::annotation::{
-    angle_text, circle_through, line_intersection, measure, sweep, Annotation, Shape, TextLook,
+    angle_text, circle_through, line_intersection, measure, sweep, Annotation, Ends, Shape,
+    TextLook,
 };
 use creabim_geom::paper::Anchor;
 use creabim_geom::PlanItem;
@@ -100,6 +101,7 @@ pub fn paint(painter: &egui::Painter, xf: &Xf, item: &Annotation, color: Color32
         let pts: Vec<Pos2> = a.iter().map(|p| xf.to_screen(*p)).collect();
         painter.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
     }
+    paint_ends(painter, xf, &m.ends, color);
     let px = text_px(&item.look, mm, xf);
     for t in &m.texts {
         text(
@@ -112,6 +114,21 @@ pub fn paint(painter: &egui::Painter, xf: &Xf, item: &Annotation, color: Color32
             t.anchor,
             &item.look,
         );
+    }
+}
+
+/// Draw dimension and leader ends in a pane: thin and heavy strokes and
+/// filled shapes.
+pub fn paint_ends(painter: &egui::Painter, xf: &Xf, ends: &Ends, color: Color32) {
+    let screen = |l: &Vec<DVec2>| -> Vec<Pos2> { l.iter().map(|p| xf.to_screen(*p)).collect() };
+    for l in &ends.thin {
+        painter.add(egui::Shape::line(screen(l), Stroke::new(1.0, color)));
+    }
+    for l in &ends.heavy {
+        painter.add(egui::Shape::line(screen(l), Stroke::new(2.0, color)));
+    }
+    for f in &ends.fills {
+        painter.add(egui::Shape::convex_polygon(screen(f), color, Stroke::NONE));
     }
 }
 
@@ -174,6 +191,10 @@ pub struct Draft {
     /// A note was just placed: Properties should put the cursor in its text.
     pub focus_text: bool,
     pub grab: Option<Grab>,
+    /// The styles new dimensions, notes and tags get (none: the default).
+    pub dim_style: Option<ElementId>,
+    pub note_style: Option<ElementId>,
+    pub tag_style: Option<ElementId>,
 }
 
 impl Default for Draft {
@@ -185,6 +206,9 @@ impl Default for Draft {
             leader: true,
             focus_text: false,
             grab: None,
+            dim_style: None,
+            note_style: None,
+            tag_style: None,
         }
     }
 }
@@ -196,13 +220,31 @@ impl Draft {
         self.ready = None;
     }
 
+    /// The style a new element of this kind gets, if one is picked.
+    pub fn style_for(&self, kind: &ElementKind) -> Option<ElementId> {
+        match kind {
+            ElementKind::Dimension(_) => self.dim_style,
+            ElementKind::Note(_) => self.note_style,
+            ElementKind::Tag(_) => self.tag_style,
+            _ => None,
+        }
+    }
+
+    /// Give a new dimension, note or tag the style picked for its kind.
+    pub fn styled(&self, mut e: Element) -> Element {
+        if let Some(id) = self.style_for(&e.kind) {
+            set_style(&mut e.kind, id);
+        }
+        e
+    }
+
     pub fn has_input(&self) -> bool {
         !self.points.is_empty() || self.line.is_some() || self.ready.is_some()
     }
 }
 
 /// The straight edge of the drawing nearest `p`, within `tol`.
-fn segment_at(items: &[PlanItem], p: DVec2, tol: f64) -> Option<(ElementId, DVec2, DVec2)> {
+pub fn segment_at(items: &[PlanItem], p: DVec2, tol: f64) -> Option<(ElementId, DVec2, DVec2)> {
     let mut best: Option<(f64, ElementId, DVec2, DVec2)> = None;
     let mut consider = |id: ElementId, a: DVec2, b: DVec2| {
         if a.distance(b) < 1e-9 {
@@ -304,7 +346,7 @@ pub fn click(
     };
     if let Some(ready) = d.ready.take() {
         d.clear();
-        let e = place(model, view_id, view, ready, tool, raw);
+        let e = d.styled(place(model, view_id, view, ready, tool, raw));
         let id = e.id;
         let label = match &e.kind {
             ElementKind::Note(_) => "Add note",
@@ -316,7 +358,10 @@ pub fn click(
     }
     match tool {
         Tool::Note if !d.leader => {
-            let e = Element::new("Note", ElementKind::Note(Note::new(view_id, raw, "Note")));
+            let e = d.styled(Element::new(
+                "Note",
+                ElementKind::Note(Note::new(view_id, raw, "Note")),
+            ));
             selection.only(e.id);
             doc.commit(Transaction::new("Add note").insert(e))?;
             Ok(added(tool, d))
@@ -883,7 +928,7 @@ fn sheet_note_click(
         n.leader = Some(target.0);
     }
     d.clear();
-    let e = Element::new("Note", ElementKind::Note(n));
+    let e = d.styled(Element::new("Note", ElementKind::Note(n)));
     selection.only(e.id);
     doc.commit(Transaction::new("Add note").insert(e))?;
     Ok(added(Tool::Note, d))
@@ -897,6 +942,27 @@ pub enum LookEdit {
     Changed(&'static str),
     /// "New text style…" was picked.
     NewStyle,
+}
+
+/// The styles meant for `purpose` (and those for any annotation), by name.
+pub fn styles_for(model: &Model, purpose: StyleUse) -> Vec<(ElementId, String)> {
+    model
+        .iter()
+        .filter(|e| match &e.kind {
+            ElementKind::TextStyle(s) => s.purpose == purpose || s.purpose == StyleUse::Any,
+            _ => false,
+        })
+        .map(|e| (e.id, e.name.clone()))
+        .collect()
+}
+
+/// The dimensions, tags and notes that use a style.
+pub fn style_user_ids(model: &Model, id: ElementId) -> Vec<ElementId> {
+    model
+        .iter()
+        .filter(|e| style_of(&e.kind) == Some(id))
+        .map(|e| e.id)
+        .collect()
 }
 
 /// The text styles in the model, by name.
@@ -1028,6 +1094,95 @@ pub fn style_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
             label = Some("Italic text");
         }
     });
+    if let Some(l) = ends_ui(ui, s) {
+        label = Some(l);
+    }
+    label
+}
+
+/// A terminator picker, with "Usual" for none.
+fn terminator_combo(
+    ui: &mut egui::Ui,
+    salt: &str,
+    text: &str,
+    usual: &str,
+    t: &mut Option<Terminator>,
+) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(t.map_or(usual.to_string(), |t| t.label().to_string()))
+        .show_ui(ui, |ui| {
+            changed |= ui.selectable_value(t, None, usual).changed();
+            for k in Terminator::ALL {
+                changed |= ui.selectable_value(t, Some(k), k.label()).changed();
+            }
+        });
+    ui.label(text);
+    changed
+}
+
+/// A style's line ends, tag shape and what it is for.
+pub fn ends_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
+    let mut label = None;
+    ui.horizontal(|ui| {
+        if terminator_combo(
+            ui,
+            "style_end",
+            "Dimension ends",
+            "Usual (tick, arrow)",
+            &mut s.terminator,
+        ) {
+            label = Some("Dimension ends");
+        }
+    });
+    ui.horizontal(|ui| {
+        if terminator_combo(
+            ui,
+            "style_leader",
+            "Leader end",
+            "Usual (arrow)",
+            &mut s.leader_end,
+        ) {
+            label = Some("Leader end");
+        }
+    });
+    ui.horizontal(|ui| {
+        let mut size = s.end_size.unwrap_or(creabim_geom::annotation::END_SIZE);
+        ui.label("End size");
+        if ui
+            .add(
+                egui::DragValue::new(&mut size)
+                    .speed(0.05)
+                    .range(0.5..=10.0)
+                    .suffix(" mm"),
+            )
+            .changed()
+        {
+            s.end_size = Some(size);
+            label = Some("Terminator size");
+        }
+    });
+    egui::ComboBox::from_label("Tag shape")
+        .selected_text(s.tag_shape.label())
+        .show_ui(ui, |ui| {
+            for k in TagShape::ALL {
+                if ui
+                    .selectable_value(&mut s.tag_shape, k, k.label())
+                    .changed()
+                {
+                    label = Some("Tag shape");
+                }
+            }
+        });
+    egui::ComboBox::from_label("Meant for")
+        .selected_text(s.purpose.label())
+        .show_ui(ui, |ui| {
+            for k in StyleUse::ALL {
+                if ui.selectable_value(&mut s.purpose, k, k.label()).changed() {
+                    label = Some("Style use");
+                }
+            }
+        });
     label
 }
 

@@ -82,8 +82,221 @@ impl Font {
     }
 }
 
+/// The mark at the end of a dimension line or a leader.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Terminator {
+    /// A short heavy stroke at 45°: the architectural tick.
+    #[default]
+    Tick,
+    /// A thin 45° slash.
+    Slash,
+    /// A solid arrowhead.
+    Arrow,
+    /// A slender solid arrowhead.
+    ArrowSlim,
+    /// An open arrowhead: two strokes.
+    ArrowOpen,
+    /// An arrowhead drawn in outline.
+    ArrowClosed,
+    /// A solid dot.
+    Dot,
+    /// A small circle.
+    DotOpen,
+    /// A small solid square.
+    Square,
+    /// A tick with a dot on the point.
+    TickDot,
+    /// Nothing: the line just stops.
+    None,
+}
+
+impl Terminator {
+    pub const ALL: [Terminator; 11] = [
+        Terminator::Tick,
+        Terminator::Slash,
+        Terminator::Arrow,
+        Terminator::ArrowSlim,
+        Terminator::ArrowOpen,
+        Terminator::ArrowClosed,
+        Terminator::Dot,
+        Terminator::DotOpen,
+        Terminator::Square,
+        Terminator::TickDot,
+        Terminator::None,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Terminator::Tick => "Architectural tick",
+            Terminator::Slash => "Thin slash",
+            Terminator::Arrow => "Arrow, filled",
+            Terminator::ArrowSlim => "Arrow, slender",
+            Terminator::ArrowOpen => "Arrow, open",
+            Terminator::ArrowClosed => "Arrow, outline",
+            Terminator::Dot => "Dot",
+            Terminator::DotOpen => "Open dot",
+            Terminator::Square => "Square",
+            Terminator::TickDot => "Tick and dot",
+            Terminator::None => "None",
+        }
+    }
+}
+
+/// The outline of a tag's bubble.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TagShape {
+    /// Round for doors and windows, a box for the rest: the look tags
+    /// had before shapes could be picked.
+    #[default]
+    Auto,
+    Circle,
+    Box,
+    RoundedBox,
+    /// A box with round ends.
+    Pill,
+    Hexagon,
+    Octagon,
+    Diamond,
+    /// Just the text, underlined.
+    Underline,
+    /// Just the text.
+    TextOnly,
+}
+
+impl TagShape {
+    pub const ALL: [TagShape; 10] = [
+        TagShape::Auto,
+        TagShape::Circle,
+        TagShape::Box,
+        TagShape::RoundedBox,
+        TagShape::Pill,
+        TagShape::Hexagon,
+        TagShape::Octagon,
+        TagShape::Diamond,
+        TagShape::Underline,
+        TagShape::TextOnly,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TagShape::Auto => "Auto (round for openings)",
+            TagShape::Circle => "Circle",
+            TagShape::Box => "Box",
+            TagShape::RoundedBox => "Rounded box",
+            TagShape::Pill => "Pill",
+            TagShape::Hexagon => "Hexagon",
+            TagShape::Octagon => "Octagon",
+            TagShape::Diamond => "Diamond",
+            TagShape::Underline => "Underlined text",
+            TagShape::TextOnly => "Text only",
+        }
+    }
+
+    pub fn is_auto(&self) -> bool {
+        *self == TagShape::Auto
+    }
+}
+
+/// What kind of annotation a style is meant for. It sorts the style
+/// manager and the pickers; any style can still be used by anything.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StyleUse {
+    #[default]
+    Any,
+    Dimensions,
+    Notes,
+    Tags,
+}
+
+impl StyleUse {
+    pub const ALL: [StyleUse; 4] = [
+        StyleUse::Any,
+        StyleUse::Dimensions,
+        StyleUse::Notes,
+        StyleUse::Tags,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            StyleUse::Any => "Any annotation",
+            StyleUse::Dimensions => "Dimensions",
+            StyleUse::Notes => "Notes and leaders",
+            StyleUse::Tags => "Tags",
+        }
+    }
+
+    pub fn is_any(&self) -> bool {
+        *self == StyleUse::Any
+    }
+}
+
+/// Which way a linear dimension measures: along the line between its
+/// points, or only across the drawing's X or Y (the projected distance).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DimAxis {
+    #[default]
+    Aligned,
+    /// The distance along X, with a horizontal dimension line.
+    Horizontal,
+    /// The distance along Y, with a vertical dimension line.
+    Vertical,
+}
+
+impl DimAxis {
+    pub const ALL: [DimAxis; 3] = [DimAxis::Aligned, DimAxis::Horizontal, DimAxis::Vertical];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DimAxis::Aligned => "Aligned",
+            DimAxis::Horizontal => "Horizontal",
+            DimAxis::Vertical => "Vertical",
+        }
+    }
+
+    pub fn is_aligned(&self) -> bool {
+        *self == DimAxis::Aligned
+    }
+
+    /// The direction its line runs for points `a` to `b`, pointing from
+    /// `a` towards `b`; none when they coincide along it.
+    pub fn direction(self, a: DVec2, b: DVec2) -> Option<DVec2> {
+        let d = b - a;
+        let u = match self {
+            DimAxis::Aligned => d,
+            DimAxis::Horizontal => DVec2::new(d.x, 0.0),
+            DimAxis::Vertical => DVec2::new(0.0, d.y),
+        };
+        (u.length() > 1e-9).then(|| u.normalize())
+    }
+
+    /// The axis a dimension line placed at `at` reads as, for points `a`
+    /// and `b`, the way most CAD programs pick it: past both points to the
+    /// left or right it measures up the drawing, above or below both it
+    /// measures across, and between them it is aligned. Two points already
+    /// level or plumb measure that way.
+    pub fn pick(a: DVec2, b: DVec2, at: DVec2) -> DimAxis {
+        let d = b - a;
+        if d.y.abs() < 1e-9 {
+            return DimAxis::Horizontal;
+        }
+        if d.x.abs() < 1e-9 {
+            return DimAxis::Vertical;
+        }
+        let (lo, hi) = (a.min(b), a.max(b));
+        let beside = at.x < lo.x || at.x > hi.x;
+        let over = at.y < lo.y || at.y > hi.y;
+        match (beside, over) {
+            (true, false) => DimAxis::Vertical,
+            (false, true) => DimAxis::Horizontal,
+            _ => DimAxis::Aligned,
+        }
+    }
+}
+
 /// How annotation text (and its linework) looks on paper. The element's
-/// name is the style's name.
+/// name is the style's name. Beyond the text it sets the ends of
+/// dimension lines and leaders and the shape of tags, so one style serves
+/// as a dimension style, a note style or a tag style.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TextStyle {
     #[serde(default)]
@@ -98,6 +311,20 @@ pub struct TextStyle {
     pub bold: bool,
     #[serde(default)]
     pub italic: bool,
+    /// The ends of dimension lines; none is the tick of linear dimensions
+    /// and the arrow of angles, radii and arcs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminator: Option<Terminator>,
+    /// The end of a note's leader; none is a filled arrow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader_end: Option<Terminator>,
+    /// Size of those ends on paper, mm; none is the usual 2.5 mm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_size: Option<f64>,
+    #[serde(default, skip_serializing_if = "TagShape::is_auto")]
+    pub tag_shape: TagShape,
+    #[serde(default, skip_serializing_if = "StyleUse::is_any")]
+    pub purpose: StyleUse,
 }
 
 /// Letter height of dimensions, tags and notes without a style, paper mm.
@@ -111,6 +338,11 @@ impl Default for TextStyle {
             color: None,
             bold: false,
             italic: false,
+            terminator: None,
+            leader_end: None,
+            end_size: None,
+            tag_shape: TagShape::Auto,
+            purpose: StyleUse::Any,
         }
     }
 }
@@ -128,6 +360,12 @@ impl TextStyle {
             .is_some_and(|c| c.iter().any(|v| !(0.0..=1.0).contains(v)))
         {
             return Err("text colour components must be within 0..1".into());
+        }
+        if self
+            .end_size
+            .is_some_and(|v| !(v.is_finite() && v > 0.1 && v < 50.0))
+        {
+            return Err("terminator size must be between 0.1 and 50 mm".into());
         }
         Ok(())
     }
@@ -210,9 +448,10 @@ mod tests {
         assert_eq!(d.style, None);
         assert_eq!(d.color, None);
         assert_eq!(d.offset, -1.5);
+        assert_eq!(d.axis, DimAxis::Aligned);
         // and a linear dimension still writes nothing new
         let text = serde_json::to_string(&d).unwrap();
-        for field in ["kind", "center", "style", "color"] {
+        for field in ["kind", "center", "style", "color", "axis"] {
             assert!(!text.contains(field), "{field} in {text}");
         }
         // a newer kind round-trips
@@ -222,6 +461,65 @@ mod tests {
         r.color = Some([1.0, 0.0, 0.0]);
         let back: Dimension = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back, r);
+        // so does a horizontal one
+        let mut h = d.clone();
+        h.axis = DimAxis::Horizontal;
+        let back: Dimension = serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
+        assert_eq!(back.axis, DimAxis::Horizontal);
+    }
+
+    #[test]
+    fn styles_from_older_files_read_with_the_old_ends_and_shapes() {
+        let old = r#"{"font":"Serif","size":3.5,"bold":true}"#;
+        let s: TextStyle = serde_json::from_str(old).unwrap();
+        assert_eq!((s.terminator, s.leader_end, s.end_size), (None, None, None));
+        assert_eq!((s.tag_shape, s.purpose), (TagShape::Auto, StyleUse::Any));
+        // a default style writes none of the new fields
+        let text = serde_json::to_string(&TextStyle::default()).unwrap();
+        for field in [
+            "terminator",
+            "leader_end",
+            "end_size",
+            "tag_shape",
+            "purpose",
+        ] {
+            assert!(!text.contains(field), "{field} in {text}");
+        }
+        let dots = TextStyle {
+            terminator: Some(Terminator::Dot),
+            leader_end: Some(Terminator::ArrowOpen),
+            end_size: Some(1.5),
+            tag_shape: TagShape::Hexagon,
+            purpose: StyleUse::Tags,
+            ..TextStyle::default()
+        };
+        let back: TextStyle = serde_json::from_str(&serde_json::to_string(&dots).unwrap()).unwrap();
+        assert_eq!(back, dots);
+        assert!(TextStyle {
+            end_size: Some(0.0),
+            ..dots
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn dimension_axes_are_picked_from_where_the_line_goes() {
+        let (a, b) = (DVec2::ZERO, DVec2::new(4.0, 1.0));
+        // above both points: across; beside them: up; between: aligned
+        assert_eq!(
+            DimAxis::pick(a, b, DVec2::new(2.0, 3.0)),
+            DimAxis::Horizontal
+        );
+        assert_eq!(DimAxis::pick(a, b, DVec2::new(6.0, 0.5)), DimAxis::Vertical);
+        assert_eq!(DimAxis::pick(a, b, DVec2::new(2.0, 0.6)), DimAxis::Aligned);
+        assert_eq!(
+            DimAxis::Horizontal.direction(a, b),
+            Some(DVec2::X),
+            "points the way a goes to b"
+        );
+        assert_eq!(DimAxis::Vertical.direction(b, a), Some(-DVec2::Y));
+        assert_eq!(DimAxis::Vertical.direction(a, DVec2::X), None);
     }
 
     #[test]
@@ -246,6 +544,7 @@ mod tests {
                 color: Some([0.8, 0.1, 0.1]),
                 bold: true,
                 italic: false,
+                ..TextStyle::default()
             }),
         );
         let id = style.id;

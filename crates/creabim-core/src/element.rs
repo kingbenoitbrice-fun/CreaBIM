@@ -1,7 +1,8 @@
-pub use crate::annotation::{DimensionKind, Note, TextStyle};
+pub use crate::annotation::{DimAxis, DimensionKind, Note, TextStyle};
 pub use crate::grids::GridGroup;
 pub use crate::members::{Beam, Column, Railing, Roof, Stair};
 pub use crate::sketch::Sketch;
+pub use crate::titleblock::SheetTemplate;
 use crate::visibility::ViewHidden;
 use crate::{
     editmesh::EditMesh,
@@ -93,6 +94,7 @@ impl Element {
                 .collect(),
             // a missing style falls back to the default look, like materials
             ElementKind::TextStyle(_) => vec![],
+            ElementKind::SheetTemplate(_) => vec![],
             ElementKind::Units(_) => vec![],
             ElementKind::Sketch(s) => s.level.into_iter().collect(),
             ElementKind::Cut(c) => vec![c.target, c.cutter],
@@ -126,6 +128,7 @@ impl Element {
             ElementKind::Tag(_) => "Tag",
             ElementKind::Note(_) => "Note",
             ElementKind::TextStyle(_) => "TextStyle",
+            ElementKind::SheetTemplate(_) => "SheetTemplate",
             ElementKind::Units(_) => "ProjectUnits",
             ElementKind::Sketch(_) => "Sketch",
             ElementKind::Cut(_) => "Cut",
@@ -272,6 +275,7 @@ impl Element {
             }
             ElementKind::Note(n) => n.validate(),
             ElementKind::TextStyle(s) => s.validate(),
+            ElementKind::SheetTemplate(t) => t.validate(),
             ElementKind::Units(_) => Ok(()),
             ElementKind::Assembly(a) => a.validate(),
             ElementKind::Sketch(s) => s.check(),
@@ -315,6 +319,8 @@ pub enum ElementKind {
     Sketch(Sketch),
     Note(Note),
     TextStyle(TextStyle),
+    /// A named title block that sheets can share.
+    SheetTemplate(SheetTemplate),
     Cut(Cut),
     Guide(Guide),
     Column(Column),
@@ -355,6 +361,7 @@ impl ElementKind {
             ElementKind::Railing(_) => "Railing",
             ElementKind::Note(_) => "Note",
             ElementKind::TextStyle(_) => "TextStyle",
+            ElementKind::SheetTemplate(_) => "SheetTemplate",
             ElementKind::GridGroup(_) => "GridGroup",
             ElementKind::Assembly(_) => "Assembly",
             ElementKind::Units(_) => "Units",
@@ -570,6 +577,9 @@ pub struct Dimension {
     /// Overrides the style's colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[f32; 3]>,
+    /// A linear dimension can measure across or up the drawing only.
+    #[serde(default, skip_serializing_if = "DimAxis::is_aligned")]
+    pub axis: DimAxis,
 }
 
 impl Dimension {
@@ -584,6 +594,7 @@ impl Dimension {
             center: None,
             style: None,
             color: None,
+            axis: DimAxis::Aligned,
         }
     }
 
@@ -1166,6 +1177,10 @@ pub struct View {
     /// dragging it; `None` keeps it in the automatic order (plans by level).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_order: Option<u32>,
+    /// Draw what is hidden inside other elements (a beam in a wall, a stud
+    /// wall in a cavity) with dashed hidden lines.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub show_hidden: bool,
 }
 
 /// What a plan shows faintly under its own level (Revit's underlay).
@@ -1281,6 +1296,7 @@ impl View {
             hidden: ViewHidden::default(),
             underlay: Underlay::None,
             browser_order: None,
+            show_hidden: false,
         }
     }
 
@@ -1297,6 +1313,7 @@ impl View {
             hidden: ViewHidden::default(),
             underlay: Underlay::None,
             browser_order: None,
+            show_hidden: false,
         }
     }
 }
@@ -1310,6 +1327,7 @@ impl View {
             hidden: ViewHidden::default(),
             underlay: Underlay::None,
             browser_order: None,
+            show_hidden: false,
         }
     }
 
@@ -1321,6 +1339,7 @@ impl View {
             hidden: ViewHidden::default(),
             underlay: Underlay::None,
             browser_order: None,
+            show_hidden: false,
         }
     }
 
@@ -1341,6 +1360,13 @@ pub struct Sheet {
     pub number: String,
     pub width: f64,
     pub height: f64,
+    /// The [`SheetTemplate`] its title block comes from; none draws the
+    /// built-in one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<ElementId>,
+    /// Values for its template's own fields, by name.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub fields: std::collections::BTreeMap<String, String>,
 }
 
 impl Sheet {
@@ -1363,6 +1389,8 @@ impl Sheet {
             number: number.into(),
             width,
             height,
+            template: None,
+            fields: Default::default(),
         }
     }
 

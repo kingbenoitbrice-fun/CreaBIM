@@ -334,7 +334,7 @@ impl CreaBimApp {
             Item::new("mat.browser", "Material browser…")
                 .icon("palette")
                 .hint("Add, edit, delete and assign the project's materials"),
-            Item::sub("Add from the library", lib),
+            Item::sub("Add from the library", lib).icon("plus"),
             Item::new("mat.import", "Import materials…").icon("download").hint(
                 "Materials from an IFC file, FreeCAD material cards (.FCMat), glTF (.glb, .gltf, e.g. exported from Blender) or a .blend file",
             ),
@@ -345,6 +345,7 @@ impl CreaBimApp {
                     "mat.import.path",
                     "Import materials from the path in the File box",
                 )
+                .icon("download")
                 .hint("For typing or pasting a path instead of browsing."),
             );
         }
@@ -355,7 +356,9 @@ impl CreaBimApp {
                 1 => "Assign to the selected element".into(),
                 n => format!("Assign to the {n} selected elements"),
             }),
-            Item::sub("Assign material", assign).enabled(targets > 0),
+            Item::sub("Assign material", assign)
+                .icon("palette")
+                .enabled(targets > 0),
         ]);
         items.extend(self.assemblies_menu());
         items

@@ -211,6 +211,10 @@
       if (!b) continue;
       html += `<button class="ibtn ${b.on ? "on" : ""}" data-act="${esc(b.id)}" title="${esc(b.hint)}" ${b.off ? "disabled" : ""}>${icon(b.icon)}</button>`;
     }
+    // dropdowns: what the 3D view shows
+    for (const m of S.menus || []) {
+      html += `<span class="qsep"></span><button class="dd ${m.on ? "on" : ""} ${S.popup === m.key ? "open" : ""}" data-popup="${esc(m.key)}" title="${esc(m.hint)}">${icon(m.icon)}<span class="v">${esc(m.label)}</span>${icon("chevron-down", "chev")}</button>`;
+    }
     html += `<span class="qsep"></span><button class="dd ${S.popup === S.look.key ? "open" : ""}" data-popup="${esc(S.look.key)}" title="${esc(S.look.hint)}">${icon("axis-3d")}<span class="v">View</span>${icon("chevron-down", "chev")}</button></div>`;
     root.innerHTML = html;
   }
