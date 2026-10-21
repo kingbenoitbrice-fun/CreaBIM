@@ -1,4 +1,5 @@
 use crate::TriMesh;
+use creabim_core::walls::TopProfile;
 use creabim_core::{Opening, Wall, WallEnds};
 use glam::{DVec2, DVec3};
 
@@ -33,10 +34,18 @@ impl Cut {
 /// either solid or void. Solid cells get front and back faces, and every
 /// boundary between a solid cell and void (or the wall's outer edge) gets a
 /// side face, so ends, top, bottom and opening reveals all come out closed.
-/// `ends` mitres or trims the two ends where the wall joins its neighbours.
-pub fn wall_mesh(wall: &Wall, base_z: f64, openings: &[&Opening], ends: &WallEnds) -> TriMesh {
+/// `ends` mitres or trims the two ends where the wall joins its neighbours
+/// and leaves out the gaps where walls cross it; with `top`, the top
+/// follows the undersides it is attached to instead of being level.
+pub fn wall_mesh(
+    wall: &Wall,
+    base_z: f64,
+    openings: &[&Opening],
+    ends: &WallEnds,
+    top: Option<&TopProfile>,
+) -> TriMesh {
     let t = wall.thickness / 2.0;
-    wall_layer_mesh(wall, base_z, openings, ends, (-t, t), false)
+    wall_layer_mesh(wall, base_z, openings, ends, top, (-t, t), false)
 }
 
 /// One layer of a layered wall as a closed solid: the part of the wall
@@ -47,6 +56,7 @@ pub fn wall_layer_mesh(
     base_z: f64,
     openings: &[&Opening],
     ends: &WallEnds,
+    top: Option<&TopProfile>,
     band: (f64, f64),
     core: bool,
 ) -> TriMesh {
@@ -59,6 +69,17 @@ pub fn wall_layer_mesh(
     for c in &cuts {
         us.extend([c.u0, c.u1]);
         vs.extend([c.v0, c.v1]);
+    }
+    for g in &ends.gaps {
+        us.extend([g.lo_mid(), g.hi_mid()]);
+    }
+    if let Some(top) = top {
+        // where the top bends over a ridge or steps at an eave
+        us.extend(
+            top.breaks(wall.start, wall.end)
+                .into_iter()
+                .map(|k| k * len),
+        );
     }
     let sort = |xs: &mut Vec<f64>| {
         xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -74,24 +95,24 @@ pub fn wall_layer_mesh(
         }
         let (i, j) = (i as usize, j as usize);
         let (u, v) = ((us[i] + us[i + 1]) / 2.0, (vs[j] + vs[j + 1]) / 2.0);
-        !cuts.iter().any(|c| c.contains(u, v))
+        !ends.in_gap(u) && !cuts.iter().any(|c| c.contains(u, v))
     };
 
     let d = wall.direction();
     let n2 = DVec2::new(-d.y, d.x);
     let (lo, hi) = band;
     let z0 = base_z + wall.base_offset;
+    // an attached top comes down no lower than the heads of openings
+    let floor = vs[vs.len().saturating_sub(2)].max(0.0) + 0.01;
     let p = |u: f64, v: f64, w: f64| -> DVec3 {
-        // the end grid lines follow the joins
-        let u = if u <= 0.0 {
-            ends.layer_start(wall, w, core)
-        } else if u >= len {
-            ends.layer_end(wall, w, core)
-        } else {
-            u
-        };
+        // the end grid lines and gap sides follow the joins
+        let u = ends.place(wall, u, w, core);
         let xy = wall.start + d * u + n2 * w;
-        DVec3::new(xy.x, xy.y, z0 + v)
+        let z = match top {
+            Some(t) if v >= h - 1e-9 => t.z_at(xy).map_or(z0 + h, |z| z.max(z0 + floor.min(h))),
+            _ => z0 + v,
+        };
+        DVec3::new(xy.x, xy.y, z)
     };
     let along = DVec3::new(d.x, d.y, 0.0);
     let across = DVec3::new(n2.x, n2.y, 0.0);
@@ -131,10 +152,10 @@ pub fn wall_layer_mesh(
                 );
             }
             if !solid(i, j + 1) {
-                m.add_quad(
-                    [p(ua, vb, lo), p(ub, vb, lo), p(ub, vb, hi), p(ua, vb, hi)],
-                    DVec3::Z,
-                );
+                let q = [p(ua, vb, lo), p(ub, vb, lo), p(ub, vb, hi), p(ua, vb, hi)];
+                // an attached top slopes: shade it as it lies
+                let n = (q[2] - q[0]).cross(q[3] - q[1]).normalize_or(DVec3::Z);
+                m.add_quad(q, if n.z < 0.0 { -n } else { n });
             }
         }
     }
@@ -157,20 +178,17 @@ fn end_normal(a: DVec3, b: DVec3, towards: DVec3) -> DVec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use creabim_core::{ElementId, OpeningKind};
+    use creabim_core::walls::TopFace;
+    use creabim_core::{ElementId, Gap, OpeningKind};
 
     fn wall() -> Wall {
-        Wall {
-            level: ElementId::new(),
-            start: DVec2::new(1.0, 1.0),
-            end: DVec2::new(1.0, 6.0),
-            thickness: 0.2,
-            height: 3.0,
-            base_offset: 0.0,
-            material: None,
-            assembly: None,
-            flip: false,
-        }
+        Wall::new(
+            ElementId::new(),
+            DVec2::new(1.0, 1.0),
+            DVec2::new(1.0, 6.0),
+            0.2,
+            3.0,
+        )
     }
 
     fn opening(offset: f64, sill: f64, w: f64, h: f64) -> Opening {
@@ -183,12 +201,67 @@ mod tests {
             height: h,
             material: None,
             frame: Default::default(),
+            flip_hand: false,
+            flip_facing: false,
         }
     }
 
     #[test]
+    fn a_crossing_wall_leaves_a_gap() {
+        let ends = WallEnds {
+            gaps: vec![Gap {
+                lo: [2.0, 2.0],
+                hi: [2.3, 2.3],
+                core: [0.0; 2],
+            }],
+            ..Default::default()
+        };
+        let m = wall_mesh(&wall(), 0.0, &[], &ends, None);
+        assert!(
+            (m.volume() - 4.7 * 3.0 * 0.2).abs() < 1e-5,
+            "{}",
+            m.volume()
+        );
+    }
+
+    #[test]
+    fn an_attached_top_follows_the_slope() {
+        // an underside over the whole wall, rising along it from 2.5 m at
+        // its start to 3.5 m at its end
+        let top = TopProfile {
+            faces: vec![TopFace {
+                outline: vec![
+                    DVec2::new(0.0, 0.0),
+                    DVec2::new(2.0, 0.0),
+                    DVec2::new(2.0, 7.0),
+                    DVec2::new(0.0, 7.0),
+                ],
+                g: DVec2::new(0.0, 0.2),
+                c: 2.3,
+            }],
+        };
+        let m = wall_mesh(&wall(), 0.0, &[], &WallEnds::default(), Some(&top));
+        assert!(
+            (m.volume() - 5.0 * 3.0 * 0.2).abs() < 1e-5,
+            "{}",
+            m.volume()
+        );
+        let (_, hi) = m.bounds().unwrap();
+        assert!((hi.z - 3.5).abs() < 1e-5);
+        // where nothing is overhead it keeps its own height
+        let mut away = top.clone();
+        away.faces[0].outline = vec![
+            DVec2::new(10.0, 0.0),
+            DVec2::new(12.0, 0.0),
+            DVec2::new(12.0, 2.0),
+        ];
+        let m = wall_mesh(&wall(), 0.0, &[], &WallEnds::default(), Some(&away));
+        assert!((m.volume() - 5.0 * 3.0 * 0.2).abs() < 1e-5);
+    }
+
+    #[test]
     fn plain_wall_is_a_closed_box() {
-        let m = wall_mesh(&wall(), 0.0, &[], &WallEnds::default());
+        let m = wall_mesh(&wall(), 0.0, &[], &WallEnds::default(), None);
         assert_eq!(m.triangle_count(), 12);
         assert!((m.volume() - 5.0 * 3.0 * 0.2).abs() < 1e-5);
     }
@@ -197,7 +270,7 @@ mod tests {
     fn openings_remove_their_volume() {
         let win = opening(1.0, 0.9, 1.2, 1.2);
         let door = opening(3.0, 0.0, 0.9, 2.1);
-        let m = wall_mesh(&wall(), 3.0, &[&win, &door], &WallEnds::default());
+        let m = wall_mesh(&wall(), 3.0, &[&win, &door], &WallEnds::default(), None);
         let expected = (15.0 - 1.44 - 0.9 * 2.1) * 0.2;
         assert!((m.volume() - expected).abs() < 1e-4, "{}", m.volume());
         let (lo, hi) = m.bounds().unwrap();
@@ -207,7 +280,7 @@ mod tests {
     #[test]
     fn opening_past_the_wall_end_is_clipped() {
         let o = opening(4.5, 1.0, 2.0, 1.0);
-        let m = wall_mesh(&wall(), 0.0, &[&o], &WallEnds::default());
+        let m = wall_mesh(&wall(), 0.0, &[&o], &WallEnds::default(), None);
         assert!((m.volume() - (15.0 - 0.5) * 0.2).abs() < 1e-4);
     }
 }

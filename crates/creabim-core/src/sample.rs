@@ -94,6 +94,10 @@ pub fn sample_house() -> Model {
                     material: Some(brick_id),
                     assembly: None,
                     flip: false,
+                    location: Default::default(),
+                    top: Default::default(),
+                    disallow_join: [false; 2],
+                    attach_top: vec![],
                 }),
             );
             let id = wall.id;
@@ -127,6 +131,8 @@ pub fn sample_house() -> Model {
                             panes_across: 2,
                             ..Default::default()
                         },
+                        flip_hand: false,
+                        flip_facing: false,
                     }),
                 );
                 tagged.push((window.id, level, outside * 0.9));
@@ -145,6 +151,8 @@ pub fn sample_house() -> Model {
             height: 2.2,
             material: None,
             frame: Default::default(),
+            flip_hand: false,
+            flip_facing: false,
         }),
     );
     let front_door_id = front_door.id;
@@ -163,6 +171,10 @@ pub fn sample_house() -> Model {
             material: Some(stud_id),
             assembly: None,
             flip: false,
+            location: Default::default(),
+            top: Default::default(),
+            disallow_join: [false; 2],
+            attach_top: vec![],
         }),
     );
     let pid = part.id;
@@ -177,6 +189,8 @@ pub fn sample_house() -> Model {
             height: 2.1,
             material: None,
             frame: Default::default(),
+            flip_hand: false,
+            flip_facing: false,
         }),
     );
     tagged.push((inner_door.id, g, DVec2::new(0.8, 0.0)));
@@ -493,7 +507,23 @@ pub fn layered_house() -> Model {
     r.pitch = 35.0;
     let mut e = Element::new("Roof", ElementKind::Roof(r));
     assembly::set_assembly(doc.model(), &mut e, Some(roof));
+    let roof_id = e.id;
     doc.commit(Transaction::new("Roof").insert(e))
         .expect("the roof is valid");
+    // the first floor's walls reach up to it: the gables fill in, the eave
+    // walls are cut to the slope instead of poking through
+    let mut tx = Transaction::new("Attach walls to the roof");
+    for e in doc.model().iter() {
+        if let ElementKind::Wall(w) = &e.kind {
+            if w.level == first {
+                let mut after = e.clone();
+                if let ElementKind::Wall(w) = &mut after.kind {
+                    w.attach_top = vec![roof_id];
+                }
+                tx = tx.replace(e.clone(), after);
+            }
+        }
+    }
+    doc.commit(tx).expect("attaching keeps the walls valid");
     doc.model().clone()
 }

@@ -75,7 +75,8 @@ fn layer_items(
                     _ => None,
                 })
                 .collect();
-            let ends = joins.get(&e.id).copied().unwrap_or_default();
+            let ends = joins.get(&e.id).cloned().unwrap_or_default();
+            let top = creabim_core::walls::top_profile(model, w);
             assembly::wall_bands(a, w)
                 .into_iter()
                 .map(|b| {
@@ -84,6 +85,7 @@ fn layer_items(
                         level.elevation,
                         &openings,
                         &ends,
+                        top.as_ref(),
                         (b.s0, b.s1),
                         b.core,
                     );
@@ -184,9 +186,10 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                         _ => None,
                     })
                     .collect();
-                let ends = joins.get(&e.id).copied().unwrap_or_default();
+                let ends = joins.get(&e.id).cloned().unwrap_or_default();
+                let top = creabim_core::walls::top_profile(model, w);
                 (
-                    wall_mesh(w, level.elevation, &openings, &ends),
+                    wall_mesh(w, level.elevation, &openings, &ends, top.as_ref()),
                     [0.86, 0.84, 0.80],
                 )
             }

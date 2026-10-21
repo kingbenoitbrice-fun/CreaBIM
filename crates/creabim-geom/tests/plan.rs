@@ -24,6 +24,10 @@ fn door_splits_wall_into_two_cut_pieces_with_a_swing() {
             material: None,
             assembly: None,
             flip: false,
+            location: Default::default(),
+            top: Default::default(),
+            disallow_join: [false; 2],
+            attach_top: vec![],
         }),
     );
     let d = Element::new(
@@ -37,6 +41,8 @@ fn door_splits_wall_into_two_cut_pieces_with_a_swing() {
             height: 2.1,
             material: None,
             frame: Default::default(),
+            flip_hand: false,
+            flip_facing: false,
         }),
     );
     let lid = l.id;
@@ -113,6 +119,10 @@ fn a_box_subtracted_from_a_wall_leaves_a_gap_in_the_plan() {
             material: None,
             assembly: None,
             flip: false,
+            location: Default::default(),
+            top: Default::default(),
+            disallow_join: [false; 2],
+            attach_top: vec![],
         }),
     );
     // a 1 m box through the wall, 0.5 to 2.5 m up
@@ -243,4 +253,78 @@ fn sketch_arcs_draw_as_arcs_in_plans_and_sections() {
     assert!(center.distance(DVec2::new(2.0, 0.0)) < 1e-9 && (radius - 1.0).abs() < 1e-9);
     let top = center + DVec2::from_angle((start + end) / 2.0) * radius;
     assert!(top.distance(DVec2::new(2.0, 1.0)) < 1e-9, "{top:?}");
+}
+
+/// The area of a polygon.
+fn area(points: &[DVec2]) -> f64 {
+    let n = points.len();
+    (0..n)
+        .map(|i| points[i].perp_dot(points[(i + 1) % n]))
+        .sum::<f64>()
+        .abs()
+        / 2.0
+}
+
+#[test]
+fn crossing_walls_fill_the_cross_once() {
+    let mut doc = Document::new();
+    let l = Element::new(
+        "L0",
+        ElementKind::Level(Level {
+            elevation: 0.0,
+            height: 3.0,
+        }),
+    );
+    let lid = l.id;
+    let a = Element::new(
+        "A",
+        ElementKind::Wall(Wall::new(lid, DVec2::ZERO, DVec2::new(6.0, 0.0), 0.2, 3.0)),
+    );
+    let b = Element::new(
+        "B",
+        ElementKind::Wall(Wall::new(
+            lid,
+            DVec2::new(3.0, -2.0),
+            DVec2::new(3.0, 2.0),
+            0.2,
+            3.0,
+        )),
+    );
+    doc.commit(Transaction::new("t").insert(l).insert(a).insert(b))
+        .unwrap();
+    let filled = |m: &Model| -> f64 {
+        plan_view(m, lid, 1.2)
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                PlanItem::Fill { points, .. } => Some(area(points)),
+                _ => None,
+            })
+            .sum()
+    };
+    // the crossing square is filled once, not twice
+    let expected = 6.0 * 0.2 + 4.0 * 0.2 - 0.2 * 0.2;
+    assert!((filled(doc.model()) - expected).abs() < 1e-6);
+
+    // built of layers, the cores still cross and nothing overlaps
+    let (tx, ids) = assembly::add_starters(doc.model());
+    doc.commit(tx).unwrap();
+    let walls: Vec<ElementId> = doc
+        .model()
+        .iter()
+        .filter(|e| matches!(e.kind, ElementKind::Wall(_)))
+        .map(|e| e.id)
+        .collect();
+    let (tx, _) = assembly::assign(doc.model(), &walls, Some(ids[0]));
+    doc.commit(tx).unwrap();
+    let t = match &doc.model().get(walls[0]).unwrap().kind {
+        ElementKind::Wall(w) => w.thickness,
+        _ => unreachable!(),
+    };
+    let expected = 6.0 * t + 4.0 * t - t * t;
+    assert!(
+        (filled(doc.model()) - expected).abs() < 1e-6,
+        "{} vs {expected}",
+        filled(doc.model())
+    );
 }

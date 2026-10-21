@@ -30,6 +30,7 @@ pub mod titleblock;
 pub mod transform;
 pub mod units;
 pub mod visibility;
+pub mod walls;
 
 pub use annotation::{
     text_style, DimAxis, DimensionKind, Font, Note, StyleUse, TagShape, Terminator, TextStyle,
@@ -44,8 +45,9 @@ pub use element::{
     Level, Material, Opening, OpeningFrame, OpeningKind, ScheduleCategory, Sheet, Sketch, Slab,
     Source, Tag, Underlay, View, ViewKind, ViewStyle, Viewport, Wall, Workplane,
 };
+pub use element::{LocationLine, WallTop};
 pub use id::ElementId;
-pub use joins::{wall_joins, WallEnds};
+pub use joins::{wall_joins, Gap, WallEnds};
 pub use marks::{marks, material_of};
 pub use members::{Beam, Column, Landing, Profile, Railing, Roof, RoofShape, Stair, StairSide};
 pub use model::Model;

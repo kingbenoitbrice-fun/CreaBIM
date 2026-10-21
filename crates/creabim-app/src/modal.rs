@@ -32,6 +32,8 @@ pub struct LiveEdit {
     originals: Vec<Element>,
     label: String,
     applied: bool,
+    /// Nothing else follows: a wall end dragged free of its joins.
+    free: bool,
 }
 
 impl LiveEdit {
@@ -40,7 +42,14 @@ impl LiveEdit {
             originals,
             label: label.into(),
             applied: false,
+            free: false,
         }
+    }
+
+    /// With `free`, nothing joined to the edited elements follows them.
+    pub fn free(mut self, free: bool) -> Self {
+        self.free = free;
+        self
     }
 
     pub fn label(&self) -> &str {
@@ -57,7 +66,11 @@ impl LiveEdit {
         self.cancel(doc);
         let mut changed = changed;
         // walls joined to a moved wall stretch to stay joined
-        let follow = creabim_core::joins::follow(doc.model(), &mut changed);
+        let follow = if self.free {
+            vec![]
+        } else {
+            creabim_core::joins::follow(doc.model(), &mut changed)
+        };
         let mut tx = Transaction::new(self.label.clone());
         for (o, n) in self.originals.iter().zip(changed) {
             if *o != n {

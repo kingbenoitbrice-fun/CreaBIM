@@ -100,9 +100,27 @@ impl Document {
         if tx.ops.is_empty() {
             return Ok(());
         }
-        tx.apply(&mut self.model)?;
+        let mut tx = tx;
+        self.apply_settled(&mut tx)?;
         self.undo.push(Step::new(tx));
         self.redo.clear();
+        Ok(())
+    }
+
+    /// Apply `tx`, then what keeps walls in place around it (location
+    /// lines, heights tied to levels; see [`crate::walls`]), added to `tx`
+    /// so it all undoes as one step.
+    fn apply_settled(&mut self, tx: &mut Transaction) -> Result<(), ModelError> {
+        let kept = crate::walls::lines_kept(&self.model, tx);
+        tx.apply(&mut self.model)?;
+        let levels = crate::walls::touches_walls(tx);
+        if kept.is_empty() && !levels {
+            return Ok(());
+        }
+        let extra = crate::walls::settle(&self.model, &kept, levels);
+        if !extra.ops.is_empty() && extra.apply(&mut self.model).is_ok() {
+            tx.ops.extend(extra.ops);
+        }
         Ok(())
     }
 
@@ -131,9 +149,11 @@ impl Document {
         label: &str,
         f: impl FnOnce(&mut Element),
     ) -> Result<(), ModelError> {
+        // (walls kept in place by the last edit come after its own op)
         let mergeable = self.redo.is_empty()
             && matches!(self.undo.last(), Some(Step { tx: t, .. }) if t.label == label
-                && matches!(t.ops.as_slice(), [crate::Op::Replace { after, .. }] if after.id == id));
+                && matches!(t.ops.first(), Some(crate::Op::Replace { after, .. }) if after.id == id)
+                && t.ops.iter().all(|o| matches!(o, crate::Op::Replace { .. })));
         if !mergeable {
             return self.edit(id, label, f);
         }
@@ -143,17 +163,7 @@ impl Document {
         if after == current {
             return Ok(());
         }
-        Transaction::new(label)
-            .replace(current, after.clone())
-            .apply(&mut self.model)?;
-        if let Some(step) = self.undo.last_mut() {
-            if let Some(crate::Op::Replace { after: a, .. }) = step.tx.ops.first_mut() {
-                *a = after;
-            }
-            // the step's content changed, so it is a different step to observers
-            step.id = StepId::next();
-        }
-        Ok(())
+        self.commit_merged(Transaction::new(label).replace(current, after))
     }
 
     /// Commit `tx`, folding it into the last step when that has the same
@@ -171,7 +181,8 @@ impl Document {
         if tx.ops.is_empty() {
             return Ok(());
         }
-        tx.apply(&mut self.model)?;
+        let mut tx = tx;
+        self.apply_settled(&mut tx)?;
         let step = self.undo.last_mut().expect("a step to merge into");
         // what each element was before the first edit, and is now
         let mut befores: Vec<Element> = vec![];

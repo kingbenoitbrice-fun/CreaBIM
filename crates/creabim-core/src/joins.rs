@@ -8,10 +8,19 @@
 //! on through the other's finishes to the other's core. Three or more walls
 //! at one point are left as they are.
 //!
+//! Two walls that cross (an X) clean up too: the thicker one (or, as thick,
+//! the one drawn first) runs through and the other stops at its faces on
+//! either side, its core running on to the other's core when both are
+//! layered. That leaves a [`Gap`] in the second wall.
+//!
 //! Ends don't have to coincide exactly: an end within a wall's thickness
 //! of where the centrelines cross still joins, so a wall nudged a little
 //! keeps clean corners. Moving a wall also takes the walls joined to it
 //! along ([`follow`]), as in Revit: their ends stretch to stay joined.
+//!
+//! An end whose join is disallowed ([`Wall::disallow_join`]) joins nothing:
+//! it stays square, butting into what it meets, and the walls it met no
+//! longer follow it (nor it them).
 
 use crate::{assembly, Element, ElementId, ElementKind, Model, Wall};
 use glam::DVec2;
@@ -20,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 /// How far each face of a wall runs past its nominal end, in metres along the
 /// wall. Index 0 is the face on the wall's left (start → end), index 1 the
 /// face on its right. Negative values trim the wall.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct WallEnds {
     pub start: [f64; 2],
     pub end: [f64; 2],
@@ -28,9 +37,119 @@ pub struct WallEnds {
     /// start and at the end: where it meets another layered wall's core
     /// through that wall's finishes.
     pub core: [f64; 2],
+    /// Where walls crossing this one run through it, along it in order.
+    pub gaps: Vec<Gap>,
+}
+
+/// Where another wall runs through a wall: the wall stops at `lo` and
+/// starts again at `hi`, measured along it at its left face (index 0) and
+/// its right face (index 1), so the cut is slanted when the walls cross
+/// at an angle. A layered wall's core runs `core` further into the gap
+/// from each side, to the core of the wall crossing it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Gap {
+    pub lo: [f64; 2],
+    pub hi: [f64; 2],
+    pub core: [f64; 2],
+}
+
+impl Gap {
+    /// Where the gap starts on the line `s` across the wall.
+    pub fn lo_at(&self, wall: &Wall, s: f64) -> f64 {
+        let k = across(wall, s);
+        self.lo[1] + (self.lo[0] - self.lo[1]) * k
+    }
+
+    /// Where the wall starts again on the line `s` across it.
+    pub fn hi_at(&self, wall: &Wall, s: f64) -> f64 {
+        let k = across(wall, s);
+        self.hi[1] + (self.hi[0] - self.hi[1]) * k
+    }
+
+    /// Where the gap starts on the centreline: the `u` that stands for its
+    /// start in drawings and meshes built along the wall.
+    pub fn lo_mid(&self) -> f64 {
+        (self.lo[0] + self.lo[1]) / 2.0
+    }
+
+    pub fn hi_mid(&self) -> f64 {
+        (self.hi[0] + self.hi[1]) / 2.0
+    }
+}
+
+/// One end of a piece of wall: the wall's own start or end, or one side
+/// of a gap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Bound {
+    Start,
+    End,
+    /// The piece stops where gap `i` starts.
+    GapLo(usize),
+    /// The piece starts where gap `i` ends.
+    GapHi(usize),
 }
 
 impl WallEnds {
+    /// Where a mesh or drawing laid out along the wall's centreline puts
+    /// the point `u` along it, on the line `s` across it: the wall's ends
+    /// and the sides of its gaps (given by their centreline `u`) follow
+    /// the joins; anything else stays at `u`. `core` for a layer that runs
+    /// on past the faces.
+    pub fn place(&self, wall: &Wall, u: f64, s: f64, core: bool) -> f64 {
+        if u <= 0.0 {
+            return self.layer_start(wall, s, core);
+        }
+        if u >= wall.length() {
+            return self.layer_end(wall, s, core);
+        }
+        for g in &self.gaps {
+            if (u - g.lo_mid()).abs() < 1e-9 {
+                return g.lo_at(wall, s) + if core { g.core[0] } else { 0.0 };
+            }
+            if (u - g.hi_mid()).abs() < 1e-9 {
+                return g.hi_at(wall, s) - if core { g.core[1] } else { 0.0 };
+            }
+        }
+        u
+    }
+
+    /// The stretches of the wall between its gaps, as centreline `u`
+    /// spans (see [`WallEnds::place`]): the whole wall when nothing crosses it.
+    pub fn solid_spans(&self, wall: &Wall) -> Vec<(f64, f64)> {
+        let mut out = vec![];
+        let mut u = 0.0;
+        for g in &self.gaps {
+            out.push((u, g.lo_mid()));
+            u = g.hi_mid();
+        }
+        out.push((u, wall.length()));
+        out
+    }
+
+    /// Is centreline `u` inside a gap?
+    pub fn in_gap(&self, u: f64) -> bool {
+        self.gaps.iter().any(|g| u > g.lo_mid() && u < g.hi_mid())
+    }
+
+    fn bound_u(&self, wall: &Wall, b: Bound, s: f64) -> f64 {
+        match b {
+            Bound::Start => self.start_at(wall, s),
+            Bound::End => self.end_at(wall, s),
+            Bound::GapLo(i) => self.gaps[i].lo_at(wall, s),
+            Bound::GapHi(i) => self.gaps[i].hi_at(wall, s),
+        }
+    }
+
+    /// How much further the core runs past a piece's bound.
+    fn bound_core(&self, b: Bound) -> f64 {
+        match b {
+            Bound::Start => self.core[0],
+            Bound::End => self.core[1],
+            Bound::GapLo(i) => self.gaps[i].core[0],
+            Bound::GapHi(i) => self.gaps[i].core[1],
+        }
+    }
+
     /// Wall-local `u` where the face on `side` (+1 left, -1 right) ends at the start.
     pub fn start_u(&self, side: f64) -> f64 {
         -self.start[if side > 0.0 { 0 } else { 1 }]
@@ -80,28 +199,51 @@ impl WallEnds {
 
     /// The footprint in wall-local `(u, s)`, counter-clockwise, with the
     /// steps where the core (`core`, its span across the wall) runs on.
+    /// Crossing walls' gaps are left out of it; see [`WallEnds::local_outlines`].
     pub fn local_outline(&self, wall: &Wall, core: (f64, f64)) -> Vec<DVec2> {
+        self.piece_outline(wall, core, Bound::Start, Bound::End)
+    }
+
+    /// The footprint in wall-local `(u, s)` as one outline per piece
+    /// between the gaps crossing walls leave, each like
+    /// [`WallEnds::local_outline`].
+    pub fn local_outlines(&self, wall: &Wall, core: (f64, f64)) -> Vec<Vec<DVec2>> {
+        let mut bounds = vec![Bound::Start];
+        for i in 0..self.gaps.len() {
+            bounds.push(Bound::GapLo(i));
+            bounds.push(Bound::GapHi(i));
+        }
+        bounds.push(Bound::End);
+        bounds
+            .chunks(2)
+            .map(|b| self.piece_outline(wall, core, b[0], b[1]))
+            .collect()
+    }
+
+    fn piece_outline(&self, wall: &Wall, core: (f64, f64), from: Bound, to: Bound) -> Vec<DVec2> {
         let t = wall.thickness / 2.0;
         let p = DVec2::new;
         let (c0, c1) = core;
+        let (f, e) = (self.bound_core(from), self.bound_core(to));
+        let at = |b: Bound, s: f64| self.bound_u(wall, b, s);
         // along the right face, up the far end, back along the left face
         // and down the start
-        let mut out = vec![p(self.start_at(wall, -t), -t), p(self.end_at(wall, -t), -t)];
-        if self.core[1] > 1e-9 {
+        let mut out = vec![p(at(from, -t), -t), p(at(to, -t), -t)];
+        if e > 1e-9 {
             out.extend([
-                p(self.end_at(wall, c0), c0),
-                p(self.layer_end(wall, c0, true), c0),
-                p(self.layer_end(wall, c1, true), c1),
-                p(self.end_at(wall, c1), c1),
+                p(at(to, c0), c0),
+                p(at(to, c0) + e, c0),
+                p(at(to, c1) + e, c1),
+                p(at(to, c1), c1),
             ]);
         }
-        out.extend([p(self.end_at(wall, t), t), p(self.start_at(wall, t), t)]);
-        if self.core[0] > 1e-9 {
+        out.extend([p(at(to, t), t), p(at(from, t), t)]);
+        if f > 1e-9 {
             out.extend([
-                p(self.start_at(wall, c1), c1),
-                p(self.layer_start(wall, c1, true), c1),
-                p(self.layer_start(wall, c0, true), c0),
-                p(self.start_at(wall, c0), c0),
+                p(at(from, c1), c1),
+                p(at(from, c1) - f, c1),
+                p(at(from, c0) - f, c0),
+                p(at(from, c0), c0),
             ]);
         }
         out.dedup_by(|a, b| a.distance(*b) < 1e-9);
@@ -165,10 +307,13 @@ fn meeting<'a>(
         .iter()
         .filter(|o| o.id != me.id && o.wall.level == w.level)
     {
-        for (q, d_out) in [
-            (o.wall.start, o.wall.direction()),
-            (o.wall.end, -o.wall.direction()),
+        for (q, d_out, disallowed) in [
+            (o.wall.start, o.wall.direction(), o.wall.disallow_join[0]),
+            (o.wall.end, -o.wall.direction(), o.wall.disallow_join[1]),
         ] {
+            if disallowed {
+                continue;
+            }
             let reach = w.thickness.max(o.wall.thickness);
             if q.distance(p) < TOL {
                 exact.push((o, d_out));
@@ -203,10 +348,35 @@ fn joinables(model: &Model) -> Vec<Joinable<'_>> {
 pub fn wall_joins(model: &Model) -> HashMap<ElementId, WallEnds> {
     let walls = joinables(model);
     let mut out = HashMap::new();
-    for me in &walls {
+    for (i, me) in walls.iter().enumerate() {
         let w = me.wall;
         let mut ends = WallEnds::default();
+        // walls running through this one, the thicker (or first drawn) winning
+        for (j, o) in walls.iter().enumerate() {
+            if o.id == me.id || o.wall.level != w.level {
+                continue;
+            }
+            let wins = o.wall.thickness > w.thickness + 1e-9
+                || ((o.wall.thickness - w.thickness).abs() <= 1e-9 && j < i);
+            if wins {
+                ends.gaps.extend(crossing_gap(me, o));
+            }
+        }
+        ends.gaps.sort_by(|a, b| a.lo_mid().total_cmp(&b.lo_mid()));
+        // gaps that overlap (walls crossing side by side) become one
+        ends.gaps.dedup_by(|b, a| {
+            if b.lo_mid() <= a.hi_mid() {
+                a.hi = [a.hi[0].max(b.hi[0]), a.hi[1].max(b.hi[1])];
+                a.core[1] = b.core[1];
+                true
+            } else {
+                false
+            }
+        });
         for at_end in [false, true] {
+            if w.disallow_join[usize::from(at_end)] {
+                continue; // a square end, butting into what it meets
+            }
             let (p, other) = if at_end {
                 (w.end, w.start)
             } else {
@@ -322,6 +492,55 @@ fn tee(p: DVec2, d_in: DVec2, me: &Joinable, o: &Joinable) -> Option<((f64, f64,
     Some(((left, right, core), off))
 }
 
+/// The gap wall `o` leaves running through `me`, when the two cross: each
+/// passes right through the other, both its ends well clear of the other
+/// (an end closer than that makes a T or an L instead).
+fn crossing_gap(me: &Joinable, o: &Joinable) -> Option<Gap> {
+    let (w, ow) = (me.wall, o.wall);
+    let (d, od) = (w.direction(), ow.direction());
+    if d.perp_dot(od).abs() < 0.05 {
+        return None;
+    }
+    // both ends of `a` on either side of `b`, further off than a T reaches
+    let clear = |a: &Wall, b: &Wall| {
+        let off = |p: DVec2| (p - b.start).perp_dot(b.direction());
+        let (s0, s1) = (off(a.start), off(a.end));
+        let reach = b.thickness / 2.0 + a.thickness + TOL;
+        s0 * s1 < 0.0 && s0.abs() > reach && s1.abs() > reach
+    };
+    if !clear(w, ow) || !clear(ow, w) {
+        return None;
+    }
+    let (n, on) = (d.perp(), od.perp());
+    let (t, ot) = (w.thickness / 2.0, ow.thickness / 2.0);
+    // where a line `s` across this wall meets one `so` across the other
+    let u = |s: f64, so: f64| meet(w.start + n * s, d, ow.start + on * so, od);
+    let mut lo = [0.0; 2];
+    let mut hi = [0.0; 2];
+    for (k, s) in [t, -t].into_iter().enumerate() {
+        let (a, b) = (u(s, ot)?, u(s, -ot)?);
+        lo[k] = a.min(b);
+        hi[k] = a.max(b);
+    }
+    let len = w.length();
+    if lo.iter().chain(&hi).any(|v| *v <= TOL || *v >= len - TOL) {
+        return None;
+    }
+    // layered through layered: the core runs on to the other's core
+    let core = match (me.core, o.core) {
+        (Some(_), Some((c0, c1))) => {
+            let (f0, f1) = (u(0.0, ot)?, u(0.0, -ot)?);
+            let (k0, k1) = (u(0.0, c0)?, u(0.0, c1)?);
+            [
+                (k0.min(k1) - f0.min(f1)).max(0.0),
+                (f0.max(f1) - k0.max(k1)).max(0.0),
+            ]
+        }
+        _ => [0.0; 2],
+    };
+    Some(Gap { lo, hi, core })
+}
+
 // ---------------------------------------------------------------- following
 
 /// The other walls that follow when `changed` replace their originals in
@@ -355,6 +574,10 @@ pub fn follow(before: &Model, changed: &mut [Element]) -> Vec<(Element, Element)
             };
             let p_new = if at_end { nw.end } else { nw.start };
             let d_in = (p_old - other_old).normalize_or_zero();
+            // an end whose join is disallowed takes nothing along
+            if ow.disallow_join[usize::from(at_end)] {
+                continue;
+            }
             // what this end was joined to, before
             let corner = meeting(&walls, me, p_old, d_in);
             if p_old.distance(p_new) > 1e-9 {
@@ -410,6 +633,9 @@ pub fn follow(before: &Model, changed: &mut [Element]) -> Vec<(Element, Element)
                 continue;
             }
             for oe in [false, true] {
+                if o.wall.disallow_join[usize::from(oe)] {
+                    continue;
+                }
                 let (q, q_other) = if oe {
                     (o.wall.end, o.wall.start)
                 } else {
@@ -528,20 +754,7 @@ mod tests {
         let mut tx = Transaction::new("setup").insert(level);
         let mut ids = vec![];
         for (a, b) in walls {
-            let e = Element::new(
-                "W",
-                ElementKind::Wall(Wall {
-                    level: lid,
-                    start: *a,
-                    end: *b,
-                    thickness: 0.2,
-                    height: 3.0,
-                    base_offset: 0.0,
-                    material: None,
-                    assembly: None,
-                    flip: false,
-                }),
-            );
+            let e = Element::new("W", ElementKind::Wall(Wall::new(lid, *a, *b, 0.2, 3.0)));
             ids.push(e.id);
             tx = tx.insert(e);
         }
@@ -564,7 +777,7 @@ mod tests {
             (DVec2::new(4.0, 0.0), DVec2::new(4.0, 3.0)),
         ]);
         let j = wall_joins(&m);
-        let a = j[&ids[0]];
+        let a = j[&ids[0]].clone();
         assert!((a.end[0] + 0.1).abs() < 1e-9, "inner face shortened");
         assert!((a.end[1] - 0.1).abs() < 1e-9, "outer face extended");
         // both walls' outer faces end at the same corner point
@@ -581,7 +794,7 @@ mod tests {
             (DVec2::new(3.0, 4.0), DVec2::new(3.0, 0.0)),
         ]);
         let j = wall_joins(&m);
-        let b = j[&ids[1]];
+        let b = j[&ids[1]].clone();
         assert!((b.end[0] + 0.1).abs() < 1e-9 && (b.end[1] + 0.1).abs() < 1e-9);
         assert_eq!(j[&ids[0]], WallEnds::default());
     }
@@ -696,5 +909,93 @@ mod tests {
             p.start
         );
         assert!(p.end.distance(DVec2::new(4.0, 4.0)) < 1e-9, "{:?}", p.end);
+    }
+
+    fn set_wall(m: &Model, id: ElementId, f: impl FnOnce(&mut Wall)) -> Model {
+        let mut doc = crate::Document::from_model(m.clone());
+        doc.edit(id, "edit", |e| {
+            if let ElementKind::Wall(w) = &mut e.kind {
+                f(w)
+            }
+        })
+        .unwrap();
+        doc.model().clone()
+    }
+
+    #[test]
+    fn crossing_walls_make_a_cross() {
+        // the first wall runs through; the second stops at its faces
+        let (m, ids) = model(&[
+            (DVec2::new(0.0, 0.0), DVec2::new(6.0, 0.0)),
+            (DVec2::new(3.0, -2.0), DVec2::new(3.0, 2.0)),
+        ]);
+        let j = wall_joins(&m);
+        assert!(j[&ids[0]].gaps.is_empty());
+        let g = j[&ids[1]].gaps.clone();
+        assert_eq!(g.len(), 1);
+        // the second wall runs up from y = -2: the first's faces are at ±0.1
+        assert!((g[0].lo_mid() - 1.9).abs() < 1e-9 && (g[0].hi_mid() - 2.1).abs() < 1e-9);
+        let pieces = j[&ids[1]].local_outlines(&wall(&m, ids[1]), (-0.1, 0.1));
+        assert_eq!(pieces.len(), 2);
+        // the thicker wall wins whatever the order
+        let m = set_wall(&m, ids[1], |w| w.thickness = 0.3);
+        let j = wall_joins(&m);
+        assert_eq!((j[&ids[0]].gaps.len(), j[&ids[1]].gaps.len()), (1, 0));
+        // at an angle the gap is slanted, from face to face
+        let (m, ids) = model(&[
+            (DVec2::new(0.0, 0.0), DVec2::new(6.0, 0.0)),
+            (DVec2::new(1.0, -2.0), DVec2::new(5.0, 2.0)),
+        ]);
+        let j = wall_joins(&m);
+        let g = j[&ids[1]].gaps[0];
+        let w = wall(&m, ids[1]);
+        let face = |u: f64, s: f64| w.start + w.direction() * u + w.direction().perp() * s;
+        for (k, s) in [(0, 0.1), (1, -0.1)] {
+            assert!((face(g.lo[k], s).y + 0.1).abs() < 1e-9);
+            assert!((face(g.hi[k], s).y - 0.1).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn a_wall_ending_on_another_is_a_tee_not_a_cross() {
+        // it stops just past the far face: still trimmed to the near face
+        let (m, ids) = model(&[
+            (DVec2::new(0.0, 0.0), DVec2::new(6.0, 0.0)),
+            (DVec2::new(3.0, -3.0), DVec2::new(3.0, 0.15)),
+        ]);
+        let j = wall_joins(&m);
+        assert!(j[&ids[1]].gaps.is_empty() && j[&ids[0]].gaps.is_empty());
+        assert!((j[&ids[1]].end[0] + 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_disallowed_join_leaves_the_end_square_and_free() {
+        let (m, ids) = model(&[
+            (DVec2::ZERO, DVec2::new(4.0, 0.0)),
+            (DVec2::new(4.0, 0.0), DVec2::new(4.0, 3.0)),
+        ]);
+        let m = set_wall(&m, ids[0], |w| w.disallow_join = [false, true]);
+        let j = wall_joins(&m);
+        assert_eq!(j[&ids[0]], WallEnds::default());
+        // the other wall no longer mitres with it either
+        assert_eq!(j[&ids[1]].start, [0.0, 0.0]);
+        // moving the first wall leaves the second where it is
+        let first = m.get(ids[0]).unwrap();
+        let mut moved = vec![crate::transform::transformed(
+            &m,
+            first,
+            &crate::transform::Xform::Move(glam::DVec3::new(-0.5, 0.0, 0.0)),
+        )
+        .unwrap()];
+        assert!(follow(&m, &mut moved).is_empty());
+        // nor does moving the second take the first along
+        let second = m.get(ids[1]).unwrap();
+        let mut moved = vec![crate::transform::transformed(
+            &m,
+            second,
+            &crate::transform::Xform::Move(glam::DVec3::new(0.5, 0.0, 0.0)),
+        )
+        .unwrap()];
+        assert!(follow(&m, &mut moved).is_empty());
     }
 }

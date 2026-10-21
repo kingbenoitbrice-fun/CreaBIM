@@ -71,6 +71,7 @@ pub fn opening_boxes(o: &Opening, wall: &Wall) -> Vec<PartBox> {
     let (w, h) = (f.width(), f.height());
     let fw = f.frame.width;
     let hd = f.frame.depth / 2.0;
+    let face = wall.thickness / 2.0;
     let mut out = Vec::new();
     let mut add = |part, lo: DVec3, hi: DVec3| {
         if (hi - lo).min_element() > 1e-6 {
@@ -86,6 +87,11 @@ pub fn opening_boxes(o: &Opening, wall: &Wall) -> Vec<PartBox> {
         OpeningKind::Window => {
             // the sill member, then glazing bars splitting the glass
             add(Part::Frame, b(fw, -hd, 0.0), b(w - fw, hd, fw));
+            // the outside sill, from the frame out past the wall's face,
+            // on the side the window faces out of (built facing +y)
+            if face > hd + 0.005 {
+                add(Part::Frame, b(0.0, hd, 0.0), b(w, face + SILL_NOSE, 0.03));
+            }
             let (x0, x1, z0, z1) = (fw, w - fw, fw, h - fw);
             let (na, nu) = (f.frame.panes_across, f.frame.panes_up);
             let bar = fw * 0.6;
@@ -150,7 +156,39 @@ pub fn opening_boxes(o: &Opening, wall: &Wall) -> Vec<PartBox> {
             }
         }
     }
+    // built opening to (facing out of) +y, a door hinged at x = 0: turn it
+    // round as the opening is set
+    let across = !o.faces_left(wall);
+    let along = o.kind == OpeningKind::Door && o.flip_hand;
+    if across || along {
+        for pb in &mut out {
+            let (lo, hi) = (pb.lo, pb.hi);
+            if along {
+                (pb.lo.x, pb.hi.x) = (w - hi.x, w - lo.x);
+            }
+            if across {
+                (pb.lo.y, pb.hi.y) = (-hi.y, -lo.y);
+            }
+        }
+    }
     out
+}
+
+/// How far a window's outside sill runs past the wall's face.
+pub const SILL_NOSE: f64 = 0.04;
+
+/// Which way a door is hung, in words: its hinge side seen from the
+/// side it opens to, and which side that is.
+pub fn door_hand(o: &Opening, wall: &Wall) -> &'static str {
+    // looking at the side it opens to, the wall's start is on the right
+    // when that is the wall's left
+    let hinge_at_start = !o.flip_hand;
+    match (hinge_at_start == o.faces_left(wall), o.flip_facing) {
+        (true, false) => "Right, in",
+        (false, false) => "Left, in",
+        (true, true) => "Right, out",
+        (false, true) => "Left, out",
+    }
 }
 
 /// Opening coordinates → model coordinates, for an opening in `wall`
@@ -263,6 +301,10 @@ mod tests {
             material: None,
             assembly: None,
             flip: false,
+            location: Default::default(),
+            top: Default::default(),
+            disallow_join: [false; 2],
+            attach_top: vec![],
         }
     }
 
@@ -276,6 +318,8 @@ mod tests {
             height: if kind == OpeningKind::Door { 2.1 } else { 1.3 },
             material: None,
             frame,
+            flip_hand: false,
+            flip_facing: false,
         }
     }
 
@@ -287,7 +331,8 @@ mod tests {
     fn a_window_has_a_frame_round_set_back_glass() {
         let o = opening(OpeningKind::Window, OpeningFrame::default());
         let boxes = opening_boxes(&o, &wall());
-        assert_eq!(count(&boxes, Part::Frame), 4);
+        // four frame members and the outside sill
+        assert_eq!(count(&boxes, Part::Frame), 5);
         assert_eq!(count(&boxes, Part::Glass), 1);
         let glass = boxes.iter().find(|b| b.part == Part::Glass).unwrap();
         // the glass fills the frame's inside, behind its faces
@@ -309,8 +354,8 @@ mod tests {
         };
         let boxes = opening_boxes(&opening(OpeningKind::Window, frame), &wall());
         assert_eq!(count(&boxes, Part::Glass), 6);
-        // four frame members, two upright bars, a cross bar in each column
-        assert_eq!(count(&boxes, Part::Frame), 4 + 2 + 3);
+        // the frame and sill, two upright bars, a cross bar in each column
+        assert_eq!(count(&boxes, Part::Frame), 5 + 2 + 3);
         let glass: f64 = boxes
             .iter()
             .filter(|b| b.part == Part::Glass)
@@ -344,5 +389,54 @@ mod tests {
         for b in opening_boxes(&o, &w) {
             assert!(b.lo.y >= -0.025 - 1e-9 && b.hi.y <= 0.025 + 1e-9);
         }
+    }
+
+    fn leaf(o: &Opening) -> PartBox {
+        *opening_boxes(o, &wall())
+            .iter()
+            .find(|b| b.part == Part::Leaf)
+            .unwrap()
+    }
+
+    #[test]
+    fn doors_flip_hand_and_facing() {
+        let mut o = opening(OpeningKind::Door, OpeningFrame::default());
+        // into the interior (the left of an unflipped wall), hinged at its start
+        let l = leaf(&o);
+        assert!(l.hi.y > 0.0 && l.lo.y > -0.01);
+        assert_eq!(door_hand(&o, &wall()), "Right, in");
+        let handle = |o: &Opening| {
+            opening_boxes(o, &wall())
+                .iter()
+                .find(|b| b.part == Part::Handle)
+                .unwrap()
+                .lo
+                .x
+        };
+        assert!(handle(&o) > 0.6, "the handle is away from the hinge");
+        o.flip_hand = true;
+        assert!(handle(&o) < 0.6);
+        assert!((leaf(&o).lo.x - (1.2 - l.hi.x)).abs() < 1e-9);
+        assert_eq!(door_hand(&o, &wall()), "Left, in");
+        o.flip_facing = true;
+        let l = leaf(&o);
+        assert!(l.lo.y < 0.0 && l.hi.y < 0.01, "now to the wall's right");
+        assert_eq!(door_hand(&o, &wall()), "Right, out");
+    }
+
+    #[test]
+    fn a_window_faces_out_of_the_exterior_unless_flipped() {
+        let mut o = opening(OpeningKind::Window, OpeningFrame::default());
+        let sill = |o: &Opening| {
+            opening_boxes(o, &wall())
+                .into_iter()
+                .filter(|b| b.part == Part::Frame)
+                .min_by(|a, b| a.lo.y.min(-a.hi.y).total_cmp(&b.lo.y.min(-b.hi.y)))
+                .unwrap()
+        };
+        // the exterior is the wall's right: the sill runs out past it
+        assert!((sill(&o).lo.y + 0.15 + SILL_NOSE).abs() < 1e-9);
+        o.flip_facing = true;
+        assert!((sill(&o).hi.y - 0.15 - SILL_NOSE).abs() < 1e-9);
     }
 }

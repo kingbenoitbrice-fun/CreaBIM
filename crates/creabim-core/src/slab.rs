@@ -240,6 +240,10 @@ mod tests {
                 material: None,
                 assembly: None,
                 flip: false,
+                location: Default::default(),
+                top: Default::default(),
+                disallow_join: [false; 2],
+                attach_top: vec![],
             }),
         )
     }

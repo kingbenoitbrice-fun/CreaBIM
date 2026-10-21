@@ -148,7 +148,13 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
             w.start = t.point2(w.start);
             w.end = t.point2(w.end);
             match t {
-                Xform::Move(d) => w.base_offset += d.z,
+                Xform::Move(d) => {
+                    w.base_offset += d.z;
+                    // a top tied to a level moves with the wall
+                    if let crate::WallTop::UpToLevel { offset, .. } = &mut w.top {
+                        *offset += d.z;
+                    }
+                }
                 Xform::Stretch { center, factor } => {
                     if factor.z <= 0.0 {
                         return None;

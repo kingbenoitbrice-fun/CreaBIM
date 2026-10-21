@@ -785,19 +785,10 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                 let d = w.direction();
                 let n = DVec2::new(-d.y, d.x);
                 let t = w.thickness / 2.0;
-                let ends = joins.get(&e.id).copied().unwrap_or_default();
-                let len = w.length();
-                // wall-local point; the wall's own ends follow its joins
-                let at = |u: f64, s: f64| {
-                    let u = if u <= 0.0 {
-                        ends.start_u(s)
-                    } else if u >= len {
-                        ends.end_u(w, s)
-                    } else {
-                        u
-                    };
-                    w.start + d * u + n * s
-                };
+                let ends = joins.get(&e.id).cloned().unwrap_or_default();
+                // wall-local point; the wall's own ends and the sides of the
+                // gaps crossing walls leave follow its joins
+                let at = |u: f64, s: f64| w.start + d * ends.place(w, u, s, false) + n * s;
                 let cut_v = cut_height - w.base_offset;
                 if cut_v <= 0.0 || cut_v >= w.height {
                     // wall entirely below or above the cut: show its outline in projection
@@ -823,30 +814,28 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                     }
                 }
                 gaps.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                let mut u = 0.0;
+                // the stretches between crossing walls, less the openings
                 let mut pieces = Vec::new();
-                for (g0, g1) in gaps {
-                    if g0 > u + 1e-9 {
-                        pieces.push((u, g0));
+                for (lo, hi) in ends.solid_spans(w) {
+                    let mut u = lo;
+                    for &(g0, g1) in &gaps {
+                        if g1 <= u || g0 >= hi {
+                            continue;
+                        }
+                        if g0 > u + 1e-9 {
+                            pieces.push((u, g0));
+                        }
+                        u = u.max(g1);
                     }
-                    u = u.max(g1);
-                }
-                if w.length() > u + 1e-9 {
-                    pieces.push((u, w.length()));
+                    if hi > u + 1e-9 {
+                        pieces.push((u, hi));
+                    }
                 }
                 if let Some((_, asm)) = creabim_core::assembly_of(model, e) {
                     // each layer between its own ends: a core runs on at a T
                     for band in creabim_core::assembly::wall_bands(asm, w) {
-                        let at = |u: f64, s: f64| {
-                            let u = if u <= 0.0 {
-                                ends.layer_start(w, s, band.core)
-                            } else if u >= len {
-                                ends.layer_end(w, s, band.core)
-                            } else {
-                                u
-                            };
-                            w.start + d * u + n * s
-                        };
+                        let at =
+                            |u: f64, s: f64| w.start + d * ends.place(w, u, s, band.core) + n * s;
                         for &(a, b) in &pieces {
                             layers.push(CutPiece {
                                 id: e.id,
@@ -1187,12 +1176,27 @@ fn opening_symbol(
             let Some(leaf) = boxes.iter().find(|b| b.part == Part::Leaf) else {
                 return out;
             };
-            // the leaf turned open about its hinge on the frame's face
-            let (u, s) = (c.u0 + leaf.lo.x, leaf.hi.y);
+            // the leaf turned open about its hinge on the face of the frame
+            // on the side it opens to, and the quarter circle it sweeps
+            let left = o.faces_left(w);
+            let side = if left { 1.0 } else { -1.0 };
+            let s = if left { leaf.hi.y } else { leaf.lo.y };
             let r = leaf.hi.x - leaf.lo.x;
-            rect(&mut out, u, u + f.leaf(), s, s + r);
+            let (u, towards) = if o.flip_hand {
+                (c.u0 + leaf.hi.x, -1.0)
+            } else {
+                (c.u0 + leaf.lo.x, 1.0)
+            };
+            rect(&mut out, u, u + towards * f.leaf(), s, s + side * r);
             let hinge = at(u, s);
-            let a0 = (at(u + 1.0, s) - hinge).to_angle();
+            let closed = at(u + towards, s) - hinge;
+            let open = at(u, s + side) - hinge;
+            // arcs run anticlockwise: from whichever of the two comes first
+            let a0 = if closed.perp_dot(open) > 0.0 {
+                closed.to_angle()
+            } else {
+                open.to_angle()
+            };
             out.push(PlanItem::Arc {
                 id,
                 pen: Pen::Symbol,

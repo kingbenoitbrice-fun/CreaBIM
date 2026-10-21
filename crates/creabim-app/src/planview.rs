@@ -224,6 +224,10 @@ pub struct PlanState {
     /// First click of a two-click tool (wall start, slab corner).
     pub pending: Option<DVec2>,
     pub wall_thickness: f64,
+    /// The line new walls are drawn along, and which side their exterior
+    /// is on (the right of the direction drawn, or flipped its left).
+    pub wall_location: creabim_core::LocationLine,
+    pub wall_flip: bool,
     /// Section line handle being dragged, and the line when the drag began.
     drag: Option<(Handle, DVec2, DVec2, DVec2)>,
     /// Dimension being drawn: its points so far, attached and as drawn.
@@ -325,6 +329,8 @@ impl Default for PlanState {
             tool: Tool::Select,
             pending: None,
             wall_thickness: 0.2,
+            wall_location: Default::default(),
+            wall_flip: false,
             drag: None,
             dim: vec![],
             tag_host: None,
@@ -1196,6 +1202,15 @@ pub fn show(
                     b.extend(0.0),
                 );
                 painter.line_segment([xf.to_screen(a), xf.to_screen(b)], accent);
+                if tool == Tool::Wall && matches!(kind, PaneKind::Plan { .. }) {
+                    // the wall's faces about the line it is drawn along
+                    if let Some(faces) = wall_preview(doc.model(), state, a, b) {
+                        let thin = Stroke::new(1.0, accent.color);
+                        for (p, q) in faces {
+                            painter.line_segment([xf.to_screen(p), xf.to_screen(q)], thin);
+                        }
+                    }
+                }
                 let len = a.distance(b);
                 painter.text(
                     xf.to_screen((a + b) / 2.0) + Vec2::new(0.0, -12.0),
@@ -1567,6 +1582,46 @@ pub fn plan_tool(
     r
 }
 
+/// A wall as the Wall tool draws it between two clicks: along its location
+/// line, the exterior to the right of the direction drawn unless flipped.
+pub fn new_wall(
+    model: &creabim_core::Model,
+    level: ElementId,
+    state: &PlanState,
+    a: DVec2,
+    b: DVec2,
+) -> Wall {
+    let height = model.level(level).map_or(3.0, |l| l.height);
+    let mut w = Wall::new(level, a, b, state.wall_thickness, height);
+    w.location = state.wall_location;
+    w.flip = state.wall_flip;
+    creabim_core::walls::set_location_line(model, &mut w, a, b);
+    w
+}
+
+/// The faces of the wall being drawn from `a` to `b`, and where its
+/// exterior is, for the preview.
+pub fn wall_preview(
+    model: &creabim_core::Model,
+    state: &PlanState,
+    a: DVec2,
+    b: DVec2,
+) -> Option<[(DVec2, DVec2); 3]> {
+    if a.distance(b) < 1e-6 {
+        return None;
+    }
+    let w = new_wall(model, ElementId::new(), state, a, b);
+    let n = w.direction().perp() * (w.thickness / 2.0);
+    let out = if w.flip { n } else { -n };
+    let mid = (w.start + w.end) / 2.0;
+    Some([
+        (w.start + n, w.end + n),
+        (w.start - n, w.end - n),
+        // a tick from the middle out of the exterior face
+        (mid + out, mid + out * 2.5),
+    ])
+}
+
 fn plan_click(
     doc: &mut Document,
     level: ElementId,
@@ -1600,21 +1655,8 @@ fn plan_click(
                 Ok(())
             }
             Some(a) if a.distance(p) > 0.05 => {
-                let height = doc.model().level(level).map_or(3.0, |l| l.height);
-                let e = Element::new(
-                    "Wall",
-                    ElementKind::Wall(Wall {
-                        level,
-                        start: a,
-                        end: p,
-                        thickness: state.wall_thickness,
-                        height,
-                        base_offset: 0.0,
-                        material: None,
-                        assembly: None,
-                        flip: false,
-                    }),
-                );
+                let w = new_wall(doc.model(), level, state, a, p);
+                let e = Element::new("Wall", ElementKind::Wall(w));
                 selection.only(e.id);
                 state.pending = Some(p);
                 doc.commit(Transaction::new("Draw wall").insert(e))
@@ -1822,6 +1864,10 @@ fn section_tool(
                         material: None,
                         assembly: None,
                         flip: false,
+                        location: Default::default(),
+                        top: Default::default(),
+                        disallow_join: [false; 2],
+                        attach_top: vec![],
                     }),
                 );
                 selection.only(e.id);
@@ -1874,6 +1920,8 @@ fn section_tool(
                     height,
                     material: None,
                     frame: Default::default(),
+                    flip_hand: false,
+                    flip_facing: false,
                 }),
             );
             selection.only(e.id);
@@ -2962,7 +3010,7 @@ fn dim_snap_guided(
             if w.level != level {
                 continue;
             }
-            let ends = joins.get(&e.id).copied().unwrap_or_default();
+            let ends = joins.get(&e.id).cloned().unwrap_or_default();
             for q in ends.footprint(w) {
                 consider(e.id, q);
             }
@@ -3598,6 +3646,8 @@ fn place_opening(
             height,
             material: None,
             frame: Default::default(),
+            flip_hand: false,
+            flip_facing: false,
         }),
     );
     selection.only(e.id);

@@ -174,11 +174,15 @@ pub fn duplicate(
         let (copies, _) = crate::transform::fresh_copies(model, &originals);
         for c in copies {
             // same offsets on the new level: the copy sits one storey up
-            let c = if level_of(&c.kind) == Some(level) {
+            let mut c = if level_of(&c.kind) == Some(level) {
                 rehost(&c, id, 0.0, 0.0)
             } else {
                 c
             };
+            // a copied wall keeps its height, not the original's top level
+            if let ElementKind::Wall(w) = &mut c.kind {
+                w.top = crate::WallTop::Unconnected;
+            }
             tx = tx.insert(c);
         }
     }
