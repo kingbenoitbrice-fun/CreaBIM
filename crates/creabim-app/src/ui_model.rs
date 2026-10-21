@@ -24,6 +24,7 @@ pub enum Item {
         label: String,
         enabled: bool,
         items: Vec<Item>,
+        icon: &'static str,
     },
 }
 
@@ -46,6 +47,7 @@ impl Item {
             enabled: !items.is_empty(),
             label: label.into(),
             items,
+            icon: "",
         }
     }
 
@@ -86,7 +88,7 @@ impl Item {
     }
 
     pub fn icon(mut self, name: &'static str) -> Self {
-        if let Item::Action { icon, .. } = &mut self {
+        if let Item::Action { icon, .. } | Item::Sub { icon, .. } = &mut self {
             *icon = name;
         }
         self
@@ -113,7 +115,8 @@ impl Item {
                 label,
                 enabled,
                 items,
-            } => json!({ "label": label, "enabled": enabled, "items": list(items) }),
+                icon,
+            } => json!({ "label": label, "enabled": enabled, "items": list(items), "icon": icon }),
         }
     }
 }
@@ -164,6 +167,7 @@ pub fn show(ui: &mut egui::Ui, items: &[Item]) -> Option<String> {
                 label,
                 enabled,
                 items,
+                ..
             } => {
                 ui.add_enabled_ui(*enabled, |ui| {
                     ui.menu_button(label, |ui| {
@@ -187,7 +191,7 @@ mod tests {
         let items = vec![
             Item::new("save", "Save").key("Ctrl+S"),
             Item::Separator,
-            Item::sub("Open recent", vec![Item::new("recent:0", "a.creabim")]),
+            Item::sub("Open recent", vec![Item::new("recent:0", "a.creabim")]).icon("folder"),
             Item::new("snap:0", "Endpoint").checked(true).keep_open(),
         ];
         let j = list(&items);
@@ -195,6 +199,7 @@ mod tests {
         assert_eq!(j[0]["key"], "Ctrl+S");
         assert_eq!(j[1]["sep"], true);
         assert_eq!(j[2]["items"][0]["id"], "recent:0");
+        assert_eq!(j[2]["icon"], "folder");
         assert_eq!(j[3]["checked"], true);
         assert_eq!(j[3]["keep"], true);
     }

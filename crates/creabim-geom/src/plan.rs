@@ -984,6 +984,117 @@ pub fn underlay_items(model: &Model, level: ElementId, cut_height: f64) -> Vec<P
 }
 
 /// Is this the linework of an underlay (drawn faintly, never picked)?
+/// How far inside another element's cut a line must run to count as
+/// hidden by it, so lines along its edge (a slab under a wall) stay as
+/// they are.
+const COVER_MARGIN: f64 = 0.005;
+
+/// Lines of elements lying under another element's cut fill, drawn again
+/// dashed on top: what a view showing hidden elements adds, e.g. a beam
+/// inside a wall or a stud wall in a cavity. Doors and windows, which sit
+/// in their walls' holes, are left as they are.
+pub fn reveal_covered(model: &Model, items: &mut Vec<PlanItem>) {
+    let fills: Vec<(ElementId, &[DVec2], DVec2, DVec2)> = items
+        .iter()
+        .filter_map(|it| match it {
+            PlanItem::Fill { id, points, .. } if points.len() >= 3 => {
+                let lo = points.iter().copied().reduce(DVec2::min)?;
+                let hi = points.iter().copied().reduce(DVec2::max)?;
+                Some((*id, points.as_slice(), lo, hi))
+            }
+            _ => None,
+        })
+        .collect();
+    if fills.is_empty() {
+        return;
+    }
+    let mut segments: Vec<(ElementId, DVec2, DVec2)> = Vec::new();
+    for it in items.iter() {
+        match it {
+            PlanItem::Line {
+                id,
+                pen: Pen::Projection | Pen::Hidden,
+                a,
+                b,
+            } => segments.push((*id, *a, *b)),
+            PlanItem::Polygon {
+                id,
+                pen: Pen::Projection,
+                points,
+            } => {
+                let n = points.len();
+                segments.extend((0..n).map(|i| (*id, points[i], points[(i + 1) % n])));
+            }
+            _ => {}
+        }
+    }
+    let opening = |id: ElementId| {
+        matches!(
+            model.get(id).map(|e| &e.kind),
+            Some(ElementKind::Opening(_))
+        )
+    };
+    let covered = |own: ElementId, p: DVec2| {
+        fills.iter().any(|(id, poly, lo, hi)| {
+            *id != own
+                && p.cmpge(*lo).all()
+                && p.cmple(*hi).all()
+                && point_in(p, poly)
+                && edge_distance(p, poly) > COVER_MARGIN
+        })
+    };
+    let mut out = Vec::new();
+    for (id, a, b) in segments {
+        if opening(id) {
+            continue;
+        }
+        let steps = (a.distance(b) / 0.01).ceil().clamp(4.0, 400.0) as usize;
+        let mut start: Option<f64> = None;
+        let mut last = 0.0;
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
+            let inside = covered(id, a + (b - a) * t);
+            match (inside, start) {
+                (true, None) => start = Some(t),
+                (false, Some(s)) => {
+                    out.push((id, s, last, a, b));
+                    start = None;
+                }
+                _ => {}
+            }
+            if inside {
+                last = t;
+            }
+        }
+        if let Some(s) = start {
+            out.push((id, s, 1.0, a, b));
+        }
+    }
+    items.extend(
+        out.into_iter()
+            .filter(|(_, s, e, ..)| e > s)
+            .map(|(id, s, e, a, b)| PlanItem::Line {
+                id,
+                pen: Pen::Hidden,
+                a: a + (b - a) * s,
+                b: a + (b - a) * e,
+            }),
+    );
+}
+
+/// How far `p` is from the nearest edge of `poly`.
+fn edge_distance(p: DVec2, poly: &[DVec2]) -> f64 {
+    let n = poly.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.length_squared().max(1e-12)).clamp(0.0, 1.0);
+            p.distance(a + ab * t)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
 pub fn is_underlay(item: &PlanItem) -> bool {
     matches!(
         item,

@@ -387,10 +387,14 @@ impl CreaBimApp {
             Item::new("asm.browser", "Assemblies…")
                 .icon("layers-2")
                 .hint("Layered wall, floor and roof types: add, edit their layers, assign"),
-            Item::new("asm.starters", "Add starter assemblies").hint(
+            Item::new("asm.starters", "Add starter assemblies")
+                .icon("plus")
+                .hint(
                 "A cavity wall, a partition, a floor and a pitched roof, with the materials they use",
             ),
-            Item::sub("Assign assembly", assign).enabled(!targets.is_empty()),
+            Item::sub("Assign assembly", assign)
+                .icon("layers-2")
+                .enabled(!targets.is_empty()),
         ]
     }
 
