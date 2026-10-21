@@ -4,14 +4,20 @@
 //! what to align. The element turns to lie parallel to the reference and
 //! moves until its edge is flush with it. In Extend mode the end of a
 //! wall, beam or grid line nearest the click stretches (or trims) to meet
-//! the reference instead. The reference stays picked, so several things
+//! the reference instead. In Stretch mode the face the picked edge stands
+//! for moves to the reference and the rest of the element stays: a wall's
+//! end or side, a slab's or roof's edge, a beam's end, a column's top or
+//! bottom, a door's jamb (see `creabim_core::pushpull`). It works in plans,
+//! sections and elevations. The reference stays picked, so several things
 //! can be aligned to it; Esc lets it go. Every alignment is one undo step.
 
+use crate::modal::Space;
+use crate::paneface;
 use crate::planview::{PaneKind, PlanState, Xf};
 use crate::selection::Selection;
 use crate::snaps;
 use creabim_core::transform::transformed;
-use creabim_core::{Document, ElementId, ElementKind, ModelError, Transaction, Xform};
+use creabim_core::{pushpull, Document, ElementId, ElementKind, ModelError, Transaction, Xform};
 use creabim_geom::PlanItem;
 use eframe::egui::{self, Color32, Stroke};
 use glam::{DVec2, DVec3};
@@ -24,15 +30,19 @@ pub enum AlignMode {
     Align,
     /// Stretch or trim its nearer end to the reference.
     Extend,
+    /// Stretch the face its edge stands for to the reference; the rest of
+    /// it stays.
+    Stretch,
 }
 
 impl AlignMode {
-    pub const ALL: [AlignMode; 2] = [AlignMode::Align, AlignMode::Extend];
+    pub const ALL: [AlignMode; 3] = [AlignMode::Align, AlignMode::Stretch, AlignMode::Extend];
 
     pub fn label(self) -> &'static str {
         match self {
             AlignMode::Align => "Align",
             AlignMode::Extend => "Extend to it",
+            AlignMode::Stretch => "Stretch to it",
         }
     }
 
@@ -41,6 +51,9 @@ impl AlignMode {
             AlignMode::Align => "Turn the edge you pick parallel to the reference and move it flush",
             AlignMode::Extend => {
                 "Stretch or trim the end of a wall, beam or grid line you pick to meet the reference"
+            }
+            AlignMode::Stretch => {
+                "Stretch the edge or face you pick to the reference, the rest staying put: a wall end or side, a slab or roof edge, a beam end, a column top"
             }
         }
     }
@@ -71,6 +84,7 @@ pub fn hint(state: &AlignState) -> &'static str {
         (false, _) => "Align: click the reference line: a wall face, slab edge, guide, grid line or a temporary guide.",
         (true, AlignMode::Align) => "Now click the edge to align to it: the element turns parallel and moves flush. Esc lets go of the reference.",
         (true, AlignMode::Extend) => "Now click near the end of a wall, beam or grid line to stretch it to the reference. Esc lets go of the reference.",
+        (true, AlignMode::Stretch) => "Now click the edge to stretch to it: a wall end or face, slab or roof edge, beam end, column top or bottom. The rest stays put. Esc lets go of the reference.",
     }
 }
 
@@ -166,6 +180,25 @@ pub fn click(
             Some("That is the reference itself: click the edge of something else.".into());
         return Ok(());
     }
+    let stretch = match (state.align.mode, kind) {
+        (AlignMode::Stretch, _) => true,
+        // a section has no ends at an angle to meet: Extend stretches there
+        (AlignMode::Extend, PaneKind::Section { .. }) => true,
+        _ => false,
+    };
+    let grid = matches!(
+        doc.model().get(id).map(|e| &e.kind),
+        Some(ElementKind::Grid(_))
+    );
+    // a grid line has no faces: in a plan its end extends instead
+    if stretch && !(grid && matches!(kind, PaneKind::Plan { .. })) {
+        let r = stretch_to(doc, kind, items, id, (t0, t1), (r0, r1), raw);
+        if r.is_ok() {
+            selection.only(id);
+        }
+        state.status = Some(r.unwrap_or_else(|e| e));
+        return Ok(());
+    }
     let model = doc.model();
     let Some(e) = model.get(id).cloned() else {
         return Ok(());
@@ -212,7 +245,7 @@ pub fn click(
                 }
             }
         }
-        (AlignMode::Extend, PaneKind::Plan { .. }) => {
+        (AlignMode::Extend | AlignMode::Stretch, PaneKind::Plan { .. }) => {
             let mut now = e.clone();
             let ends = match &mut now.kind {
                 ElementKind::Wall(w) => Some((&mut w.start, &mut w.end)),
@@ -222,7 +255,7 @@ pub fn click(
             };
             let Some((a, b)) = ends else {
                 state.status = Some(
-                    "Extend works on walls, beams and grid lines; use Align to move other things."
+                    "Extend works on walls, beams and grid lines; use Stretch for the edges of other things, Align to move them."
                         .into(),
                 );
                 return Ok(());
@@ -241,8 +274,8 @@ pub fn click(
             *end = hit;
             ("Extend to reference", now)
         }
-        (AlignMode::Extend, _) => {
-            state.status = Some("Extend works in plans.".into());
+        (AlignMode::Extend | AlignMode::Stretch, _) => {
+            state.status = Some("Extend works in plans, sections and elevations.".into());
             return Ok(());
         }
         _ => return Ok(()),
@@ -265,6 +298,68 @@ pub fn click(
         "{label}. Click more edges to align them to the same reference; Esc lets it go."
     ));
     Ok(())
+}
+
+/// Stretch the face the edge `t` of `id` stands for (picked at `at`) until
+/// it lies on the reference line `r`, in one undo step; walls joined to a
+/// stretched wall end follow it. The message for the status bar, or why
+/// it can't.
+fn stretch_to(
+    doc: &mut Document,
+    kind: PaneKind,
+    items: &[PlanItem],
+    id: ElementId,
+    (t0, t1): (DVec2, DVec2),
+    (r0, r1): (DVec2, DVec2),
+    at: DVec2,
+) -> Result<String, String> {
+    let model = doc.model();
+    let Some(e) = model.get(id) else {
+        return Err("Click on the edge of what to stretch.".into());
+    };
+    let name = e.name.clone();
+    if !pushpull::can_push(&e.kind) {
+        return Err(format!(
+            "{name} has no faces to stretch; Align moves it instead."
+        ));
+    }
+    let (t, r) = ((t1 - t0).normalize_or_zero(), (r1 - r0).normalize_or_zero());
+    if turn_to(t, r).abs() > 0.05 {
+        return Err("Stretch takes an edge parallel to the reference: turn it with Align first, or use Extend for a wall or beam end at an angle.".into());
+    }
+    let (space, z) = match kind {
+        PaneKind::Plan { level } => (
+            Space::Plan,
+            model.level(level).map_or(0.0, |l| l.elevation),
+        ),
+        PaneKind::Section { start, end } => (Space::Section { start, end }, 0.0),
+        _ => return Err("Stretch works in plans, sections and elevations.".into()),
+    };
+    let f = paneface::face_of_edge(items, space, id, t0, t1, at, z, 0.0);
+    let s = (r0 - t0).dot(f.out);
+    if s.abs() < 1e-9 {
+        return Err("Already there.".into());
+    }
+    let mut changed = pushpull::push_face(model, &pushpull::affected(model, id), &f.pick.face, s)
+        .ok_or_else(|| {
+            format!("{name} can't stretch that way that far: that face doesn't move, or the shape would turn inside out.")
+        })?;
+    let follow = creabim_core::joins::follow(model, &mut changed);
+    let mut tx = Transaction::new("Stretch to reference");
+    for n in changed {
+        if let Some(o) = model.get(n.id).filter(|o| **o != n) {
+            tx = tx.replace(o.clone(), n);
+        }
+    }
+    for (o, n) in follow {
+        tx = tx.replace(o, n);
+    }
+    doc.commit(tx).map_err(|e| format!("Couldn't do that: {e}"))?;
+    let way = if s > 0.0 { "out" } else { "in" };
+    Ok(format!(
+        "Stretched {name} {} {way} to the reference. Click more edges to stretch them to it; Esc lets it go.",
+        crate::units::len(s.abs())
+    ))
 }
 
 /// Draw the picked reference across the pane, and the edge the pointer is
@@ -416,5 +511,152 @@ mod tests {
         assert_eq!(w.end, DVec2::new(20.0, 3.0));
         // the reference stays for the next pick
         assert!(state.align.reference.is_some());
+    }
+
+    /// The rectangle `lo`–`hi` drawn as `id`.s cut outline.
+    fn fill(id: ElementId, lo: DVec2, hi: DVec2) -> PlanItem {
+        PlanItem::Polygon {
+            id,
+            pen: creabim_geom::plan::Pen::Cut,
+            points: vec![lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)],
+        }
+    }
+
+    #[test]
+    fn stretch_moves_a_walls_side_to_the_reference_and_keeps_the_other() {
+        let mut doc = Document::from_model(creabim_core::sample::sample_house());
+        let l = level(&doc);
+        let w = wall(&doc, l, DVec2::new(20.0, 0.0), DVec2::new(26.0, 0.0));
+        let (id, t) = (w.id, match &w.kind {
+            ElementKind::Wall(w) => w.thickness,
+            _ => unreachable!(),
+        });
+        doc.commit(Transaction::new("Wall").insert(w)).unwrap();
+        let mut state = PlanState::default();
+        let mut sel = Selection::default();
+        state.align.mode = AlignMode::Stretch;
+        let view = ElementId::new();
+        // a reference 0.5 north of the wall's north face
+        let north = t / 2.0;
+        state.align.reference = Some((
+            view,
+            DVec2::new(0.0, north + 0.5),
+            DVec2::new(1.0, north + 0.5),
+            None,
+        ));
+        let items = vec![fill(id, DVec2::new(20.0, -north), DVec2::new(26.0, north))];
+        click(
+            &mut doc,
+            view,
+            PaneKind::Plan { level: l },
+            &items,
+            DVec2::new(23.0, north),
+            None,
+            0.05,
+            0.01,
+            &mut state,
+            &mut sel,
+        )
+        .unwrap();
+        let ElementKind::Wall(after) = doc.model().get(id).unwrap().kind.clone() else {
+            unreachable!()
+        };
+        // thicker by the gap, its south face where it was
+        assert!((after.thickness - t - 0.5).abs() < 1e-9);
+        assert!((after.start.y - after.thickness / 2.0 + north).abs() < 1e-9);
+        assert_eq!(doc.undo_label(), Some("Stretch to reference"));
+        // and its east end to a line at x = 28, in the same mode
+        state.align.reference = Some((view, DVec2::new(28.0, 0.0), DVec2::new(28.0, 1.0), None));
+        let n = after.thickness / 2.0 + after.start.y;
+        let s = after.start.y - after.thickness / 2.0;
+        let items = vec![fill(id, DVec2::new(20.0, s), DVec2::new(26.0, n))];
+        click(
+            &mut doc,
+            view,
+            PaneKind::Plan { level: l },
+            &items,
+            DVec2::new(26.0, after.start.y),
+            None,
+            0.05,
+            0.01,
+            &mut state,
+            &mut sel,
+        )
+        .unwrap();
+        let ElementKind::Wall(after) = &doc.model().get(id).unwrap().kind else {
+            unreachable!()
+        };
+        assert!((after.end.x - 28.0).abs() < 1e-9);
+        assert!((after.start.x - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stretch_in_a_section_drops_a_slabs_underside_to_a_line() {
+        let mut doc = Document::from_model(creabim_core::sample::sample_house());
+        let (id, s) = doc
+            .model()
+            .iter()
+            .find_map(|e| match &e.kind {
+                ElementKind::Slab(s) => Some((e.id, s.clone())),
+                _ => None,
+            })
+            .unwrap();
+        let z0 = doc.model().level(s.level).unwrap().elevation;
+        let (top, bottom) = (s.top(z0), s.top(z0) - s.thickness);
+        // a section along x through the slab: it is cut from x = 0 to 10
+        let kind = PaneKind::Section {
+            start: DVec2::new(0.0, 3.0),
+            end: DVec2::new(10.0, 3.0),
+        };
+        let items = vec![fill(id, DVec2::new(0.0, bottom), DVec2::new(10.0, top))];
+        let mut state = PlanState::default();
+        let mut sel = Selection::default();
+        state.align.mode = AlignMode::Stretch;
+        let view = ElementId::new();
+        state.align.reference = Some((
+            view,
+            DVec2::new(-5.0, bottom - 0.3),
+            DVec2::new(15.0, bottom - 0.3),
+            None,
+        ));
+        click(
+            &mut doc,
+            view,
+            kind,
+            &items,
+            DVec2::new(5.0, bottom),
+            None,
+            0.05,
+            0.01,
+            &mut state,
+            &mut sel,
+        )
+        .unwrap();
+        let ElementKind::Slab(after) = &doc.model().get(id).unwrap().kind else {
+            unreachable!()
+        };
+        assert!((after.thickness - s.thickness - 0.3).abs() < 1e-9);
+        assert!((after.top(z0) - top).abs() < 1e-9);
+        // and its east edge out to x = 12 in the same section
+        state.align.reference = Some((view, DVec2::new(12.0, 0.0), DVec2::new(12.0, 1.0), None));
+        let items = vec![fill(id, DVec2::new(0.0, bottom - 0.3), DVec2::new(10.0, top))];
+        click(
+            &mut doc,
+            view,
+            kind,
+            &items,
+            DVec2::new(10.0, top - 0.1),
+            None,
+            0.05,
+            0.01,
+            &mut state,
+            &mut sel,
+        )
+        .unwrap();
+        let ElementKind::Slab(after) = &doc.model().get(id).unwrap().kind else {
+            unreachable!()
+        };
+        let east = after.boundary.iter().map(|p| p.x).fold(f64::MIN, f64::max);
+        assert!((east - 12.0).abs() < 1e-9, "{:?}", after.boundary);
     }
 }

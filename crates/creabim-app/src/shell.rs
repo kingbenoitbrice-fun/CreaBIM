@@ -88,7 +88,7 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Column => "rectangle-vertical",
         Tool::Beam => "rectangle-horizontal",
         Tool::Roof => "tent",
-        Tool::Stair => "chart-no-axes-column-increasing",
+        Tool::Stair => "stair",
         Tool::Railing => "fence",
         Tool::Level => "level",
         Tool::Align => "align-tool",

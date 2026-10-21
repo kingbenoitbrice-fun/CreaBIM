@@ -848,6 +848,36 @@ pub fn show(
             let p = pane_to_model(space, s.p.truncate(), from.map_or(plane_z, |f| f.z));
             Some((p, snaps::Snap { p, ..s }))
         };
+        // Move on faces: the edge under the pointer stands for the face
+        // through it, square to the paper
+        let pushable: std::collections::HashSet<ElementId> = if state.modal.is_some() {
+            let model = doc.model();
+            plan.items
+                .iter()
+                .map(|i| i.id())
+                .filter(|id| {
+                    model
+                        .get(*id)
+                        .is_some_and(|e| creabim_core::pushpull::can_push(&e.kind))
+                })
+                .collect()
+        } else {
+            Default::default()
+        };
+        let pick_face = |pos: Pos2| {
+            let takes = |id: ElementId| pushable.contains(&id);
+            let px = 1.0 / xf.scale as f64;
+            crate::paneface::face_at(
+                &plan.items,
+                space,
+                xf.to_world(pos),
+                6.0 * px,
+                plane_z,
+                3.0 * px,
+                &takes,
+            )
+            .map(|f| f.pick)
+        };
         let map = PaneMap {
             to_model: &to_model,
             project: &project,
@@ -858,7 +888,7 @@ pub fn show(
                 _ => -DVec3::Z,
             },
             snap: &snap_fn,
-            pick_face: None,
+            pick_face: Some(&pick_face),
         };
         let pick = |p: Pos2| hit_test(&plan.items, xf.to_world(p), 6.0 / xf.scale as f64, mm);
         let edits = keyboard_edits(

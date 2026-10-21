@@ -9,7 +9,9 @@ names+="""square""".split()
 # for the annotation tools
 names+="""drafting-compass radius diameter message-square-text arrow-up-right""".split()
 # for the building element tools
-names+="""rectangle-vertical rectangle-horizontal tent chart-no-axes-column-increasing fence corner-down-right""".split()
+names+="""rectangle-vertical rectangle-horizontal tent fence corner-down-right""".split()
+# flipping a section or elevation round
+names+="""flip-horizontal-2""".split()
 # snap markers, drawn like the markers in the views (not from Lucide)
 CUSTOM={
  "snap-endpoint": '<rect x="6" y="6" width="12" height="12" />',
@@ -32,7 +34,9 @@ CUSTOM={
  "anno-styles": '<path d="M3 17h12" /> <path d="m3 14 3 6M12 14l3 6" /> <circle cx="18" cy="17" r="2" /> <path d="M5 4h14M12 4v7" />',
  "sheet-template": '<rect x="3" y="4" width="18" height="16" /> <path d="M11 14h10M11 14v6M16 14v6" />',
  # X-ray and hidden elements: a solid with what is inside it, dashed
- "xray": '<rect x="3" y="4" width="18" height="16" rx="2" /> <rect x="8" y="9" width="8" height="6" stroke-dasharray="2 2" />',
+ # the Stair tool: a flight seen from the side, its handrail on posts
+ "stair": '<path d="M3 21h4v-4h4v-4h4V9h4V5h2v16z" /> <path d="M3 14 14 3M7 17v-7M11 13V6" />',
+ "xray":'<rect x="3" y="4" width="18" height="16" rx="2" /> <rect x="8" y="9" width="8" height="6" stroke-dasharray="2 2" />',
 }
 out={}
 for n in names:

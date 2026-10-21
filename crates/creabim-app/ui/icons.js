@@ -88,9 +88,9 @@ window.ICONS = {
 "rectangle-vertical": "<rect width=\"12\" height=\"20\" x=\"6\" y=\"2\" rx=\"2\" />",
 "rectangle-horizontal": "<rect width=\"20\" height=\"12\" x=\"2\" y=\"6\" rx=\"2\" />",
 "tent": "<path d=\"M3.5 21 14 3\" /> <path d=\"M20.5 21 10 3\" /> <path d=\"M15.5 21 12 15l-3.5 6\" /> <path d=\"M2 21h20\" />",
-"chart-no-axes-column-increasing": "<line x1=\"12\" x2=\"12\" y1=\"20\" y2=\"10\" /> <line x1=\"18\" x2=\"18\" y1=\"20\" y2=\"4\" /> <line x1=\"6\" x2=\"6\" y1=\"20\" y2=\"16\" />",
 "fence": "<path d=\"M4 3 2 5v15c0 .6.4 1 1 1h2c.6 0 1-.4 1-1V5Z\" /> <path d=\"M6 8h4\" /> <path d=\"M6 18h4\" /> <path d=\"m12 3-2 2v15c0 .6.4 1 1 1h2c.6 0 1-.4 1-1V5Z\" /> <path d=\"M14 8h4\" /> <path d=\"M14 18h4\" /> <path d=\"m20 3-2 2v15c0 .6.4 1 1 1h2c.6 0 1-.4 1-1V5Z\" />",
 "corner-down-right": "<polyline points=\"15 10 20 15 15 20\" /> <path d=\"M4 4v7a4 4 0 0 0 4 4h12\" />",
+"flip-horizontal-2": "<path d=\"m3 7 5 5-5 5V7\" /> <path d=\"m21 7-5 5 5 5V7\" /> <path d=\"M12 20v2\" /> <path d=\"M12 14v2\" /> <path d=\"M12 8v2\" /> <path d=\"M12 2v2\" />",
 "snap-endpoint": "<rect x=\"6\" y=\"6\" width=\"12\" height=\"12\" />",
 "snap-midpoint": "<path d=\"M12 5.5 19.5 18.5h-15z\" />",
 "snap-intersection": "<path d=\"m6 6 12 12M18 6 6 18\" />",
@@ -107,5 +107,6 @@ window.ICONS = {
 "snap-guides": "<path d=\"M2 16h20M7 21 19 3\" stroke-dasharray=\"2.5 2\" /> <circle cx=\"13.7\" cy=\"12\" r=\"2.5\" />",
 "anno-styles": "<path d=\"M3 17h12\" /> <path d=\"m3 14 3 6M12 14l3 6\" /> <circle cx=\"18\" cy=\"17\" r=\"2\" /> <path d=\"M5 4h14M12 4v7\" />",
 "sheet-template": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" /> <path d=\"M11 14h10M11 14v6M16 14v6\" />",
+"stair": "<path d=\"M3 21h4v-4h4v-4h4V9h4V5h2v16z\" /> <path d=\"M3 14 14 3M7 17v-7M11 13V6\" />",
 "xray": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\" /> <rect x=\"8\" y=\"9\" width=\"8\" height=\"6\" stroke-dasharray=\"2 2\" />"
 };
