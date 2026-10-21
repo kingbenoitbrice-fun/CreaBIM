@@ -26,6 +26,8 @@ CUSTOM={
  # the project browser's sort button, and alignment tracking in the snap list
  "sort-by-level": '<path d="M3 6h8M3 12h6M3 18h4" /> <path d="M17 4v16M13 16l4 4 4-4" />',
  "snap-track": '<path d="M3 8h18M16 3v18" stroke-dasharray="2.5 2.5" /> <circle cx="16" cy="8" r="2" />',
+ # X-ray and hidden elements: a solid with what is inside it, dashed
+ "xray": '<rect x="3" y="4" width="18" height="16" rx="2" /> <rect x="8" y="9" width="8" height="6" stroke-dasharray="2 2" />',
 }
 out={}
 for n in names:

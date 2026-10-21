@@ -348,12 +348,15 @@ html[data-pane="top"] body {
 .tool-hint { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 auto; font-size: 12px; }
 
 /* Choices of which one is on, side by side. */
-.seg { display: inline-flex; border-radius: 7px; box-shadow: inset 0 0 0 1px var(--border); background: var(--panel-2); padding: 2px; gap: 2px; }
+.seg { display: inline-flex; border-radius: 7px; box-shadow: inset 0 0 0 1px var(--border-2); background: var(--panel-2); padding: 2px; gap: 2px; }
 .seg button { height: 22px; padding: 0 9px; border-radius: 5px; color: var(--text-2); white-space: nowrap; font-size: 12px; }
 .seg button:hover { background: var(--raise); color: var(--text); }
 .seg button.on { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent-ring); }
 
-/* ---------- controls (top options and status bar) ---------- */
+/* ---------- controls (top options and status bar) ----------
+   Every control shows what it is: buttons and toggles have a fill and an
+   outline, dropdowns a field with a chevron, number boxes a box to type
+   in. Hovering strengthens the outline. */
 
 .field {
   height: 30px;
@@ -361,12 +364,12 @@ html[data-pane="top"] body {
   align-items: center;
   border-radius: 7px;
   background: var(--panel-2);
-  box-shadow: inset 0 0 0 1px var(--border);
+  box-shadow: inset 0 0 0 1px var(--border-2);
   padding: 0 8px 0 0;
   white-space: nowrap;
 }
 
-.field:hover { box-shadow: inset 0 0 0 1px var(--border-2); }
+.field:hover { box-shadow: inset 0 0 0 1px var(--muted); }
 .field:focus-within { box-shadow: inset 0 0 0 1px var(--accent-ring), 0 0 0 3px var(--accent-soft); }
 
 .field .k {
@@ -384,8 +387,11 @@ html[data-pane="top"] body {
   font: inherit;
   font-variant-numeric: tabular-nums;
   color: var(--text);
-  background: none;
+  background: var(--panel);
   border: 0;
+  border-radius: 4px;
+  padding: 2px 4px;
+  box-shadow: inset 0 0 0 1px var(--border);
   outline: none;
   text-align: right;
   user-select: text;
@@ -402,17 +408,17 @@ html[data-pane="top"] body {
   padding: 0 8px 0 9px;
   border-radius: 7px;
   background: var(--panel-2);
-  box-shadow: inset 0 0 0 1px var(--border);
+  box-shadow: inset 0 0 0 1px var(--border-2);
   white-space: nowrap;
   max-width: 260px;
 }
 
-.dd:hover { box-shadow: inset 0 0 0 1px var(--border-2); background: var(--raise); }
+.dd:hover { box-shadow: inset 0 0 0 1px var(--muted); background: var(--raise); }
 .dd.open { box-shadow: inset 0 0 0 1px var(--accent-ring); }
 .dd .k { color: var(--muted); font-size: 11.5px; }
 .dd .v { overflow: hidden; text-overflow: ellipsis; }
 .dd svg.i { color: var(--muted); }
-.dd svg.chev { width: 14px; height: 14px; color: var(--faint); }
+.dd svg.chev { width: 14px; height: 14px; color: var(--muted); }
 
 .dd.big { height: 30px; font-weight: 550; background: var(--raise); }
 
@@ -424,11 +430,13 @@ html[data-pane="top"] body {
   padding: 0 11px;
   border-radius: 7px;
   background: var(--raise);
+  box-shadow: inset 0 0 0 1px var(--border-2), var(--shadow);
   color: var(--text-2);
   white-space: nowrap;
 }
 
-.btn:hover { background: var(--raise-2); color: var(--text); }
+.btn:hover { background: var(--raise-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--muted); }
+.btn:active { box-shadow: inset 0 0 0 1px var(--accent-ring); }
 
 .toggle {
   height: 30px;
@@ -437,12 +445,13 @@ html[data-pane="top"] body {
   gap: 6px;
   padding: 0 10px;
   border-radius: 7px;
-  color: var(--muted);
+  color: var(--text-2);
+  box-shadow: inset 0 0 0 1px var(--border-2);
   white-space: nowrap;
 }
 
-.toggle:hover { background: var(--raise); color: var(--text-2); }
-.toggle.on { color: var(--accent-text); background: var(--accent-soft); }
+.toggle:hover { background: var(--raise); color: var(--text); box-shadow: inset 0 0 0 1px var(--muted); }
+.toggle.on { color: var(--accent-text); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-ring); }
 
 .ctl-label { color: var(--muted); font-size: 11.5px; margin: 0 2px 0 6px; white-space: nowrap; }
 
@@ -574,8 +583,8 @@ html[data-pane="status"] body { background: var(--bg); border-top: 1px solid var
 .status .msg span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status .pulse { width: 7px; height: 7px; border-radius: 4px; background: var(--good); flex: none; box-shadow: 0 0 0 3px rgba(62, 207, 142, 0.15); }
 .status .dd, .status .toggle, .status .btn { height: 24px; font-size: 12px; }
-.status .dd { background: transparent; box-shadow: none; }
-.status .dd:hover { background: var(--raise); }
+.status .dd { background: transparent; box-shadow: inset 0 0 0 1px var(--border); }
+.status .dd:hover { background: var(--raise); box-shadow: inset 0 0 0 1px var(--border-2); }
 .status .meta { color: var(--faint); padding: 0 8px; white-space: nowrap; }
 
 /* ---------- popup menus ---------- */
@@ -691,8 +700,9 @@ html[data-pane="popup"] body {
 html[data-pane="nav"] body { background: var(--panel); border: 1px solid var(--border-2); border-radius: 0; }
 .nav { height: 100%; display: flex; align-items: center; gap: 1px; padding: 0 3px; }
 .nav .ibtn { width: 28px; height: 26px; }
-.nav .dd { height: 26px; background: transparent; box-shadow: none; padding: 0 6px; }
-.nav .dd:hover { background: var(--raise); }
+.nav .dd { height: 26px; background: transparent; box-shadow: inset 0 0 0 1px var(--border); padding: 0 6px; }
+.nav .dd:hover { background: var(--raise); box-shadow: inset 0 0 0 1px var(--border-2); }
+.nav .dd.on { color: var(--accent-text); background: var(--accent-soft); }
 
 /* lengths in feet and inches need more room */
 .field input.len { width: 78px; }

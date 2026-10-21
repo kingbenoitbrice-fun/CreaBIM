@@ -164,6 +164,14 @@ pub struct Settings {
     /// The ground grid in the 3D view, and its spacing in metres.
     pub ground_grid: bool,
     pub ground_grid_spacing: f64,
+    /// The kinds of element the 3D view leaves out (grids, annotation,
+    /// guides…), from its Visibility settings.
+    pub hidden_3d: Vec<creabim_core::Category>,
+    /// The 3D view in X-ray: walls, slabs, roofs and masses see-through, so
+    /// what is inside them shows.
+    pub xray: bool,
+    /// Guides hidden everywhere (they are kept, and come back when shown).
+    pub guides_hidden: bool,
 }
 
 impl Default for Settings {
@@ -176,6 +184,9 @@ impl Default for Settings {
             single_shows_3d: true,
             ground_grid: true,
             ground_grid_spacing: 1.0,
+            hidden_3d: vec![],
+            xray: false,
+            guides_hidden: false,
         }
     }
 }
@@ -189,6 +200,10 @@ impl Settings {
     }
 
     pub fn store(&self) {
+        // tests change settings without touching the user's own
+        if cfg!(test) {
+            return;
+        }
         if let Some(dir) = settings_dir() {
             let _ = std::fs::create_dir_all(&dir);
             if let Ok(t) = serde_json::to_string_pretty(self) {
@@ -255,6 +270,23 @@ mod tests {
         assert!(!s.single_view);
         assert!(s.ground_grid);
         assert_eq!(s.ground_grid_spacing, 1.0);
+        assert!(s.hidden_3d.is_empty() && !s.xray && !s.guides_hidden);
+    }
+
+    #[test]
+    fn the_3d_views_visibility_round_trips_through_the_settings() {
+        let s = Settings {
+            hidden_3d: vec![
+                creabim_core::Category::Grids,
+                creabim_core::Category::Guides,
+            ],
+            xray: true,
+            guides_hidden: true,
+            ground_grid_spacing: 1.2,
+            ..Default::default()
+        };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
     }
 
     #[test]

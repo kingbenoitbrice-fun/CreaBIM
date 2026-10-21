@@ -123,7 +123,7 @@ impl Tool {
             Tool::Section => "Click two points for the section line. It looks to the left of the direction you draw.",
             Tool::Elevation => "Click two points for the elevation line, outside the building. It looks to the left of the direction you draw.",
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to wall corners, door and window edges and levels, and stay attached to them.",
-            Tool::Tag => "Click a door, window, wall or slab, then click where its tag goes.",
+            Tool::Tag => "Click a door, window, wall, slab, roof, column, beam, stair or railing, then click where its tag goes.",
             Tool::Angle => "Click two lines (wall faces, edges) for the angle between them, or click the corner and a point on each arm. Then click where the arc goes.",
             Tool::Radius => "Click an arc or circle, or three points on one. Then click where the dimension line goes.",
             Tool::Diameter => "Click an arc or circle, or three points on one. Then click where the dimension line goes.",
@@ -500,8 +500,41 @@ pub fn show(
     if style.decorations && kind != PaneKind::Schedule {
         draw_metric_grid(&painter, &xf);
     }
+    // the slabs of a plan's level: a light fill under the rest, stronger
+    // where the pointer is, so they can be seen and clicked
+    let slabs = match kind {
+        PaneKind::Plan { level } => level_slabs(doc.model(), level, plan),
+        _ => vec![],
+    };
+    let hovered_slab = response
+        .hover_pos()
+        .filter(|_| tool == Tool::Select || tool == Tool::Tag)
+        .filter(|_| state.modal.is_none() && !response.dragged())
+        .and_then(|p| {
+            let w = xf.to_world(p);
+            let on = hit_test(&plan.items, w, 6.0 / xf.scale as f64, mm);
+            match on {
+                Some(id) => slabs.iter().any(|(s, _)| *s == id).then_some(id),
+                None => slab_at(&slabs, w),
+            }
+        });
+    for (id, points) in &slabs {
+        let fill = if selection.contains(*id) {
+            SLAB_SELECTED
+        } else if hovered_slab == Some(*id) {
+            SLAB_HOVER
+        } else {
+            SLAB_FILL
+        };
+        fill_polygon(&painter, &xf, points, fill);
+    }
     for item in &plan.items {
         draw_item(&painter, &xf, item, selection.contains(item.id()), mm);
+    }
+    if let Some((_, points)) = slabs.iter().find(|(id, _)| Some(*id) == hovered_slab) {
+        // its edge over the walls that sit on it
+        let pts: Vec<Pos2> = points.iter().map(|p| xf.to_screen(*p)).collect();
+        painter.add(egui::Shape::closed_line(pts, Stroke::new(2.0, SLAB_EDGE)));
     }
     crate::annotate::draw_grips(&painter, &xf, &plan.items, selection);
     crate::sketch::draw_marks_in_pane(&painter, doc.model(), selection.active, kind, &xf);
@@ -1501,7 +1534,18 @@ fn ray_pick(doc: &Document, view: ElementId, kind: PaneKind, p: DVec2) -> Option
     };
     let model = creabim_core::visibility::without(doc.model(), &hidden);
     let (o, d) = match kind {
-        PaneKind::Plan { .. } | PaneKind::Schedule => return None,
+        // in a plan, a click inside a floor picks its slab
+        PaneKind::Plan { level } => {
+            let slabs: Vec<(ElementId, Vec<DVec2>)> = model
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    ElementKind::Slab(s) if s.level == level => Some((e.id, s.outline())),
+                    _ => None,
+                })
+                .collect();
+            return slab_at(&slabs, p);
+        }
+        PaneKind::Schedule => return None,
         PaneKind::Section { start, end } => {
             let look = (end - start).normalize_or_zero().perp();
             let xy = PaneKind::section_point(start, end, p);
@@ -2804,17 +2848,13 @@ fn tag_tool(
     let Some(v) = v else { return Ok(()) };
     match state.tag_host.take() {
         None => {
-            let taggable = picked.filter(|id| {
-                matches!(
-                    doc.model().get(*id).map(|e| &e.kind),
-                    Some(
-                        ElementKind::Opening(_)
-                            | ElementKind::Wall(_)
-                            | ElementKind::Slab(_)
-                            | ElementKind::FreeMesh(_)
-                    )
-                )
-            });
+            let taggable = picked.filter(|id| is_taggable(doc.model(), *id));
+            if picked.is_some() && taggable.is_none() {
+                state.status = Some(
+                    "That can't take a tag: pick a door, window, wall, slab, roof, column, beam, stair or railing."
+                        .into(),
+                );
+            }
             state.tag_host = taggable;
             Ok(())
         }
@@ -2833,6 +2873,25 @@ fn tag_tool(
             doc.commit(Transaction::new("Add tag").insert(e))
         }
     }
+}
+
+/// Can the Tag tool tag element `id`? Building elements can; views,
+/// annotation and the like can't.
+pub fn is_taggable(model: &creabim_core::Model, id: ElementId) -> bool {
+    matches!(
+        model.get(id).map(|e| &e.kind),
+        Some(
+            ElementKind::Opening(_)
+                | ElementKind::Wall(_)
+                | ElementKind::Slab(_)
+                | ElementKind::FreeMesh(_)
+                | ElementKind::Roof(_)
+                | ElementKind::Column(_)
+                | ElementKind::Beam(_)
+                | ElementKind::Stair(_)
+                | ElementKind::Railing(_)
+        )
+    ) && annotate::centre(model, id).is_some()
 }
 
 /// Tag every door and window in a view that has no tag there yet, just
@@ -3033,6 +3092,48 @@ fn snap(
 }
 
 /// Fill a possibly concave polygon.
+/// A slab's fill in its level's plan, under the pointer, and selected.
+const SLAB_FILL: Color32 = Color32::from_rgba_unmultiplied_const(70, 110, 170, 30);
+const SLAB_HOVER: Color32 = Color32::from_rgba_unmultiplied_const(60, 110, 200, 70);
+const SLAB_SELECTED: Color32 = Color32::from_rgba_unmultiplied_const(240, 140, 50, 60);
+/// The edge of the slab under the pointer.
+const SLAB_EDGE: Color32 = Color32::from_rgb(60, 110, 200);
+
+/// The slabs of `level` the plan's drawing shows in projection (not cut
+/// through), with their outlines.
+fn level_slabs(
+    model: &creabim_core::Model,
+    level: ElementId,
+    plan: &Drawing,
+) -> Vec<(ElementId, Vec<DVec2>)> {
+    plan.items
+        .iter()
+        .filter_map(|it| match it {
+            PlanItem::Polygon {
+                id,
+                pen: Pen::Projection,
+                points,
+            } if matches!(
+                model.get(*id).map(|e| &e.kind),
+                Some(ElementKind::Slab(s)) if s.level == level
+            ) =>
+            {
+                Some((*id, points.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The slab whose outline holds `p`; the smallest when they overlap.
+fn slab_at(slabs: &[(ElementId, Vec<DVec2>)], p: DVec2) -> Option<ElementId> {
+    slabs
+        .iter()
+        .filter(|(_, pts)| point_in_polygon(p, pts))
+        .min_by(|a, b| signed_area(&a.1).abs().total_cmp(&signed_area(&b.1).abs()))
+        .map(|(id, _)| *id)
+}
+
 fn fill_polygon(painter: &egui::Painter, xf: &Xf, points: &[DVec2], fill: Color32) {
     let mut mesh = egui::Mesh::default();
     for p in points {
