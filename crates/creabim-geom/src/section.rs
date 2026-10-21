@@ -381,10 +381,18 @@ fn hidden_lines(
 
 /// The live drawing of a view element, annotations included.
 pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
+    view_drawing_with(model, view, false)
+}
+
+/// [`view_drawing`], with `xray` drawing what is hidden inside other
+/// elements whether or not the view shows it: for a view seen in X-ray
+/// while working, which its sheets don't follow.
+pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<Drawing> {
     let e = model.get(view)?;
     let ElementKind::View(v) = &e.kind else {
         return None;
     };
+    let reveal = v.show_hidden || xray;
     let shaded = v.style == creabim_core::ViewStyle::Shaded;
     // what the view leaves out: gone from the model it is drawn from, and
     // from the drawing (for what has to stay in that model, like levels)
@@ -401,7 +409,7 @@ pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
     let mut d = match &v.kind {
         creabim_core::ViewKind::Plan { level, cut_height } => {
             let mut d = crate::plan_view(model, *level, *cut_height);
-            if v.show_hidden {
+            if reveal {
                 crate::plan::reveal_covered(model, &mut d.items);
             }
             // another level traced underneath, drawn first so it stays below
@@ -417,24 +425,18 @@ pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
             end,
             depth,
             cut,
-        } => section_view_with(
-            model,
-            *start,
-            *end,
-            *depth,
-            *cut,
-            shaded,
-            v.scale,
-            v.show_hidden,
-        ),
+        } => section_view_with(model, *start, *end, *depth, *cut, shaded, v.scale, reveal),
         creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
-            axonometric_view_with(model, *azimuth, *altitude, shaded, v.show_hidden)
+            axonometric_view_with(model, *azimuth, *altitude, shaded, reveal)
         }
         creabim_core::ViewKind::Schedule { category } => {
             let table = crate::schedule::schedule(model, *category);
             return Some(crate::schedule::schedule_drawing(view, &e.name, &table));
         }
     };
+    if reveal && v.hidden_in_colour {
+        tint_hidden(model, &v.kind, &mut d.items);
+    }
     // tag the image with its view, so viewers can keep one texture per view
     for it in &mut d.items {
         if let PlanItem::Image { id, raster, .. } = it {
@@ -449,6 +451,124 @@ pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
         d.items.retain(|it| !hidden.contains(&it.id()));
     }
     Some(d)
+}
+
+/// Wash the elements a drawing shows hidden inside others (those with
+/// dashed lines in `items`) in their material colours, over what hides
+/// them and under their dashed lines: each piece as the outline of what
+/// of it the view sees.
+fn tint_hidden(model: &Model, kind: &creabim_core::ViewKind, items: &mut Vec<PlanItem>) {
+    let revealable = revealable(model);
+    let hidden: HashSet<ElementId> = items
+        .iter()
+        .filter_map(|it| match it {
+            PlanItem::Line {
+                id,
+                pen: Pen::Hidden,
+                ..
+            } if revealable.contains(id) => Some(*id),
+            _ => None,
+        })
+        // what holds others is only dashed where it runs into its
+        // neighbours (a wall's end in the next wall), not hidden inside
+        .filter(|id| {
+            !matches!(
+                model.get(*id).map(|e| &e.kind),
+                Some(ElementKind::Wall(_) | ElementKind::Slab(_) | ElementKind::Roof(_))
+            )
+        })
+        .collect();
+    if hidden.is_empty() {
+        return;
+    }
+    let mut scene = crate::scene::drawn_scene(model);
+    scene.retain(|s| hidden.contains(&s.id));
+    let tints = match kind {
+        creabim_core::ViewKind::Plan { level, cut_height } => {
+            let z = model.level(*level).map_or(0.0, |l| l.elevation) + cut_height;
+            // from the cut down to a metre under the level
+            let project = |p: DVec3| DVec3::new(p.x, p.y, z - p.z);
+            outlines(&scene, &project, cut_height + 1.0, None)
+        }
+        creabim_core::ViewKind::Section {
+            start, end, depth, ..
+        } => {
+            let frame = SectionFrame::new(*start, *end, *depth);
+            let project = |p: DVec3| frame.project(p);
+            outlines(&scene, &project, frame.depth, Some((0.0, frame.length)))
+        }
+        creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
+            let frame = AxoFrame::new(model, *azimuth, *altitude);
+            let project = |p: DVec3| frame.project(p);
+            outlines(&scene, &project, frame.radius * 2.0, None)
+        }
+        creabim_core::ViewKind::Schedule { .. } => vec![],
+    };
+    // under the dashed lines, over everything else
+    let (dashed, rest): (Vec<PlanItem>, Vec<PlanItem>) =
+        std::mem::take(items).into_iter().partition(
+            |it| matches!(it, PlanItem::Line { pen: Pen::Hidden, id, .. } if hidden.contains(id)),
+        );
+    *items = rest;
+    items.extend(tints);
+    items.extend(dashed);
+}
+
+/// The outline (convex hull) of each scene item seen through `project`,
+/// within `0..=depth` and, with `crop`, `x` in that range, as tints in the
+/// item's colour.
+fn outlines(
+    scene: &[SceneItem],
+    project: &dyn Fn(DVec3) -> DVec3,
+    depth: f64,
+    crop: Option<(f64, f64)>,
+) -> Vec<PlanItem> {
+    let mut out = Vec::new();
+    for s in scene {
+        let mut pts = Vec::new();
+        for t in s.mesh.indices.chunks(3) {
+            let p = |i: u32| project(Vec3::from(s.mesh.positions[i as usize]).as_dvec3());
+            for tri in clip_triangle([p(t[0]), p(t[1]), p(t[2])], depth) {
+                pts.extend(tri.iter().map(|q| DVec2::new(q.x, q.y)));
+            }
+        }
+        let mut hull = convex_hull(pts);
+        if let Some((x0, x1)) = crop {
+            hull = crate::crop::clip_polygon(&hull, DVec2::new(x0, -1e9), DVec2::new(x1, 1e9));
+        }
+        if hull.len() >= 3 {
+            out.push(PlanItem::Tint {
+                id: s.id,
+                points: hull,
+                rgb: s.color,
+            });
+        }
+    }
+    out
+}
+
+/// The convex hull of `pts`, counter-clockwise (Andrew's monotone chain).
+fn convex_hull(mut pts: Vec<DVec2>) -> Vec<DVec2> {
+    pts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    pts.dedup_by(|a, b| a.distance_squared(*b) < 1e-14);
+    if pts.len() < 3 {
+        return pts;
+    }
+    let cross = |o: DVec2, a: DVec2, b: DVec2| (a - o).perp_dot(b - o);
+    let chain = |pts: &mut dyn Iterator<Item = DVec2>| {
+        let mut h: Vec<DVec2> = Vec::new();
+        for p in pts {
+            while h.len() >= 2 && cross(h[h.len() - 2], h[h.len() - 1], p) <= 1e-12 {
+                h.pop();
+            }
+            h.push(p);
+        }
+        h.pop();
+        h
+    };
+    let mut hull = chain(&mut pts.iter().copied());
+    hull.extend(chain(&mut pts.iter().rev().copied()));
+    hull
 }
 
 fn view_key(view: ElementId) -> u64 {
@@ -858,6 +978,96 @@ mod tests {
 
     fn sample() -> Model {
         sample_house()
+    }
+
+    fn section_a(m: &Model) -> ElementId {
+        m.iter().find(|e| e.name == "Section A").unwrap().id
+    }
+
+    fn set_view(m: &Model, id: ElementId, f: impl FnOnce(&mut creabim_core::View)) -> Model {
+        let mut doc = creabim_core::Document::from_model(m.clone());
+        doc.edit(id, "Change view", |e| {
+            if let ElementKind::View(v) = &mut e.kind {
+                f(v);
+            }
+        })
+        .unwrap();
+        doc.model().clone()
+    }
+
+    #[test]
+    fn x_ray_draws_a_beam_buried_in_a_wall_without_changing_the_view() {
+        let (m, beam) = creabim_core::sample::sample_with_buried_beam();
+        let sec = section_a(&m);
+        let dashed = |d: &Drawing| {
+            d.items
+                .iter()
+                .any(|i| matches!(i, PlanItem::Line { id, pen: Pen::Hidden, .. } if *id == beam))
+        };
+        // the wall's cut covers the beam's
+        assert!(!dashed(&view_drawing(&m, sec).unwrap()));
+        assert!(dashed(&view_drawing_with(&m, sec, true).unwrap()));
+        // the view (and so its sheets) is as it was
+        assert!(!dashed(&view_drawing(&m, sec).unwrap()));
+    }
+
+    #[test]
+    fn a_buried_beam_shows_in_its_material_colour_for_detailing() {
+        let (m, beam) = creabim_core::sample::sample_with_buried_beam();
+        let sec = section_a(&m);
+        let tint = |d: &Drawing| {
+            d.items.iter().find_map(|i| match i {
+                PlanItem::Tint { id, points, rgb } if *id == beam => Some((points.clone(), *rgb)),
+                _ => None,
+            })
+        };
+        assert!(tint(&view_drawing(&m, sec).unwrap()).is_none());
+        let coloured = set_view(&m, sec, |v| {
+            v.show_hidden = true;
+            v.hidden_in_colour = true;
+        });
+        let d = view_drawing(&coloured, sec).unwrap();
+        let (pts, rgb) = tint(&d).expect("the beam is washed in its colour");
+        // timber, the beam's material
+        assert!(
+            (rgb[0] - 0.70).abs() < 0.02 && (rgb[2] - 0.40).abs() < 0.02,
+            "{rgb:?}"
+        );
+        // its section: 0.16 wide about the wall's line, 2.3 to 2.6 high
+        let (lo, hi) = pts
+            .iter()
+            .fold((pts[0], pts[0]), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+        assert!(
+            (hi.y - 2.6).abs() < 0.02 && (lo.y - 2.3).abs() < 0.02,
+            "{lo} {hi}"
+        );
+        assert!((hi.x - lo.x - 0.16).abs() < 0.02, "{lo} {hi}");
+        // drawn over what hides it, under its dashed lines
+        let at = |f: &dyn Fn(&PlanItem) -> bool| d.items.iter().position(f).unwrap();
+        let tint_at = at(&|i| matches!(i, PlanItem::Tint { id, .. } if *id == beam));
+        let dash_at =
+            at(&|i| matches!(i, PlanItem::Line { id, pen: Pen::Hidden, .. } if *id == beam));
+        let fill_at = at(&|i| matches!(i, PlanItem::Fill { .. }));
+        assert!(fill_at < tint_at && tint_at < dash_at);
+        // the colour needs hidden elements shown
+        let off = set_view(&m, sec, |v| v.hidden_in_colour = true);
+        assert!(tint(&view_drawing(&off, sec).unwrap()).is_none());
+    }
+
+    #[test]
+    fn hulls_are_convex_and_counter_clockwise() {
+        let pts = vec![
+            DVec2::new(0.0, 0.0),
+            DVec2::new(1.0, 0.0),
+            DVec2::new(0.5, 0.5),
+            DVec2::new(1.0, 1.0),
+            DVec2::new(0.0, 1.0),
+            DVec2::new(1.0, 0.0),
+        ];
+        let h = convex_hull(pts);
+        assert_eq!(h.len(), 4);
+        let area: f64 = (0..4).map(|i| h[i].perp_dot(h[(i + 1) % 4])).sum::<f64>() / 2.0;
+        assert!((area - 1.0).abs() < 1e-9);
     }
 
     #[test]

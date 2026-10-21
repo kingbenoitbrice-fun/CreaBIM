@@ -541,6 +541,13 @@ pub enum PlanItem {
         id: ElementId,
         item: Box<crate::annotation::Annotation>,
     },
+    /// An element hidden inside another, washed over what hides it in its
+    /// material colour (sRGB, 0..1), see-through: for detailing.
+    Tint {
+        id: ElementId,
+        points: Vec<DVec2>,
+        rgb: [f32; 3],
+    },
     /// Shaded surfaces as an image spanning `lo`..`hi`, drawn only inside `clip`.
     Image {
         id: ElementId,
@@ -575,6 +582,7 @@ impl PlanItem {
             | PlanItem::Dimension { id, .. }
             | PlanItem::Tag { id, .. }
             | PlanItem::Annotation { id, .. }
+            | PlanItem::Tint { id, .. }
             | PlanItem::Image { id, .. } => *id,
         }
     }
@@ -584,9 +592,9 @@ impl PlanItem {
     pub fn extent(&self) -> Vec<DVec2> {
         let mut pts = Vec::new();
         match self {
-            PlanItem::Polygon { points, .. } | PlanItem::Fill { points, .. } => {
-                pts.extend(points.iter().copied())
-            }
+            PlanItem::Polygon { points, .. }
+            | PlanItem::Fill { points, .. }
+            | PlanItem::Tint { points, .. } => pts.extend(points.iter().copied()),
             PlanItem::Line {
                 pen: Pen::Guide, ..
             } => {}
