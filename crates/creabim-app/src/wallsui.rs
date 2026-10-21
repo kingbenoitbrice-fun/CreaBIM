@@ -68,7 +68,7 @@ pub(super) fn wall_fields(
     });
     ui.horizontal(|ui| {
         if ui
-            .button("⇄ Flip")
+            .button("Flip")
             .on_hover_text("Swap the wall's exterior and interior faces, about its location line (Space). Its doors and windows turn with it.")
             .clicked()
         {

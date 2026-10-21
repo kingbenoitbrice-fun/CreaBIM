@@ -425,6 +425,9 @@ impl CreaBimApp {
         let mut items = vec![
             Item::new("new.empty", "New empty project").icon("file-plus"),
             Item::new("new.sample", "New sample house").icon("house"),
+            Item::new("new.layered", "New layered sample house")
+                .icon("house")
+                .hint("Walls, floors and a roof built from layered assemblies, the upper walls attached to the roof"),
             Item::new("new.sheet", "New sheet").icon("file-text"),
             Item::sub(
                 "New schedule",
@@ -844,6 +847,10 @@ impl CreaBimApp {
                 {
                     *v = !*v;
                 }
+            }
+            "new.layered" => {
+                self.load_model(creabim_core::sample::layered_house());
+                self.status = "Loaded the layered sample house.".into();
             }
             "new.sample" => {
                 self.load_model(sample_house());

@@ -725,8 +725,8 @@ pub struct FlipArrow {
 }
 
 /// The flip arrows of a selected wall, door or window, in plan: a wall's
-/// beside its exterior face, square to it; a door's or window's on the
-/// side it faces (and, for a door, one along the wall for its hand).
+/// beside its exterior face, square to it; a door's or window's side by
+/// side on the face away from where it opens or faces.
 pub fn flip_arrows(model: &Model, id: ElementId) -> Vec<FlipArrow> {
     match model.get(id).map(|e| &e.kind) {
         Some(ElementKind::Wall(w)) if w.length() > 0.1 => {
@@ -736,7 +736,7 @@ pub fn flip_arrows(model: &Model, id: ElementId) -> Vec<FlipArrow> {
             let mid = (w.start + w.end) / 2.0;
             vec![FlipArrow {
                 flip: Flip::Wall,
-                at: (mid + out * (w.thickness / 2.0 + 0.35)).extend(z),
+                at: (mid + out * (w.thickness / 2.0 + 0.5)).extend(z),
                 dir: n,
             }]
         }
@@ -751,13 +751,13 @@ pub fn flip_arrows(model: &Model, id: ElementId) -> Vec<FlipArrow> {
             let mid = w.start + d * (o.offset + o.width / 2.0);
             let mut v = vec![FlipArrow {
                 flip: Flip::Facing,
-                at: (mid + side * (w.thickness / 2.0 + 0.3)).extend(z),
+                at: (mid - d * 0.3 - side * (w.thickness / 2.0 + 0.5)).extend(z),
                 dir: n,
             }];
             if o.kind == OpeningKind::Door {
                 v.push(FlipArrow {
                     flip: Flip::Hand,
-                    at: (mid - side * (w.thickness / 2.0 + 0.3)).extend(z),
+                    at: (mid + d * 0.3 - side * (w.thickness / 2.0 + 0.5)).extend(z),
                     dir: d,
                 });
             }
