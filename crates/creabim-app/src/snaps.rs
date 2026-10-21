@@ -1,7 +1,9 @@
 //! Object snaps shared by every pane: ends, midpoints, intersections, points
 //! on edges, perpendicular feet, centres and quadrants, grid lines, guide
 //! lines, the axes through the point a line started from, and alignment
-//! with the other points of the shape being drawn. Geometry is
+//! with the other points of the shape being drawn, and temporary guide
+//! lines from the points and edges the pointer rests on (see
+//! [`Reference`] and [`temp_guides`]). Geometry is
 //! held as segments in some 3D space (the model for the 3D view, drawing
 //! coordinates with z = 0 for plans and sections) and compared on screen
 //! through a projection, so the same pixel tolerance applies however far the
@@ -39,6 +41,11 @@ pub enum SnapKind {
     Aligned,
     /// Where two alignments cross, or an alignment crosses an edge.
     AlignedCross,
+    /// On a temporary guide line from a point or edge the pointer rested on.
+    OnTempGuide,
+    /// Where a temporary guide crosses another guide, an edge or an
+    /// alignment.
+    GuideCross,
     /// No object snap: the point under the pointer, rounded to the
     /// increment when that is on.
     Grid,
@@ -60,6 +67,8 @@ impl SnapKind {
             SnapKind::AxisY => "On Y axis",
             SnapKind::Aligned => "Aligned",
             SnapKind::AlignedCross => "Aligned both ways",
+            SnapKind::OnTempGuide => "On guide line",
+            SnapKind::GuideCross => "Guide intersection",
             SnapKind::Grid => "",
         }
     }
@@ -100,6 +109,9 @@ pub struct SnapSettings {
     /// In line with the other points of the shape being drawn, and where
     /// two such alignments cross.
     pub tracking: bool,
+    /// Temporary guide lines from points and edges the pointer rests on,
+    /// and where they cross.
+    pub references: bool,
     /// Round free points to a 5 cm step.
     pub increment: bool,
 }
@@ -125,6 +137,7 @@ impl SnapSettings {
         guides: true,
         axis: true,
         tracking: true,
+        references: true,
         increment: true,
     };
 
@@ -147,6 +160,7 @@ impl SnapSettings {
             guides: false,
             axis: false,
             tracking: false,
+            references: false,
             increment: false,
             ..self
         }
@@ -167,6 +181,7 @@ impl SnapSettings {
                 SnapKind::OnGridLine => self.grid_lines,
                 SnapKind::AxisX | SnapKind::AxisY => self.axis,
                 SnapKind::Aligned | SnapKind::AlignedCross => self.tracking,
+                SnapKind::OnTempGuide | SnapKind::GuideCross => self.references,
                 SnapKind::Grid => self.increment,
             }
     }
@@ -190,7 +205,7 @@ impl SnapSettings {
     }
 
     /// Each switch with its label, in the order the snap bar lists them.
-    pub fn switches(&mut self) -> [(&'static str, &mut bool); 12] {
+    pub fn switches(&mut self) -> [(&'static str, &mut bool); 13] {
         [
             ("Endpoint", &mut self.endpoint),
             ("Midpoint", &mut self.midpoint),
@@ -204,6 +219,10 @@ impl SnapSettings {
             ("X/Y axis tracking", &mut self.axis),
             ("Alignment with the shape's points", &mut self.tracking),
             ("5 cm increment", &mut self.increment),
+            (
+                "Guide lines from rested points and edges",
+                &mut self.references,
+            ),
         ]
     }
 }
@@ -368,6 +387,8 @@ struct Segment {
     b: DVec3,
     src: Source,
     host: Option<ElementId>,
+    /// The arc it is a piece of: centre, radius, first and last point.
+    arc: Option<(DVec3, f64, DVec3, DVec3)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -414,7 +435,13 @@ impl Snapper {
         if a.distance(b) < 1e-6 {
             return;
         }
-        self.segments.push(Segment { a, b, src, host });
+        self.segments.push(Segment {
+            a,
+            b,
+            src,
+            host,
+            arc: None,
+        });
         if src != Source::Guide {
             self.point(a, SnapKind::Endpoint, src, host);
             self.point(b, SnapKind::Endpoint, src, host);
@@ -435,6 +462,7 @@ impl Snapper {
         let Some((first, last)) = pts.first().zip(pts.last()) else {
             return;
         };
+        let arc = center.map(|c| (c, c.distance(*first), *first, *last));
         for w in pts.windows(2) {
             if w[0].distance(w[1]) > 1e-9 {
                 self.segments.push(Segment {
@@ -442,6 +470,7 @@ impl Snapper {
                     b: w[1],
                     src: Source::Edge,
                     host,
+                    arc,
                 });
             }
         }
@@ -658,6 +687,48 @@ impl Snapper {
         on.next().is_none().then_some(first)
     }
 
+    /// The reference a snap found lies on: the point itself for a corner,
+    /// middle, centre or crossing, else the one edge (or arc) it is on.
+    pub fn reference_at(&self, snap: &Snap) -> Option<Reference> {
+        if snap.kind.is_point() {
+            return Some(Reference::Point {
+                p: snap.p,
+                kind: snap.kind,
+            });
+        }
+        if !matches!(
+            snap.kind,
+            SnapKind::OnEdge | SnapKind::Guide | SnapKind::OnGridLine
+        ) {
+            return None;
+        }
+        let p = snap.p;
+        let on: Vec<&Segment> = self
+            .segments
+            .iter()
+            .filter(|s| closest_on_segment(s.a, s.b, p).distance(p) < 1e-6)
+            .collect();
+        let first = on.first()?;
+        if let Some((c, r, a, b)) = first.arc {
+            return Some(Reference::Edge {
+                a,
+                b,
+                arc: Some((c, r)),
+            });
+        }
+        // a guide's segment runs far past what is drawn: its own two points
+        // do as well as any for the line
+        (on.len() == 1
+            || on
+                .iter()
+                .all(|s| (s.b - s.a).cross(first.b - first.a).length() < 1e-9))
+        .then_some(Reference::Edge {
+            a: first.a,
+            b: first.b,
+            arc: None,
+        })
+    }
+
     /// The best snap for the pointer at `cursor`, of the kinds `cfg` allows.
     /// `from` is where the line being drawn started, for perpendicular and
     /// axis snaps; `free` is the unsnapped point under the pointer, used for
@@ -690,6 +761,26 @@ impl Snapper {
         track: &[(DVec3, Through)],
         free: Option<DVec3>,
     ) -> Option<(Snap, Option<Alignment>)> {
+        self.snap_guided(cfg, cursor, project, from, track, &[], free)
+            .map(|g| (g.snap, g.align))
+    }
+
+    /// Like [`Snapper::snap_tracked`], with temporary `guides` as well (see
+    /// [`temp_guides`]): where a guide crosses another guide, an edge or an
+    /// alignment snaps right after the corners and middles of things, and
+    /// a point on a guide as readily as one on an alignment. Flat drawings
+    /// only (guides are at z = 0).
+    #[allow(clippy::too_many_arguments)]
+    pub fn snap_guided(
+        &self,
+        cfg: &SnapSettings,
+        cursor: Pos2,
+        project: &dyn Fn(DVec3) -> Option<Pos2>,
+        from: Option<DVec3>,
+        track: &[(DVec3, Through)],
+        guides: &[TempGuide],
+        free: Option<DVec3>,
+    ) -> Option<Guided> {
         let near = |p: DVec3| {
             project(p)
                 .map(|s| s.distance(cursor))
@@ -709,7 +800,7 @@ impl Snapper {
             .filter_map(|q| near(q.p).map(|d| (d + rank(q.kind) * 2.0, q)))
             .min_by(|a, b| a.0.total_cmp(&b.0));
         if let Some((_, q)) = best_point {
-            return Some((
+            return Some(Guided::plain(
                 Snap {
                     p: q.p,
                     kind: q.kind,
@@ -719,6 +810,19 @@ impl Snapper {
             ));
         }
         let segments = || self.segments.iter().filter(|s| cfg.takes(s.src));
+        // the temporary guides near the pointer
+        let near_guides: Vec<(f32, usize)> = if cfg.allows(SnapKind::OnTempGuide) {
+            guides
+                .iter()
+                .enumerate()
+                .filter_map(|(i, g)| {
+                    let d = g.shape.screen_distance(cursor, project)?;
+                    (d < TOLERANCE).then_some((d, i))
+                })
+                .collect()
+        } else {
+            vec![]
+        };
         // the alignment lines the pointer is near: the axes through the
         // start of the line, then through each point of the shape
         let mut lines: Vec<(f32, Line)> = vec![];
@@ -757,6 +861,67 @@ impl Snapper {
                 }
             }
         }
+        // where a guide crosses another guide, an edge or an alignment
+        if cfg.allows(SnapKind::GuideCross) && !near_guides.is_empty() {
+            let mut best: Option<CrossPick> = None;
+            let mut consider = |p: DVec2, used: Vec<usize>, l: Option<Line>, host| {
+                if let Some(d) = near(p.extend(0.0)) {
+                    if best.as_ref().is_none_or(|b| d < b.0) {
+                        best = Some((d, p, used, l, host));
+                    }
+                }
+            };
+            for (k, &(_, i)) in near_guides.iter().enumerate() {
+                let g = guides[i].shape;
+                for &(_, j) in &near_guides[k + 1..] {
+                    for p in g.cross(&guides[j].shape) {
+                        consider(p, vec![i, j], None, None);
+                    }
+                }
+                for (_, l) in &lines {
+                    let line = GuideShape::Line {
+                        p: l.at.truncate(),
+                        d: l.axis().truncate(),
+                    };
+                    for p in g.cross(&line) {
+                        consider(p, vec![i], Some(*l), None);
+                    }
+                }
+                for s in segments() {
+                    let (Some(sa), Some(sb)) = (project(s.a), project(s.b)) else {
+                        continue;
+                    };
+                    let t = screen_t(sa, sb, cursor);
+                    if (sa + (sb - sa) * t).distance(cursor) >= TOLERANCE {
+                        continue;
+                    }
+                    let (a, b) = (s.a.truncate(), s.b.truncate());
+                    let edge = GuideShape::Line {
+                        p: a,
+                        d: (b - a).normalize_or_zero(),
+                    };
+                    for p in g.cross(&edge) {
+                        let on = closest_on_segment(s.a, s.b, p.extend(0.0)).truncate();
+                        if on.distance(p) < 1e-6 {
+                            consider(p, vec![i], None, s.host);
+                        }
+                    }
+                }
+            }
+            if let Some((_, p, used, l, host)) = best {
+                return Some(Guided {
+                    snap: Snap {
+                        p: p.extend(0.0),
+                        kind: SnapKind::GuideCross,
+                        host,
+                    },
+                    align: l.map(|l| Alignment {
+                        lines: [Some(l), None],
+                    }),
+                    guides: used,
+                });
+            }
+        }
         // two alignments that cross near the pointer: one along X, one
         // along Y, through different points at one height
         if cfg.allows(SnapKind::AlignedCross) {
@@ -778,7 +943,7 @@ impl Snapper {
                 }
             }
             if let Some((_, p, a, b)) = best {
-                return Some((
+                return Some(Guided::plain(
                     Snap {
                         p,
                         kind: SnapKind::AlignedCross,
@@ -796,7 +961,7 @@ impl Snapper {
                 if foot.distance(f) > 1e-6 && (foot - s.a).length() > 1e-6 && near(foot).is_some() {
                     let along = (s.b - s.a).normalize();
                     if (foot - f).normalize().dot(along).abs() < 1e-6 {
-                        return Some((
+                        return Some(Guided::plain(
                             Snap {
                                 p: foot,
                                 kind: SnapKind::Perpendicular,
@@ -856,7 +1021,7 @@ impl Snapper {
                         along_x: !l.along_x,
                         through: Through::Edge,
                     };
-                    return Some((
+                    return Some(Guided::plain(
                         Snap {
                             p,
                             kind: SnapKind::AlignedCross,
@@ -868,9 +1033,42 @@ impl Snapper {
                     ));
                 }
             }
-            return Some((s, None));
+            return Some(Guided::plain(s, None));
         }
         let step = cfg.step(self.grid);
+        // a point on the nearest guide, when no alignment is as near: a
+        // round distance along it from where it runs from
+        let guide = near_guides
+            .iter()
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .copied();
+        let nearest_line = lines.iter().map(|(d, l)| {
+            if l.through == Through::From {
+                d - 0.5
+            } else {
+                *d
+            }
+        });
+        let line_d = nearest_line.fold(f32::INFINITY, f32::min);
+        if let (Some((d, i)), Some(free)) = (guide, free) {
+            if d <= line_d {
+                let g = &guides[i];
+                let q = free.truncate();
+                let p = match g.shape {
+                    GuideShape::Line { p, d } => p + d * grid_round((q - p).dot(d), step),
+                    shape => shape.foot(q),
+                };
+                return Some(Guided {
+                    snap: Snap {
+                        p: p.extend(0.0),
+                        kind: SnapKind::OnTempGuide,
+                        host: None,
+                    },
+                    align: None,
+                    guides: vec![i],
+                });
+            }
+        }
         // the nearest single alignment: the axes through the start come
         // first when as near
         let nearest = lines.iter().min_by(|a, b| {
@@ -901,7 +1099,7 @@ impl Snapper {
             let align = (kind == SnapKind::Aligned).then_some(Alignment {
                 lines: [Some(*l), None],
             });
-            return Some((
+            return Some(Guided::plain(
                 Snap {
                     p,
                     kind,
@@ -911,7 +1109,7 @@ impl Snapper {
             ));
         }
         free.map(|p| {
-            (
+            Guided::plain(
                 Snap {
                     p: DVec3::new(grid_round(p.x, step), grid_round(p.y, step), p.z),
                     kind: SnapKind::Grid,
@@ -1131,6 +1329,7 @@ fn marker(painter: &Painter, snap: Snap, at: Pos2, from: Option<Pos2>) -> Option
         SnapKind::AxisX => Color32::from_rgb(220, 50, 50),
         SnapKind::AxisY => Color32::from_rgb(40, 160, 60),
         SnapKind::Aligned | SnapKind::AlignedCross => TRACK,
+        SnapKind::OnTempGuide | SnapKind::GuideCross => GUIDE,
         SnapKind::Grid => return None,
     };
     let s = Stroke::new(2.0, c);
@@ -1182,10 +1381,10 @@ fn marker(painter: &Painter, snap: Snap, at: Pos2, from: Option<Pos2>) -> Option
         SnapKind::OnEdge | SnapKind::Guide | SnapKind::OnGridLine => {
             painter.circle_stroke(at, r * 0.7, s);
         }
-        SnapKind::Aligned => {
+        SnapKind::Aligned | SnapKind::OnTempGuide => {
             painter.circle_filled(at, 3.0, c);
         }
-        SnapKind::AlignedCross => {
+        SnapKind::AlignedCross | SnapKind::GuideCross => {
             painter.line_segment([at + egui::vec2(-r, -r), at + egui::vec2(r, r)], s);
             painter.line_segment([at + egui::vec2(-r, r), at + egui::vec2(r, -r)], s);
             painter.circle_stroke(at, r * 0.75, Stroke::new(1.5, c));
@@ -1258,6 +1457,464 @@ pub fn draw_tracked(
     let bg = egui::Rect::from_min_size(pos, galley.size()).expand(2.0);
     painter.rect_filled(bg, 3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 200));
     painter.galley(pos, galley, TRACK);
+}
+
+// ---- temporary guide lines ---------------------------------------------------
+
+/// A point or edge picked as a snap reference by resting the pointer on it
+/// (ArchiCAD's snap references): guide lines run from it until it is
+/// picked again or cleared, and where they cross snaps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Reference {
+    /// A corner, middle, centre or crossing, with the kind of snap it was.
+    Point { p: DVec3, kind: SnapKind },
+    /// A straight edge from `a` to `b`, or an arc about `arc`'s centre
+    /// (with its radius) from `a` to `b`.
+    Edge {
+        a: DVec3,
+        b: DVec3,
+        arc: Option<(DVec3, f64)>,
+    },
+}
+
+impl Reference {
+    /// The same reference, near enough, for picking it again to drop it.
+    pub fn same(&self, other: &Reference) -> bool {
+        match (self, other) {
+            (Reference::Point { p, .. }, Reference::Point { p: q, .. }) => p.distance(*q) < 1e-6,
+            (Reference::Edge { a, b, .. }, Reference::Edge { a: c, b: d, .. }) => {
+                (a.distance(*c) < 1e-6 && b.distance(*d) < 1e-6)
+                    || (a.distance(*d) < 1e-6 && b.distance(*c) < 1e-6)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// What a temporary guide is to the reference it comes from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GuideKind {
+    /// Along an edge, past its ends.
+    Extension,
+    /// Through the point a line starts from, parallel to an edge.
+    Parallel,
+    /// Square to an edge, through one of its ends or the start point.
+    Perpendicular,
+    Horizontal,
+    Vertical,
+    /// At this many degrees through a point.
+    Angle(f64),
+    /// Through an arc's or circle's centre.
+    Radial,
+    /// The whole circle an arc lies on, or one about a centre.
+    Circle,
+    /// From the start point, touching a circle.
+    Tangent,
+}
+
+impl GuideKind {
+    pub fn label(&self) -> String {
+        match self {
+            GuideKind::Extension => "Extension".into(),
+            GuideKind::Parallel => "Parallel".into(),
+            GuideKind::Perpendicular => "Perpendicular".into(),
+            GuideKind::Horizontal => "Horizontal".into(),
+            GuideKind::Vertical => "Vertical".into(),
+            GuideKind::Angle(d) => format!("{d:.0}°"),
+            GuideKind::Radial => "Radial".into(),
+            GuideKind::Circle => "Concentric".into(),
+            GuideKind::Tangent => "Tangent".into(),
+        }
+    }
+}
+
+/// The shape of a temporary guide, in the pane's drawing (z = 0).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GuideShape {
+    /// Endless through `p` along the unit direction `d`.
+    Line {
+        p: DVec2,
+        d: DVec2,
+    },
+    Circle {
+        c: DVec2,
+        r: f64,
+    },
+}
+
+/// A temporary guide line (or circle).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TempGuide {
+    pub shape: GuideShape,
+    pub kind: GuideKind,
+    /// The point it runs from, marked where it is drawn.
+    pub at: DVec2,
+}
+
+impl GuideShape {
+    /// The point of it nearest `q`.
+    pub fn foot(&self, q: DVec2) -> DVec2 {
+        match *self {
+            GuideShape::Line { p, d } => p + d * (q - p).dot(d),
+            GuideShape::Circle { c, r } => c + (q - c).normalize_or(DVec2::X) * r,
+        }
+    }
+
+    /// How far the pointer at `cursor` is from it on screen.
+    fn screen_distance(
+        &self,
+        cursor: Pos2,
+        project: &dyn Fn(DVec3) -> Option<Pos2>,
+    ) -> Option<f32> {
+        match *self {
+            GuideShape::Line { p, d } => {
+                let (a, b) = (project(p.extend(0.0))?, project((p + d).extend(0.0))?);
+                let ab = b - a;
+                let len = ab.length();
+                (len > 1e-6).then(|| ((cursor - a).x * ab.y - (cursor - a).y * ab.x).abs() / len)
+            }
+            GuideShape::Circle { c, r } => {
+                let sc = project(c.extend(0.0))?;
+                let sr = (project((c + DVec2::X * r).extend(0.0))? - sc).length();
+                Some(((cursor - sc).length() - sr).abs())
+            }
+        }
+    }
+
+    /// Where it meets another guide shape.
+    fn cross(&self, other: &GuideShape) -> Vec<DVec2> {
+        match (*self, *other) {
+            (GuideShape::Line { p, d }, GuideShape::Line { p: q, d: e }) => {
+                line_line(p, d, q, e).into_iter().collect()
+            }
+            (GuideShape::Line { p, d }, GuideShape::Circle { c, r })
+            | (GuideShape::Circle { c, r }, GuideShape::Line { p, d }) => line_circle(p, d, c, r),
+            (GuideShape::Circle { c, r }, GuideShape::Circle { c: k, r: s }) => {
+                circle_circle(c, r, k, s)
+            }
+        }
+    }
+}
+
+/// Where the endless lines through `p` along `d` and `q` along `e` cross.
+fn line_line(p: DVec2, d: DVec2, q: DVec2, e: DVec2) -> Option<DVec2> {
+    let den = d.perp_dot(e);
+    if den.abs() < 1e-9 {
+        return None;
+    }
+    Some(p + d * ((q - p).perp_dot(e) / den))
+}
+
+fn line_circle(p: DVec2, d: DVec2, c: DVec2, r: f64) -> Vec<DVec2> {
+    let foot = p + d * (c - p).dot(d);
+    let h2 = r * r - foot.distance_squared(c);
+    if h2 < -1e-12 {
+        return vec![];
+    }
+    let h = h2.max(0.0).sqrt();
+    if h < 1e-9 {
+        return vec![foot];
+    }
+    vec![foot - d * h, foot + d * h]
+}
+
+fn circle_circle(c: DVec2, r: f64, k: DVec2, s: f64) -> Vec<DVec2> {
+    let dist = c.distance(k);
+    if dist < 1e-9 || dist > r + s + 1e-9 || dist < (r - s).abs() - 1e-9 {
+        return vec![];
+    }
+    let a = (r * r - s * s + dist * dist) / (2.0 * dist);
+    let h = (r * r - a * a).max(0.0).sqrt();
+    let u = (k - c) / dist;
+    let m = c + u * a;
+    if h < 1e-9 {
+        return vec![m];
+    }
+    vec![m + u.perp() * h, m - u.perp() * h]
+}
+
+/// Most references kept at once; resting on another drops the oldest.
+/// A guide crossing in reach: its distance, point, the guides through
+/// it, the alignment it is on and the element it is on.
+type CrossPick = (f32, DVec2, Vec<usize>, Option<Line>, Option<ElementId>);
+
+pub const MAX_REFERENCES: usize = 8;
+
+/// The temporary guides from `refs` (and from `from`, where the line being
+/// drawn starts): along and square to each edge and parallel to it through
+/// `from`; level, plumb and every `step` degrees through each point;
+/// radial lines and circles about centres and arcs, and tangents to them
+/// from `from`. A `step` of 0 (or 90) leaves out the angled guides.
+pub fn temp_guides(refs: &[Reference], from: Option<DVec3>, step: f64) -> Vec<TempGuide> {
+    let mut out: Vec<TempGuide> = vec![];
+    let from = from.map(|f| f.truncate());
+    let line = |out: &mut Vec<TempGuide>, p: DVec2, d: DVec2, kind: GuideKind, at: DVec2| {
+        let Some(d) = d.try_normalize() else { return };
+        // one guide per line, whatever made it first
+        let dup = out.iter().any(|g| match g.shape {
+            GuideShape::Line { p: q, d: e } => {
+                d.perp_dot(e).abs() < 1e-9 && (p - q).perp_dot(e).abs() < 1e-6
+            }
+            _ => false,
+        });
+        if !dup {
+            out.push(TempGuide {
+                shape: GuideShape::Line { p, d },
+                kind,
+                at,
+            });
+        }
+    };
+    let circle = |out: &mut Vec<TempGuide>, c: DVec2, r: f64, at: DVec2| {
+        if r < 1e-6 {
+            return;
+        }
+        let dup = out.iter().any(|g| match g.shape {
+            GuideShape::Circle { c: k, r: s } => k.distance(c) < 1e-6 && (r - s).abs() < 1e-6,
+            _ => false,
+        });
+        if !dup {
+            out.push(TempGuide {
+                shape: GuideShape::Circle { c, r },
+                kind: GuideKind::Circle,
+                at,
+            });
+        }
+    };
+    // angles other than level and plumb, in degrees from 0 up to 180
+    let angles: Vec<f64> = if step > 0.5 && step < 90.0 {
+        let n = (180.0 / step).round() as usize;
+        (1..n)
+            .map(|i| i as f64 * step)
+            .filter(|a| (a - 90.0).abs() > 1e-6 && *a < 180.0 - 1e-6)
+            .collect()
+    } else {
+        vec![]
+    };
+    for r in refs {
+        match *r {
+            Reference::Point { p, kind } => {
+                let p = p.truncate();
+                line(&mut out, p, DVec2::X, GuideKind::Horizontal, p);
+                line(&mut out, p, DVec2::Y, GuideKind::Vertical, p);
+                for a in &angles {
+                    let d = DVec2::from_angle(a.to_radians());
+                    line(&mut out, p, d, GuideKind::Angle(*a), p);
+                }
+                if let (SnapKind::Center, Some(f)) = (kind, from) {
+                    // radial guides about a centre: the circle through the
+                    // start point and the line out through it
+                    line(&mut out, p, f - p, GuideKind::Radial, p);
+                    circle(&mut out, p, p.distance(f), p);
+                }
+            }
+            Reference::Edge { a, b, arc: None } => {
+                let (a, b) = (a.truncate(), b.truncate());
+                let d = b - a;
+                line(&mut out, a, d, GuideKind::Extension, a);
+                line(&mut out, a, d.perp(), GuideKind::Perpendicular, a);
+                line(&mut out, b, d.perp(), GuideKind::Perpendicular, b);
+                if let Some(f) = from {
+                    line(&mut out, f, d, GuideKind::Parallel, f);
+                    line(&mut out, f, d.perp(), GuideKind::Perpendicular, f);
+                }
+            }
+            Reference::Edge {
+                a,
+                b,
+                arc: Some((c, r)),
+            } => {
+                let (a, b, c) = (a.truncate(), b.truncate(), c.truncate());
+                circle(&mut out, c, r, c);
+                line(&mut out, c, a - c, GuideKind::Radial, c);
+                line(&mut out, c, b - c, GuideKind::Radial, c);
+                if let Some(f) = from {
+                    line(&mut out, c, f - c, GuideKind::Radial, c);
+                    // tangents from the start point, where it is outside
+                    let dist = f.distance(c);
+                    if dist > r + 1e-6 {
+                        let base = (c - f).to_angle();
+                        let half = (r / dist).asin();
+                        for s in [-1.0, 1.0] {
+                            let d = DVec2::from_angle(base + s * half);
+                            line(&mut out, f, d, GuideKind::Tangent, f);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // angled guides through the start point too: polar tracking
+    if let Some(f) = from {
+        for a in &angles {
+            line(
+                &mut out,
+                f,
+                DVec2::from_angle(a.to_radians()),
+                GuideKind::Angle(*a),
+                f,
+            );
+        }
+    }
+    out
+}
+
+/// A snap with what it follows: an alignment, and the temporary guides
+/// (by their place in the list given) it lies on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Guided {
+    pub snap: Snap,
+    pub align: Option<Alignment>,
+    pub guides: Vec<usize>,
+}
+
+impl Guided {
+    fn plain(snap: Snap, align: Option<Alignment>) -> Self {
+        Self {
+            snap,
+            align,
+            guides: vec![],
+        }
+    }
+}
+
+/// The colour of temporary guides and the references they come from.
+pub const GUIDE: Color32 = Color32::from_rgb(36, 118, 222);
+
+/// Draw the references: a ring on each point, a band along each edge.
+pub fn draw_references(
+    painter: &Painter,
+    project: &dyn Fn(DVec3) -> Option<Pos2>,
+    refs: &[Reference],
+) {
+    let band = Stroke::new(5.0, GUIDE.gamma_multiply(0.35));
+    for r in refs {
+        match *r {
+            Reference::Point { p, .. } => {
+                if let Some(s) = project(p) {
+                    painter.circle_stroke(s, 7.0, Stroke::new(1.5, GUIDE));
+                    painter.circle_filled(s, 2.0, GUIDE);
+                }
+            }
+            Reference::Edge { a, b, arc } => {
+                let pts: Vec<Pos2> = match arc {
+                    Some((c, rad)) => {
+                        let (t0, t1) =
+                            ((a - c).truncate().to_angle(), (b - c).truncate().to_angle());
+                        let mut sweep = (t1 - t0).rem_euclid(std::f64::consts::TAU);
+                        if sweep < 1e-9 {
+                            sweep = std::f64::consts::TAU;
+                        }
+                        (0..=32)
+                            .filter_map(|i| {
+                                let t = t0 + sweep * i as f64 / 32.0;
+                                project(c + DVec2::from_angle(t).extend(0.0) * rad)
+                            })
+                            .collect()
+                    }
+                    None => [a, b].iter().filter_map(|p| project(*p)).collect(),
+                };
+                painter.add(egui::Shape::line(pts, band));
+            }
+        }
+    }
+}
+
+/// Draw temporary guides dashed across the pane: faint, or stronger with
+/// their names for those in `active` (the ones the snap follows).
+pub fn draw_guides(
+    painter: &Painter,
+    project: &dyn Fn(DVec3) -> Option<Pos2>,
+    guides: &[TempGuide],
+    active: &[usize],
+) {
+    let clip = painter.clip_rect();
+    let reach = clip.width().max(clip.height()) * 2.0;
+    for (i, g) in guides.iter().enumerate() {
+        let on = active.contains(&i);
+        let stroke = if on {
+            Stroke::new(1.3, GUIDE)
+        } else {
+            Stroke::new(1.0, GUIDE.gamma_multiply(0.45))
+        };
+        match g.shape {
+            GuideShape::Line { p, d } => {
+                let (Some(a), Some(b)) = (project(p.extend(0.0)), project((p + d).extend(0.0)))
+                else {
+                    continue;
+                };
+                let u = (b - a).normalized();
+                if !u.x.is_finite() {
+                    continue;
+                }
+                painter.add(egui::Shape::dashed_line(
+                    &[a - u * reach, a + u * reach],
+                    stroke,
+                    6.0,
+                    5.0,
+                ));
+            }
+            GuideShape::Circle { c, r } => {
+                let pts: Vec<Pos2> = (0..=96)
+                    .filter_map(|k| {
+                        let t = k as f64 / 96.0 * std::f64::consts::TAU;
+                        project((c + DVec2::from_angle(t) * r).extend(0.0))
+                    })
+                    .collect();
+                painter.add(egui::Shape::dashed_line(&pts, stroke, 6.0, 5.0));
+            }
+        }
+        if on {
+            if let Some(s) = project(g.at.extend(0.0)) {
+                let k = 3.5;
+                painter.line_segment([s + egui::vec2(-k, -k), s + egui::vec2(k, k)], stroke);
+                painter.line_segment([s + egui::vec2(-k, k), s + egui::vec2(k, -k)], stroke);
+            }
+        }
+    }
+}
+
+/// Draw a snap on temporary guides: the marker, and a label naming the
+/// guides it is on ("Extension · Perpendicular").
+pub fn draw_guided(
+    painter: &Painter,
+    project: &dyn Fn(DVec3) -> Option<Pos2>,
+    hit: &Guided,
+    guides: &[TempGuide],
+    from: Option<Pos2>,
+) {
+    let Some(at) = project(hit.snap.p) else {
+        return;
+    };
+    if hit.guides.is_empty() {
+        return draw_tracked(painter, project, hit.snap, hit.align, at, from);
+    }
+    let c = marker(painter, hit.snap, at, None).unwrap_or(GUIDE);
+    let mut parts: Vec<String> = hit
+        .guides
+        .iter()
+        .filter_map(|i| guides.get(*i))
+        .map(|g| g.kind.label())
+        .collect();
+    if let Some(a) = hit.align {
+        parts.push(a.label().to_lowercase());
+    }
+    if hit.snap.kind == SnapKind::GuideCross && hit.snap.host.is_some() && parts.len() < 2 {
+        parts.push("edge".into());
+    }
+    let label = parts.join(" · ");
+    let galley = painter.layout_no_wrap(label, egui::FontId::proportional(12.0), c);
+    let clip = painter.clip_rect();
+    let mut pos = at + egui::vec2(12.0, 10.0);
+    if pos.x + galley.size().x > clip.right() - 4.0 {
+        pos.x = at.x - 12.0 - galley.size().x;
+    }
+    if pos.y + galley.size().y > clip.bottom() - 4.0 {
+        pos.y = at.y - 10.0 - galley.size().y;
+    }
+    let bg = egui::Rect::from_min_size(pos, galley.size()).expand(2.0);
+    painter.rect_filled(bg, 3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 210));
+    painter.galley(pos, galley, c);
 }
 
 #[cfg(test)]

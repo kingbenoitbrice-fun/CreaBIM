@@ -2,12 +2,12 @@
 //! read, and the linework they are drawn with. Both follow their hosts,
 //! because their positions are worked out from the model every time.
 
-use crate::annotation::{measure, Annotation, Shape, TextLook};
+use crate::annotation::{end_marks, measure, runs_past, Annotation, Ends, Shape, TextLook};
 use crate::plan::PlanItem;
 use crate::section::{AxoFrame, SectionFrame};
 use creabim_core::{
-    DimensionKind, ElementId, ElementKind, HostPoint, Model, Note, OpeningKind, View, ViewKind,
-    Wall,
+    DimensionKind, ElementId, ElementKind, HostPoint, Model, Note, OpeningKind, TagShape,
+    Terminator, View, ViewKind, Wall,
 };
 use glam::{DAffine3, DMat3, DVec2, DVec3};
 
@@ -251,6 +251,23 @@ pub fn dimension_text(units: &creabim_core::Units, a: DVec2, b: DVec2) -> String
     units.dimension(a.distance(b))
 }
 
+/// A linear dimension from `a` to `b` measured along `axis`: where `b`
+/// lands on the line through `a` that way, and the true points its
+/// witness lines start from (none when aligned). None when the points
+/// coincide along it, so there is nothing to measure.
+pub fn squared(
+    axis: creabim_core::DimAxis,
+    a: DVec2,
+    b: DVec2,
+) -> Option<(DVec2, Option<[DVec2; 2]>)> {
+    let u = axis.direction(a, b)?;
+    if axis.is_aligned() {
+        return (a.distance(b) > 1e-6).then_some((b, None));
+    }
+    let b2 = a + u * (b - a).dot(u);
+    (a.distance(b2) > 1e-6).then_some((b2, Some([a, b])))
+}
+
 /// How an annotation with `style` and its own `color` looks.
 pub fn look_of(model: &Model, style: Option<ElementId>, color: Option<[f32; 3]>) -> TextLook {
     creabim_core::text_style(model, style, color).into()
@@ -359,16 +376,17 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
                 else {
                     continue;
                 };
-                if a.distance(b) < 1e-6 {
+                let Some((b2, witness)) = squared(d.axis, a, b) else {
                     continue;
-                }
+                };
                 out.push(PlanItem::Dimension {
                     id: e.id,
                     a,
-                    b,
+                    b: b2,
                     offset: d.offset,
-                    text: dimension_text(&model.units(), a, b),
+                    text: dimension_text(&model.units(), a, b2),
                     look: look_of(model, d.style, d.color),
+                    witness,
                 });
             }
             ElementKind::Tag(t) if t.view == view_id => {
@@ -396,17 +414,22 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
 /// paper millimetre, so ticks and gaps are a fixed size on paper.
 pub struct DimensionGeometry {
     pub lines: Vec<(DVec2, DVec2)>,
-    /// Ticks, drawn heavier than the dimension line.
-    pub ticks: Vec<(DVec2, DVec2)>,
+    /// The ends of the dimension line: ticks (drawn heavier than the
+    /// line), arrows, dots, as its style says.
+    pub ends: Ends,
     pub text_at: DVec2,
     /// Text angle in radians, kept readable (never upside down).
     pub angle: f64,
 }
 
+/// A linear dimension's linework: its line `offset` to the left of `a` →
+/// `b`, witness lines back to the measured points (`witness` when they are
+/// not `a` and `b`, as for a horizontal or vertical dimension), and its ends.
 pub fn dimension_geometry(
     a: DVec2,
     b: DVec2,
     offset: f64,
+    witness: Option<[DVec2; 2]>,
     look: &TextLook,
     mm: f64,
 ) -> DimensionGeometry {
@@ -414,15 +437,20 @@ pub fn dimension_geometry(
     let n = u.perp();
     let off = n * offset;
     let (pa, pb) = (a + off, b + off);
-    let mut lines = vec![(pa - u * 1.5 * mm, pb + u * 1.5 * mm)];
-    if offset.abs() > 2.0 * mm {
-        // witness lines from just off the measured points to just past the line
-        let s = n * offset.signum();
-        lines.push((a + s * 1.0 * mm, pa + s * 1.5 * mm));
-        lines.push((b + s * 1.0 * mm, pb + s * 1.5 * mm));
+    let end = look.end.unwrap_or(Terminator::Tick);
+    let run = if runs_past(end) { 1.5 * mm } else { 0.0 };
+    let mut lines = vec![(pa - u * run, pb + u * run)];
+    let [wa, wb] = witness.unwrap_or([a, b]);
+    // witness lines from just off the measured points to just past the line
+    for (from, to) in [(wa, pa), (wb, pb)] {
+        let reach = (to - from).dot(n);
+        if reach.abs() > 2.0 * mm {
+            let s = n * reach.signum();
+            lines.push((from + s * 1.0 * mm, to + s * 1.5 * mm));
+        }
     }
-    let tick = (u + n).normalize() * 1.25 * mm;
-    let ticks = vec![(pa - tick, pa + tick), (pb - tick, pb + tick)];
+    let mut ends = end_marks(end, pa, -u, look.end_size, mm);
+    ends.extend(end_marks(end, pb, u, look.end_size, mm));
     let mut angle = u.to_angle();
     let mut up = n;
     if angle > std::f64::consts::FRAC_PI_2 + 1e-6 || angle <= -std::f64::consts::FRAC_PI_2 + 1e-6 {
@@ -434,7 +462,7 @@ pub fn dimension_geometry(
     }
     DimensionGeometry {
         lines,
-        ticks,
+        ends,
         // 1.8 mm off the line for the default 2.5 mm text
         text_at: (pa + pb) / 2.0 + up * (0.55 + look.size / 2.0) * mm,
         angle,
@@ -444,12 +472,103 @@ pub fn dimension_geometry(
 /// A tag's bubble and leader, in drawing units.
 pub struct TagGeometry {
     pub outline: Vec<DVec2>,
+    /// The outline is a closed shape, filled white under the text (else an
+    /// underline, or nothing for text alone).
+    pub closed: bool,
     pub leader: Option<(DVec2, DVec2)>,
 }
 
 /// Text height of tags and dimensions, paper mm.
 pub const TEXT: f64 = 2.5;
 
+/// A tag's outline of `shape` about `at`, its text half `half` wide and high.
+fn tag_outline(shape: TagShape, at: DVec2, half: DVec2) -> (Vec<DVec2>, bool) {
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    let ring = |n: usize, r: DVec2, turn: f64| -> Vec<DVec2> {
+        (0..n)
+            .map(|i| {
+                let t = turn + i as f64 / n as f64 * TAU;
+                at + DVec2::new(t.cos() * r.x, t.sin() * r.y)
+            })
+            .collect()
+    };
+    // rounded corners: quarter circles of `r` inside a box `h`
+    let rounded = |h: DVec2, r: f64| -> Vec<DVec2> {
+        let r = r.min(h.x).min(h.y);
+        let mut pts = vec![];
+        for (k, c) in [
+            DVec2::new(h.x - r, h.y - r),
+            DVec2::new(-h.x + r, h.y - r),
+            DVec2::new(-h.x + r, -h.y + r),
+            DVec2::new(h.x - r, -h.y + r),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for i in 0..=6 {
+                let t = k as f64 * FRAC_PI_2 + FRAC_PI_2 * i as f64 / 6.0;
+                pts.push(at + c + DVec2::from_angle(t) * r);
+            }
+        }
+        pts
+    };
+    let boxed = |h: DVec2| {
+        vec![
+            at - h,
+            at + DVec2::new(h.x, -h.y),
+            at + h,
+            at + DVec2::new(-h.x, h.y),
+        ]
+    };
+    match shape {
+        TagShape::Auto | TagShape::Box => (boxed(half), true),
+        TagShape::Circle => (ring(24, DVec2::splat(half.x.max(half.y)), 0.0), true),
+        TagShape::RoundedBox => (rounded(half, half.y * 0.45), true),
+        TagShape::Pill => (rounded(half + DVec2::X * half.y * 0.4, half.y), true),
+        TagShape::Hexagon => {
+            // flat top and bottom, points left and right
+            let w = half.x + half.y * 0.6;
+            (
+                vec![
+                    at + DVec2::new(w, 0.0),
+                    at + DVec2::new(half.x, half.y),
+                    at + DVec2::new(-half.x, half.y),
+                    at + DVec2::new(-w, 0.0),
+                    at + DVec2::new(-half.x, -half.y),
+                    at + DVec2::new(half.x, -half.y),
+                ],
+                true,
+            )
+        }
+        TagShape::Octagon => {
+            let r = half.x.max(half.y) / (PI / 8.0).cos();
+            (ring(8, DVec2::splat(r), PI / 8.0), true)
+        }
+        TagShape::Diamond => {
+            let h = half * 1.45;
+            (
+                vec![
+                    at + DVec2::new(h.x, 0.0),
+                    at + DVec2::new(0.0, h.y),
+                    at + DVec2::new(-h.x, 0.0),
+                    at + DVec2::new(0.0, -h.y),
+                ],
+                true,
+            )
+        }
+        TagShape::Underline => (
+            vec![
+                at + DVec2::new(-half.x, -half.y * 0.75),
+                at + DVec2::new(half.x, -half.y * 0.75),
+            ],
+            false,
+        ),
+        TagShape::TextOnly => (vec![], false),
+    }
+}
+
+/// A tag's outline and leader. `round` is the tag's usual shape (doors
+/// and windows) when its style leaves the shape to the tag.
 pub fn tag_geometry(
     anchor: DVec2,
     at: DVec2,
@@ -461,29 +580,39 @@ pub fn tag_geometry(
     // the default 2.5 mm text sits in a bubble 4.4 mm tall
     let k = look.size / TEXT;
     let half = DVec2::new((look.width(text) / 2.0 + 1.2 * k).max(2.2 * k), 2.2 * k) * mm;
-    let outline: Vec<DVec2> = if round {
-        let r = half.x.max(half.y);
-        (0..24)
-            .map(|i| at + DVec2::from_angle(i as f64 / 24.0 * std::f64::consts::TAU) * r)
-            .collect()
-    } else {
-        vec![
-            at - half,
-            at + DVec2::new(half.x, -half.y),
-            at + half,
-            at + DVec2::new(-half.x, half.y),
-        ]
+    let shape = match (look.shape, round) {
+        (TagShape::Auto, true) => TagShape::Circle,
+        (s, _) => s,
     };
-    // a leader back to the host, from the edge of the bubble
+    let (outline, closed) = tag_outline(shape, at, half);
+    // a leader back to the host, from the edge of the bubble (or of the
+    // text's box when there is no bubble)
     let d = anchor - at;
-    let leader = if round {
-        let r = half.x.max(half.y);
-        (d.length() > r + 1.0 * mm).then(|| (at + d.normalize() * r, anchor))
+    let edge = if closed {
+        outline.clone()
     } else {
-        let t = (half.x / d.x.abs().max(1e-12)).min(half.y / d.y.abs().max(1e-12));
-        (t < 1.0 && d.length() * (1.0 - t) > 1.0 * mm).then(|| (at + d * t, anchor))
+        tag_outline(TagShape::Box, at, half).0
     };
-    TagGeometry { outline, leader }
+    let mut t = 1.0f64;
+    for i in 0..edge.len() {
+        let (p, q) = (edge[i], edge[(i + 1) % edge.len()]);
+        let e = q - p;
+        let den = d.perp_dot(e);
+        if den.abs() < 1e-18 {
+            continue;
+        }
+        let s = (p - at).perp_dot(e) / den;
+        let v = (p - at).perp_dot(d) / den;
+        if s > 0.0 && (-1e-9..=1.0 + 1e-9).contains(&v) {
+            t = t.min(s);
+        }
+    }
+    let leader = (t < 1.0 && d.length() * (1.0 - t) > 1.0 * mm).then(|| (at + d * t, anchor));
+    TagGeometry {
+        outline,
+        closed,
+        leader,
+    }
 }
 
 #[cfg(test)]
@@ -622,9 +751,94 @@ mod tests {
             DVec2::new(0.0, 5.0),
             DVec2::ZERO,
             1.0,
+            None,
             &TextLook::default(),
             0.1,
         );
         assert!(g.angle.abs() <= std::f64::consts::FRAC_PI_2 + 1e-9);
+    }
+
+    #[test]
+    fn a_horizontal_dimension_measures_square_across() {
+        use creabim_core::{DimAxis, Dimension, Element, Transaction};
+        let mut doc = creabim_core::Document::from_model(sample_house());
+        let plan = named(doc.model(), "Ground Floor plan");
+        let (a, b) = (DVec2::new(1.0, 1.0), DVec2::new(1.47, 0.4));
+        let mut d = Dimension::linear(plan, HostPoint::free(a), HostPoint::free(b), 0.5);
+        d.axis = DimAxis::Horizontal;
+        let e = Element::new("Dimension", ElementKind::Dimension(d));
+        let id = e.id;
+        doc.commit(Transaction::new("Add").insert(e)).unwrap();
+        let item = view_drawing(doc.model(), plan)
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|i| i.id() == id)
+            .unwrap();
+        let PlanItem::Dimension {
+            a: pa,
+            b: pb,
+            text,
+            witness,
+            offset,
+            look,
+            ..
+        } = item
+        else {
+            panic!("a linear dimension")
+        };
+        // 470 across, not the 760 along the diagonal
+        assert_eq!(text, "470");
+        assert!((pb - DVec2::new(1.47, 1.0)).length() < 1e-9 && pa == a);
+        assert_eq!(witness, Some([a, b]));
+        // the line is level, and the witness from the lower point reaches it
+        let g = dimension_geometry(pa, pb, offset, witness, &look, 0.01);
+        let (p, q) = g.lines[0];
+        assert!((p.y - q.y).abs() < 1e-9);
+        assert!(g.lines.iter().any(|(s, t)| (s.x - 1.47).abs() < 1e-9
+            && (t.x - 1.47).abs() < 1e-9
+            && s.y < 0.45
+            && t.y > 1.5));
+        // points level with each other measure nothing vertically
+        assert!(squared(DimAxis::Vertical, a, DVec2::new(3.0, 1.0)).is_none());
+    }
+
+    #[test]
+    fn styles_change_dimension_ends_and_tag_shapes() {
+        let mut look = TextLook::default();
+        let tick = dimension_geometry(DVec2::ZERO, DVec2::X * 3.0, 1.0, None, &look, 0.01);
+        assert_eq!(tick.ends.heavy.len(), 2, "two ticks by default");
+        look.end = Some(Terminator::Dot);
+        let dots = dimension_geometry(DVec2::ZERO, DVec2::X * 3.0, 1.0, None, &look, 0.01);
+        assert!(dots.ends.heavy.is_empty() && dots.ends.fills.len() == 2);
+        // a tick.s line runs on past it; a dot.s or an arrow.s stops on its point
+        assert!(tick.lines[0].0.x < 0.0);
+        assert_eq!(dots.lines[0].0.x, 0.0);
+        look.end = Some(Terminator::ArrowOpen);
+        let open = dimension_geometry(DVec2::ZERO, DVec2::X * 3.0, 1.0, None, &look, 0.01);
+        assert_eq!(open.lines[0].0.x, 0.0);
+        assert_eq!(open.ends.thin.len(), 2);
+        // every end draws something but None
+        for t in Terminator::ALL {
+            let e = end_marks(t, DVec2::ZERO, DVec2::X, 2.5, 0.01);
+            let n = e.thin.len() + e.heavy.len() + e.fills.len();
+            assert_eq!(n == 0, t == Terminator::None, "{t:?}");
+        }
+        // tags: shapes, and the leader leaving each from its edge
+        let anchor = DVec2::new(0.0, -1.0);
+        for shape in TagShape::ALL {
+            look.shape = shape;
+            let g = tag_geometry(anchor, DVec2::ZERO, "D01", false, &look, 0.01);
+            assert_eq!(
+                g.closed,
+                !matches!(shape, TagShape::Underline | TagShape::TextOnly)
+            );
+            let (from, to) = g.leader.expect("a leader to the far anchor");
+            assert_eq!(to, anchor);
+            assert!(from.y < 0.0 && from.y > -0.05, "{shape:?} {from}");
+        }
+        look.shape = TagShape::Auto;
+        let round = tag_geometry(anchor, DVec2::ZERO, "D01", true, &look, 0.01);
+        assert_eq!(round.outline.len(), 24, "openings stay round");
     }
 }

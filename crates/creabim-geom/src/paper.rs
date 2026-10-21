@@ -3,7 +3,7 @@
 //! same on screen as in its exports.
 
 use crate::annotate::{dimension_geometry, tag_geometry};
-use crate::annotation::{Marks, TextLook};
+use crate::annotation::{Ends, Marks, TextLook};
 use crate::plan::{hatch_lines, Hatch, Pen, PlanItem, PlanView};
 use crate::raster::Raster;
 use creabim_core::Font;
@@ -226,15 +226,14 @@ pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
                 offset,
                 text,
                 look,
+                witness,
                 ..
             } => {
-                let g = dimension_geometry(*a, *b, *offset, look, 1.0 / map.k());
+                let g = dimension_geometry(*a, *b, *offset, *witness, look, 1.0 / map.k());
                 for (p, q) in g.lines {
                     ink_line(canvas, &[to(p), to(q)], DIMENSION, look);
                 }
-                for (p, q) in g.ticks {
-                    ink_line(canvas, &[to(p), to(q)], TICK, look);
-                }
+                draw_ends(canvas, &g.ends, look, &to);
                 canvas.styled_text(to(g.text_at), text, Anchor::Middle, g.angle, look);
             }
             PlanItem::Tag {
@@ -247,9 +246,13 @@ pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
             } => {
                 let g = tag_geometry(*anchor, *at, text, *round, look, 1.0 / map.k());
                 let mut pts: Vec<DVec2> = g.outline.iter().map(|p| to(*p)).collect();
-                canvas.fill(&pts, 1.0);
-                pts.push(pts[0]);
-                ink_line(canvas, &pts, SYMBOL, look);
+                if g.closed {
+                    canvas.fill(&pts, 1.0);
+                    pts.push(pts[0]);
+                }
+                if pts.len() > 1 {
+                    ink_line(canvas, &pts, SYMBOL, look);
+                }
                 if let Some((p, q)) = g.leader {
                     ink_line(canvas, &[to(p), to(q)], DIMENSION, look);
                 }
@@ -292,8 +295,29 @@ pub fn draw_marks(
         let pts: Vec<DVec2> = a.iter().map(|p| to(*p)).collect();
         canvas.fill_rgb(&pts, look.rgb.unwrap_or([0.0; 3]));
     }
+    draw_ends(canvas, &marks.ends, look, to);
     for t in &marks.texts {
         canvas.styled_text(to(t.at), &t.text, t.anchor, t.angle, look);
+    }
+}
+
+/// Draw the ends of dimension lines and leaders: thin and heavy strokes
+/// and filled shapes, in the annotation's colour.
+pub fn draw_ends(
+    canvas: &mut dyn Canvas,
+    ends: &Ends,
+    look: &TextLook,
+    to: &dyn Fn(DVec2) -> DVec2,
+) {
+    let map = |l: &Vec<DVec2>| -> Vec<DVec2> { l.iter().map(|p| to(*p)).collect() };
+    for l in &ends.thin {
+        ink_line(canvas, &map(l), DIMENSION, look);
+    }
+    for l in &ends.heavy {
+        ink_line(canvas, &map(l), TICK, look);
+    }
+    for f in &ends.fills {
+        canvas.fill_rgb(&map(f), look.rgb.unwrap_or([0.0; 3]));
     }
 }
 

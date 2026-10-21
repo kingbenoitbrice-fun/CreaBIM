@@ -88,12 +88,13 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Stair => "chart-no-axes-column-increasing",
         Tool::Railing => "fence",
         Tool::Level => "level",
+        Tool::Align => "align-tool",
     }
 }
 
 fn tool_group(t: Tool) -> u8 {
     match t {
-        Tool::Select => 0,
+        Tool::Select | Tool::Align => 0,
         Tool::Wall
         | Tool::Door
         | Tool::Window
@@ -318,6 +319,10 @@ impl CreaBimApp {
                         items.extend(group.iter().map(|c| ctx(*c)));
                         items.push(Item::Separator);
                     }
+                    if !self.shell.context_3d {
+                        items.push(align_item());
+                        items.push(Item::Separator);
+                    }
                     items.extend(self.hide_in_view_items(self.shell.context_3d));
                 }
                 items.extend([
@@ -404,7 +409,10 @@ impl CreaBimApp {
                 }
                 items
             }
-            key => self.grid_vis_menu(key).unwrap_or_default(),
+            key => self
+                .drafting_menu(key)
+                .or_else(|| self.grid_vis_menu(key))
+                .unwrap_or_default(),
         }
     }
 
@@ -459,6 +467,12 @@ impl CreaBimApp {
             Item::new("levels", "Levels…")
                 .icon("level")
                 .hint("Add, duplicate, rename, move and delete levels"),
+            Item::new("styles", "Annotation styles…")
+                .icon("anno-styles")
+                .hint("Named styles for dimensions, notes and tags: text, ends, tag shape, colour"),
+            Item::new("templates", "Sheet templates…")
+                .icon("sheet-template")
+                .hint("Title blocks for sheets: change the built-in one, or import one from DXF, SVG or another project"),
             Item::Separator,
             Item::Header("Linked files".into()),
             Item::new("link", "Import and link…")
@@ -510,6 +524,8 @@ impl CreaBimApp {
             items.extend(group.iter().map(|c| self.cmd_item(*c)));
             items.push(Item::Separator);
         }
+        items.push(align_item());
+        items.push(Item::Separator);
         let mut pivot = self.menu_items("pivot");
         pivot.insert(0, Item::Header("Rotate and scale about".into()));
         items.push(Item::sub("Pivot", pivot));
@@ -1005,7 +1021,7 @@ impl CreaBimApp {
             }
             "note.leader" => self.plan.anno.leader = !self.plan.anno.leader,
             _ => {
-                if !self.materials_action(head, arg) {
+                if !self.materials_action(head, arg) && !self.drafting_action(head, arg) {
                     self.grid_vis_action(head, arg);
                 }
             }
@@ -1261,6 +1277,7 @@ impl CreaBimApp {
                 "hint": "Draw an arrow to what the note is about: click its point first, then the text",
             }));
         }
+        options.extend(self.drafting_options());
         // the Grid tool's grid system
         options.extend(
             self.grid_vis_options()
@@ -2161,4 +2178,11 @@ pub(super) fn visuals(theme: Theme) -> egui::Visuals {
     w.hovered.bg_stroke = Stroke::new(1.0, p.border);
     w.active.bg_stroke = Stroke::new(1.0, p.accent);
     v
+}
+
+/// The Align tool, in the Edit and right-click menus.
+fn align_item() -> Item {
+    Item::new("align", "Align to a reference…")
+        .icon("align-tool")
+        .hint("Pick a reference line (a wall face, an edge, a guide or a grid line), then an edge to bring flush with it")
 }

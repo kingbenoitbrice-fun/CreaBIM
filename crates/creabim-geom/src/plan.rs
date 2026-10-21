@@ -514,7 +514,10 @@ pub enum PlanItem {
         size: f64,
         align: crate::paper::Anchor,
     },
-    /// An aligned dimension from `a` to `b`, its line `offset` to the left.
+    /// A dimension from `a` to `b`, its line `offset` to the left. A
+    /// horizontal or vertical one measures from `a` to `b` square across,
+    /// so `b` is where the true second point `witness[1]` lands on that
+    /// line, and its witness lines start from `witness`.
     Dimension {
         id: ElementId,
         a: DVec2,
@@ -522,6 +525,7 @@ pub enum PlanItem {
         offset: f64,
         text: String,
         look: crate::annotation::TextLook,
+        witness: Option<[DVec2; 2]>,
     },
     /// A tag: `text` in a bubble at `at`, with a leader back to `anchor`.
     Tag {

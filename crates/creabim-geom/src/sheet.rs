@@ -3,8 +3,10 @@
 
 use crate::paper::{self, Anchor, Canvas, PaperMap, PdfWriter, Stroke, SvgCanvas};
 use crate::section::{view_drawing, Drawing};
-use creabim_core::{ElementId, ElementKind, Model, Sheet, View, Viewport};
+use creabim_core::titleblock::{fill_fields, TextAlign, TitleItem};
+use creabim_core::{ElementId, ElementKind, Model, Sheet, SheetTemplate, View, Viewport};
 use glam::DVec2;
+use std::collections::BTreeMap;
 
 /// Text for the title block that does not live on the sheet itself.
 #[derive(Clone, Debug, Default)]
@@ -171,8 +173,7 @@ pub fn free_spot(model: &Model, sheet: ElementId, view: ElementId) -> DVec2 {
                 )
             })
             .collect();
-    let tb_lo = DVec2::new(s.width - MARGIN - TITLE_BLOCK.x, MARGIN);
-    taken.push((tb_lo, tb_lo + TITLE_BLOCK));
+    taken.push(title_block_bounds(model, s));
     let (x0, x1) = (BINDING + half.x + 5.0, s.width - MARGIN - half.x - 5.0);
     let (y0, y1) = (MARGIN + half.y + 10.0, s.height - MARGIN - half.y - 5.0);
     let mut y = y1;
@@ -194,8 +195,122 @@ pub fn free_spot(model: &Model, sheet: ElementId, view: ElementId) -> DVec2 {
     middle
 }
 
-/// Border and title block.
-pub fn draw_frame(c: &mut dyn Canvas, sheet: &Sheet, title: &str, scales: &str, info: &SheetInfo) {
+/// The template a sheet's title block comes from, if it has one that
+/// still exists.
+pub fn template_of<'a>(model: &'a Model, sheet: &Sheet) -> Option<&'a SheetTemplate> {
+    match &model.get(sheet.template?)?.kind {
+        ElementKind::SheetTemplate(t) => Some(t),
+        _ => None,
+    }
+}
+
+/// The values a sheet's title block fields read: the built-in ones, then
+/// its template's own (their defaults, unless the sheet sets them).
+pub fn field_values(
+    sheet: &Sheet,
+    template: Option<&SheetTemplate>,
+    title: &str,
+    scales: &str,
+    info: &SheetInfo,
+) -> BTreeMap<String, String> {
+    let mut v = BTreeMap::new();
+    if let Some(t) = template {
+        for (k, d) in &t.fields {
+            v.insert(k.clone(), d.clone());
+        }
+    }
+    for (k, val) in &sheet.fields {
+        v.insert(k.clone(), val.clone());
+    }
+    v.insert("sheet".into(), title.to_string());
+    v.insert("number".into(), sheet.number.clone());
+    v.insert("project".into(), info.project.clone());
+    v.insert("scale".into(), scales.to_string());
+    v.insert("date".into(), info.date.clone());
+    v
+}
+
+/// Where a sheet's title block sits, mm from its lower left: the
+/// template's drawing, or the built-in block.
+pub fn title_block_bounds(model: &Model, sheet: &Sheet) -> (DVec2, DVec2) {
+    if let Some((lo, hi)) = template_of(model, sheet).and_then(|t| {
+        let o = t.corner.at(sheet.width, sheet.height);
+        t.bounds().map(|(lo, hi)| (lo + o, hi + o))
+    }) {
+        return (lo, hi);
+    }
+    let lo = DVec2::new(sheet.width - MARGIN - TITLE_BLOCK.x, MARGIN);
+    (lo, lo + TITLE_BLOCK)
+}
+
+/// A template's title block on a sheet, its fields filled in.
+pub fn draw_template(
+    c: &mut dyn Canvas,
+    sheet: &Sheet,
+    t: &SheetTemplate,
+    values: &BTreeMap<String, String>,
+) {
+    let o = t.corner.at(sheet.width, sheet.height);
+    if t.border {
+        let lo = DVec2::new(BINDING, MARGIN);
+        let hi = DVec2::new(sheet.width - MARGIN, sheet.height - MARGIN);
+        c.rect(lo, hi, Stroke::solid(0.5, 0.0));
+    }
+    for it in &t.items {
+        match it {
+            TitleItem::Line { points, width } => {
+                let pts: Vec<DVec2> = points.iter().map(|p| *p + o).collect();
+                c.line(&pts, Stroke::solid(*width, 0.0));
+            }
+            TitleItem::Fill { points, gray } => {
+                let pts: Vec<DVec2> = points.iter().map(|p| *p + o).collect();
+                c.fill(&pts, *gray);
+            }
+            TitleItem::Text {
+                at,
+                size,
+                text,
+                align,
+                angle,
+            } => {
+                let anchor = match align {
+                    TextAlign::Start => Anchor::Start,
+                    TextAlign::Middle => Anchor::Middle,
+                    TextAlign::End => Anchor::End,
+                };
+                let text = fill_fields(text, values);
+                c.text_angle(*at + o, *size, &text, anchor, *angle);
+            }
+        }
+    }
+}
+
+/// Border and title block: the sheet's template, or the built-in block.
+pub fn draw_frame(
+    c: &mut dyn Canvas,
+    model: &Model,
+    sheet: &Sheet,
+    title: &str,
+    scales: &str,
+    info: &SheetInfo,
+) {
+    match template_of(model, sheet) {
+        Some(t) => {
+            let values = field_values(sheet, Some(t), title, scales, info);
+            draw_template(c, sheet, t, &values);
+        }
+        None => draw_builtin_frame(c, sheet, title, scales, info),
+    }
+}
+
+/// The built-in border and title block.
+pub fn draw_builtin_frame(
+    c: &mut dyn Canvas,
+    sheet: &Sheet,
+    title: &str,
+    scales: &str,
+    info: &SheetInfo,
+) {
     let (w, h) = (sheet.width, sheet.height);
     let lo = DVec2::new(BINDING, MARGIN);
     let hi = DVec2::new(w - MARGIN, h - MARGIN);
@@ -244,6 +359,75 @@ pub fn draw_frame(c: &mut dyn Canvas, sheet: &Sheet, title: &str, scales: &str, 
         "CreaBIM",
         Anchor::End,
     );
+}
+
+/// Records what is drawn on it as title block items, from `origin`.
+struct Recorder {
+    origin: DVec2,
+    items: Vec<TitleItem>,
+}
+
+impl Canvas for Recorder {
+    fn line(&mut self, pts: &[DVec2], stroke: Stroke) {
+        self.items.push(TitleItem::Line {
+            points: pts.iter().map(|p| *p - self.origin).collect(),
+            width: stroke.width,
+        });
+    }
+
+    fn fill(&mut self, pts: &[DVec2], gray: f64) {
+        self.items.push(TitleItem::Fill {
+            points: pts.iter().map(|p| *p - self.origin).collect(),
+            gray,
+        });
+    }
+
+    fn text_angle(&mut self, at: DVec2, size: f64, text: &str, anchor: Anchor, angle: f64) {
+        self.items.push(TitleItem::Text {
+            at: at - self.origin,
+            size,
+            text: text.to_string(),
+            align: match anchor {
+                Anchor::Start => TextAlign::Start,
+                Anchor::Middle => TextAlign::Middle,
+                Anchor::End => TextAlign::End,
+            },
+            angle,
+        });
+    }
+
+    fn image(
+        &mut self,
+        _lo: DVec2,
+        _hi: DVec2,
+        _clip: Option<(DVec2, DVec2)>,
+        _raster: &std::sync::Arc<crate::raster::Raster>,
+    ) {
+    }
+}
+
+/// The built-in title block as a template to change: its lines and text,
+/// with fields where it writes the sheet's own values.
+pub fn builtin_template() -> SheetTemplate {
+    let sheet = Sheet::a("{number}", "A3");
+    let info = SheetInfo {
+        project: "{project}".into(),
+        date: "{date}".into(),
+    };
+    let mut rec = Recorder {
+        origin: DVec2::new(sheet.width, 0.0),
+        items: vec![],
+    };
+    draw_builtin_frame(&mut rec, &sheet, "{sheet}", "{scale}", &info);
+    // the border is the template's own switch
+    rec.items.remove(0);
+    SheetTemplate {
+        corner: creabim_core::titleblock::Corner::BottomRight,
+        items: rec.items,
+        border: true,
+        fields: vec![],
+        paper: None,
+    }
 }
 
 /// The scale text for a title block: one scale, or "As indicated".
@@ -307,7 +491,7 @@ pub fn draw_sheet(
         return;
     };
     let title = model.get(sheet).map(|e| e.name.as_str()).unwrap_or("");
-    draw_frame(c, s, title, &scale_text(model, views), info);
+    draw_frame(c, model, s, title, &scale_text(model, views), info);
     for v in views {
         paper::draw(c, &v.drawing, &v.map);
         draw_view_title(c, v);
@@ -423,6 +607,7 @@ mod tests {
                 color: Some([0.8, 0.0, 0.0]),
                 bold: true,
                 italic: false,
+                ..TextStyle::default()
             }),
         );
         let mut on_sheet = Note::new(sheet, DVec2::new(60.0, 60.0), "General note\nSecond line");
@@ -515,5 +700,85 @@ mod tests {
         assert_ne!(before[0].drawing, after[0].drawing);
         // the viewport stays pinned: same mapping
         assert_eq!(before[0].map, after[0].map);
+    }
+
+    #[test]
+    fn the_built_in_block_as_a_template_draws_the_same() {
+        let m = sample_house();
+        let (id, s) = sheets(&m)[0];
+        let views = placed_views(&m, id, &mut |v| view_drawing(&m, v));
+        let info = SheetInfo {
+            project: "House".into(),
+            date: "2026-10-21".into(),
+        };
+        let title = m.get(id).unwrap().name.clone();
+        let scales = scale_text(&m, &views);
+        let mut a = SvgCanvas::new(DVec2::new(s.width, s.height));
+        draw_builtin_frame(&mut a, s, &title, &scales, &info);
+        let t = builtin_template();
+        assert!(t.used_fields().contains(&"project".to_string()));
+        let values = field_values(s, Some(&t), &title, &scales, &info);
+        let mut b = SvgCanvas::new(DVec2::new(s.width, s.height));
+        draw_template(&mut b, s, &t, &values);
+        assert_eq!(a.finish(), b.finish());
+    }
+
+    #[test]
+    fn a_template_title_block_fills_its_fields_on_every_sheet() {
+        use creabim_core::titleblock::{Corner, SheetTemplate, TextAlign, TitleItem};
+        use creabim_core::{Element, Transaction};
+        let mut doc = creabim_core::Document::from_model(sample_house());
+        let t = SheetTemplate {
+            corner: Corner::BottomRight,
+            items: vec![
+                TitleItem::Line {
+                    points: vec![DVec2::new(-100.0, 10.0), DVec2::new(-10.0, 10.0)],
+                    width: 0.35,
+                },
+                TitleItem::Text {
+                    at: DVec2::new(-95.0, 20.0),
+                    size: 4.0,
+                    text: "{number} · {client}".into(),
+                    align: TextAlign::Start,
+                    angle: 0.0,
+                },
+            ],
+            border: false,
+            fields: vec![("client".into(), "Client".into())],
+            paper: None,
+        };
+        let te = Element::new("Office", ElementKind::SheetTemplate(t));
+        let tid = te.id;
+        doc.commit(Transaction::new("Template").insert(te)).unwrap();
+        let (sid, _) = sheets(doc.model())[0];
+        let info = SheetInfo::default();
+        let before = sheet_svg(doc.model(), sid, &info).unwrap();
+        assert!(before.contains("PROJECT"), "the built-in block");
+        doc.edit(sid, "Use template", |e| {
+            if let ElementKind::Sheet(s) = &mut e.kind {
+                s.template = Some(tid);
+                s.fields.insert("client".into(), "Ana Lopes".into());
+            }
+        })
+        .unwrap();
+        let svg = sheet_svg(doc.model(), sid, &info).unwrap();
+        assert!(!svg.contains("PROJECT"), "the template replaces it");
+        let s = sheet_of(doc.model(), sid).unwrap();
+        assert!(
+            svg.contains(&format!("{} · Ana Lopes", s.number)),
+            "fields filled"
+        );
+        // its bounds are measured from the corner, and views keep clear of it
+        let (lo, hi) = title_block_bounds(doc.model(), s);
+        assert!(
+            (hi.x - (s.width - 10.0)).abs() < 1e-9 && lo.y > 9.0,
+            "{lo} {hi}"
+        );
+        // deleting the template brings the built-in block back
+        doc.commit(Transaction::new("Delete").remove_cascade(doc.model(), tid))
+            .unwrap();
+        assert!(sheet_svg(doc.model(), sid, &info)
+            .unwrap()
+            .contains("PROJECT"));
     }
 }

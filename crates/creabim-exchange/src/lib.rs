@@ -13,6 +13,7 @@ pub mod gltf;
 pub mod link;
 pub mod materials;
 pub mod shape;
+pub mod titleblock;
 
 pub use assign::{assign, Assign};
 pub use link::{sync, Incoming, SyncReport};

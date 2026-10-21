@@ -294,6 +294,7 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
         | ElementKind::Tag(_)
         | ElementKind::Note(_)
         | ElementKind::TextStyle(_)
+        | ElementKind::SheetTemplate(_)
         | ElementKind::Units(_)
         | ElementKind::Cut(_)
         | ElementKind::GridGroup(_) => return None,

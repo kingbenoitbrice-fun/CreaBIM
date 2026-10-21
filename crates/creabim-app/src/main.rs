@@ -1,5 +1,6 @@
 //! CreaBIM desktop app.
 
+mod aligntool;
 mod annotate;
 mod app;
 mod boxsel;
