@@ -107,6 +107,6 @@ window.ICONS = {
 "snap-guides": "<path d=\"M2 16h20M7 21 19 3\" stroke-dasharray=\"2.5 2\" /> <circle cx=\"13.7\" cy=\"12\" r=\"2.5\" />",
 "anno-styles": "<path d=\"M3 17h12\" /> <path d=\"m3 14 3 6M12 14l3 6\" /> <circle cx=\"18\" cy=\"17\" r=\"2\" /> <path d=\"M5 4h14M12 4v7\" />",
 "sheet-template": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" /> <path d=\"M11 14h10M11 14v6M16 14v6\" />",
-"stair": "<path d=\"M3 21h4v-4h4v-4h4V9h4V5h2v16z\" /> <path d=\"M3 14 14 3M7 17v-7M11 13V6\" />",
+"stair": "<path d=\"M3 21h4v-4h4v-4h4V9h4V5h2v16z\" /> <path d=\"M3 14 12 5\" />",
 "xray": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\" /> <rect x=\"8\" y=\"9\" width=\"8\" height=\"6\" stroke-dasharray=\"2 2\" />"
 };

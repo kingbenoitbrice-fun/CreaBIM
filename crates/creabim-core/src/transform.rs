@@ -615,8 +615,13 @@ mod tests {
             )),
         );
         let (nid, did) = (note.id, dim.id);
-        doc.commit(crate::Transaction::new("Add").insert(sec).insert(note).insert(dim))
-            .unwrap();
+        doc.commit(
+            crate::Transaction::new("Add")
+                .insert(sec)
+                .insert(note)
+                .insert(dim),
+        )
+        .unwrap();
         let tx = flip_view(doc.model(), id).unwrap();
         doc.commit(tx).unwrap();
         let ElementKind::View(v) = &doc.model().get(id).unwrap().kind else {
@@ -634,7 +639,10 @@ mod tests {
         let ElementKind::Dimension(d) = &doc.model().get(did).unwrap().kind else {
             panic!()
         };
-        assert_eq!((d.a.local, d.b.local), (DVec2::new(9.0, 0.0), DVec2::new(6.0, 0.0)));
+        assert_eq!(
+            (d.a.local, d.b.local),
+            (DVec2::new(9.0, 0.0), DVec2::new(6.0, 0.0))
+        );
         assert_eq!(d.offset, -0.5);
         assert_eq!(doc.undo_label(), Some("Flip section"));
         doc.undo();

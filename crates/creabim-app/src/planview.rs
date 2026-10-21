@@ -588,10 +588,17 @@ pub fn show(
     crate::annotate::draw_grips(&painter, &xf, &plan.items, selection);
     crate::sketch::draw_marks_in_pane(&painter, doc.model(), selection.active, kind, &xf);
     if tool == Tool::Align {
+        let model = doc.model();
         let hover = response
             .hover_pos()
             .and_then(|p| {
-                crate::aligntool::edge_at(&plan.items, xf.to_world(p), 6.0 / xf.scale as f64)
+                crate::aligntool::hover_edge(
+                    model,
+                    &state.align,
+                    &plan.items,
+                    xf.to_world(p),
+                    6.0 / xf.scale as f64,
+                )
             })
             .map(|(_, a, b)| (a, b));
         crate::aligntool::draw_picks(&painter, &xf, &state.align, view, hover);
@@ -864,8 +871,14 @@ pub fn show(
         } else {
             Default::default()
         };
+        // the selection's own faces win over those lying on them
+        let chosen = selection.all();
         let pick_face = |pos: Pos2| {
-            let takes = |id: ElementId| pushable.contains(&id);
+            let takes = |id: ElementId| {
+                pushable
+                    .contains(&id)
+                    .then_some(u8::from(chosen.contains(&id)))
+            };
             let px = 1.0 / xf.scale as f64;
             crate::paneface::face_at(
                 &plan.items,
@@ -873,7 +886,7 @@ pub fn show(
                 xf.to_world(pos),
                 6.0 * px,
                 plane_z,
-                3.0 * px,
+                5.0 * px,
                 &takes,
             )
             .map(|f| f.pick)

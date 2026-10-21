@@ -296,6 +296,25 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
     }
 }
 
+/// A handle that moves across the plan, seen in a section or elevation
+/// (looking level along `look`): there it slides across the paper, along
+/// the section line, so wall ends, slab corners, beam ends and the like
+/// can be dragged there too.
+pub fn in_section(h: Handle, look: DVec3) -> Handle {
+    match h.constraint {
+        Constraint::Plane { point, normal } if normal.z.abs() > 0.99 && look.z.abs() < 0.1 => {
+            Handle {
+                constraint: Constraint::Line {
+                    point,
+                    dir: DVec3::Z.cross(look).normalize_or(DVec3::X),
+                },
+                ..h
+            }
+        }
+        _ => h,
+    }
+}
+
 /// The elements a drag of `kind` on `id` changes: the element first, then
 /// for a wall end the walls whose ends sit on it (so corners stay closed).
 /// The second list says which end of each joined wall moves.
@@ -825,6 +844,7 @@ pub fn interact(
     };
     let shown: Vec<Handle> = handles(doc.model(), id, face)
         .into_iter()
+        .map(|h| in_section(h, input.look))
         .filter(|h| h.constraint.usable(input.look))
         .collect();
     if let Some(ElementKind::View(v)) = doc.model().get(id).map(|e| &e.kind) {
@@ -933,8 +953,9 @@ pub fn interact(
                 None => Err("only sections and elevations flip".into()),
             };
             *status = Some(match r {
-                Ok(()) => "Flipped: it looks the other way along the same line. Ctrl+Z to undo."
-                    .into(),
+                Ok(()) => {
+                    "Flipped: it looks the other way along the same line. Ctrl+Z to undo.".into()
+                }
                 Err(e) => format!("Couldn't do that: {e}"),
             });
             return true;
@@ -1401,5 +1422,33 @@ mod tests {
             edit_corners(&mut doc, id, HandleKind::SlabCorner(0)).unwrap();
         }
         assert!(edit_corners(&mut doc, id, HandleKind::SlabCorner(0)).is_err());
+    }
+
+    #[test]
+    fn plan_handles_slide_along_a_section() {
+        let m = sample_house();
+        let (id, _) = wall_with_door(&m);
+        // a section looking north: wall ends slide east and west
+        let look = DVec3::Y;
+        let end = handles(&m, id, None)
+            .into_iter()
+            .find(|h| matches!(h.kind, HandleKind::WallEnd { .. }))
+            .unwrap();
+        assert!(!end.constraint.usable(look));
+        let h = in_section(end, look);
+        assert!(h.constraint.usable(look));
+        let Constraint::Line { dir, .. } = h.constraint else {
+            panic!()
+        };
+        assert!(dir.dot(look).abs() < 1e-9 && dir.z.abs() < 1e-9);
+        // a ray straight into the paper lands on the line, at the pointer
+        let ray = Ray {
+            o: DVec3::new(3.0, -50.0, end.at.z),
+            d: look,
+        };
+        let p = h.constraint.hit(ray).unwrap();
+        assert!((p.x - 3.0).abs() < 1e-9);
+        // plans keep the handle as it was
+        assert_eq!(in_section(end, -DVec3::Z), end);
     }
 }

@@ -40,36 +40,70 @@ pub fn to_model_point(space: Space, p: DVec2, z: f64) -> DVec3 {
     }
 }
 
-/// The straight edge of an element that `takes` under `p` (within `tol`),
-/// as its element and ends.
+/// What an element counts for when edges lie on top of each other.
+pub type Rank<'a> = &'a dyn Fn(ElementId) -> Option<u8>;
+
+/// The straight edge under `p` (within `tol`), as its element and ends.
+/// `rank` leaves out elements it gives `None`; where edges lie on top of
+/// each other (a slab's top along the top of the wall seen beyond it), a
+/// higher rank wins, then an edge of what is cut over one seen beyond.
 pub fn edge_at(
     items: &[PlanItem],
     p: DVec2,
     tol: f64,
-    takes: &dyn Fn(ElementId) -> bool,
+    rank: Rank,
 ) -> Option<(ElementId, DVec2, DVec2)> {
-    let mut best: Option<(f64, ElementId, DVec2, DVec2)> = None;
-    let mut consider = |id: ElementId, a: DVec2, b: DVec2| {
-        if a.distance(b) < 1e-9 || !takes(id) {
+    edges_at(items, p, tol, rank).into_iter().next()
+}
+
+/// Every straight edge under `p` (within `tol`), best first as
+/// [`edge_at`] ranks them.
+pub fn edges_at(
+    items: &[PlanItem],
+    p: DVec2,
+    tol: f64,
+    rank: Rank,
+) -> Vec<(ElementId, DVec2, DVec2)> {
+    let mut found: Vec<(f64, ElementId, DVec2, DVec2)> = vec![];
+    let mut consider = |id: ElementId, a: DVec2, b: DVec2, cut: bool| {
+        if a.distance(b) < 1e-9 {
             return;
         }
+        let Some(r) = rank(id) else {
+            return;
+        };
         let d = segment_distance(p, a, b);
-        if d < tol && best.is_none_or(|(bd, ..)| d < bd) {
-            best = Some((d, id, a, b));
+        // a pixel or two either way: the better edge wins
+        let score = d - tol * (0.3 * r as f64 + if cut { 0.15 } else { 0.0 });
+        if d < tol {
+            found.push((score, id, a, b));
         }
     };
     for it in items {
         match it {
-            PlanItem::Line { id, a, b, pen } if *pen != Pen::Underlay => consider(*id, *a, *b),
-            PlanItem::Polygon { id, points, .. } | PlanItem::Fill { id, points, .. } => {
+            PlanItem::Line { id, a, b, pen } if *pen != Pen::Underlay => {
+                consider(*id, *a, *b, *pen == Pen::Cut)
+            }
+            PlanItem::Polygon { id, points, pen } => {
                 for i in 0..points.len() {
-                    consider(*id, points[i], points[(i + 1) % points.len()]);
+                    consider(
+                        *id,
+                        points[i],
+                        points[(i + 1) % points.len()],
+                        *pen == Pen::Cut,
+                    );
+                }
+            }
+            PlanItem::Fill { id, points, .. } => {
+                for i in 0..points.len() {
+                    consider(*id, points[i], points[(i + 1) % points.len()], true);
                 }
             }
             _ => {}
         }
     }
-    best.map(|(_, id, a, b)| (id, a, b))
+    found.sort_by(|a, b| a.0.total_cmp(&b.0));
+    found.into_iter().map(|(_, id, a, b)| (id, a, b)).collect()
 }
 
 /// Which side of the edge `a`–`b` of `id` is outside it: the side away
@@ -117,7 +151,7 @@ pub fn outward(items: &[PlanItem], id: ElementId, a: DVec2, b: DVec2, at: DVec2)
     }
 }
 
-/// The face of an element that `takes` under `p` in a pane: its edge, and
+/// The face of an element `rank` takes under `p` in a pane (see [`edge_at`]): its edge, and
 /// the face as the model sees it. `z` is the height a plan is drawn at;
 /// `band` how wide the highlight is drawn, in the drawing's units.
 pub fn face_at(
@@ -127,9 +161,9 @@ pub fn face_at(
     tol: f64,
     z: f64,
     band: f64,
-    takes: &dyn Fn(ElementId) -> bool,
+    rank: Rank,
 ) -> Option<PaneFace> {
-    let (id, a, b) = edge_at(items, p, tol, takes)?;
+    let (id, a, b) = edge_at(items, p, tol, rank)?;
     Some(face_of_edge(items, space, id, a, b, p, z, band))
 }
 
@@ -210,9 +244,18 @@ mod tests {
     fn an_edge_faces_away_from_its_element() {
         let id = ElementId::new();
         let items = square(id);
-        let all = |_: ElementId| true;
+        let all = |_: ElementId| Some(0);
         // the right edge of the square, picked in a plan
-        let f = face_at(&items, Space::Plan, DVec2::new(2.01, 0.5), 0.05, 3.0, 0.02, &all).unwrap();
+        let f = face_at(
+            &items,
+            Space::Plan,
+            DVec2::new(2.01, 0.5),
+            0.05,
+            3.0,
+            0.02,
+            &all,
+        )
+        .unwrap();
         assert_eq!(f.pick.id, id);
         assert!((f.pick.face.normal - DVec3::X).length() < 1e-9);
         assert!((f.pick.face.point - DVec3::new(2.0, 0.5, 3.0)).length() < 1e-9);
@@ -228,7 +271,7 @@ mod tests {
         let f = face_at(&items, sec, DVec2::new(0.0, 0.5), 0.05, 0.0, 0.02, &all).unwrap();
         assert!((f.pick.face.normal + DVec3::X).length() < 1e-9);
         // nothing the filter refuses is picked
-        let none = |_: ElementId| false;
+        let none = |_: ElementId| None;
         assert!(face_at(&items, sec, DVec2::new(0.0, 0.5), 0.05, 0.0, 0.02, &none).is_none());
     }
 
@@ -246,9 +289,21 @@ mod tests {
             line(DVec2::new(4.0, 0.0), DVec2::new(4.0, 3.0)),
             line(DVec2::new(4.0, 3.0), DVec2::new(0.0, 3.0)),
         ];
-        let n = outward(&items, id, items_end(&items, 2).0, items_end(&items, 2).1, DVec2::new(2.0, 3.0));
+        let n = outward(
+            &items,
+            id,
+            items_end(&items, 2).0,
+            items_end(&items, 2).1,
+            DVec2::new(2.0, 3.0),
+        );
         assert!((n - DVec2::Y).length() < 1e-9);
-        let n = outward(&items, id, DVec2::new(0.0, 0.0), DVec2::new(4.0, 0.0), DVec2::new(2.0, 0.0));
+        let n = outward(
+            &items,
+            id,
+            DVec2::new(0.0, 0.0),
+            DVec2::new(4.0, 0.0),
+            DVec2::new(2.0, 0.0),
+        );
         assert!((n + DVec2::Y).length() < 1e-9);
     }
 

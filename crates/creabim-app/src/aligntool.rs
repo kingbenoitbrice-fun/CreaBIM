@@ -93,6 +93,25 @@ pub fn edge_at(items: &[PlanItem], p: DVec2, tol: f64) -> Option<(ElementId, DVe
     crate::annotate::segment_at(items, p, tol)
 }
 
+/// The edge the next click takes: with a reference picked in Stretch
+/// mode, one that stretches wins where edges lie on top of each other.
+pub fn hover_edge(
+    model: &creabim_core::Model,
+    state: &AlignState,
+    items: &[PlanItem],
+    p: DVec2,
+    tol: f64,
+) -> Option<(ElementId, DVec2, DVec2)> {
+    if state.reference.is_some() && state.mode == AlignMode::Stretch {
+        let rank = |i: ElementId| {
+            let push = model.get(i).is_some_and(|e| pushpull::can_push(&e.kind));
+            Some(u8::from(push))
+        };
+        return paneface::edge_at(items, p, tol, &rank);
+    }
+    edge_at(items, p, tol)
+}
+
 /// The turn, in degrees, that makes direction `t` parallel to `r` by the
 /// shorter way round (lines have no direction).
 pub fn turn_to(t: DVec2, r: DVec2) -> f64 {
@@ -192,11 +211,40 @@ pub fn click(
     );
     // a grid line has no faces: in a plan its end extends instead
     if stretch && !(grid && matches!(kind, PaneKind::Plan { .. })) {
-        let r = stretch_to(doc, kind, items, id, (t0, t1), (r0, r1), raw);
-        if r.is_ok() {
-            selection.only(id);
+        // of edges on top of each other (a beam's end on a column's face),
+        // the first that can stretch there goes
+        let model = doc.model();
+        let rank = |i: ElementId| {
+            let push = model.get(i).is_some_and(|e| pushpull::can_push(&e.kind));
+            Some(u8::from(push))
+        };
+        let mut tried = paneface::edges_at(items, raw, tol, &rank);
+        if tried.is_empty() {
+            tried.push((id, t0, t1));
         }
-        state.status = Some(r.unwrap_or_else(|e| e));
+        let mut first_err = None;
+        let mut done = None;
+        for (id, t0, t1) in tried {
+            match stretch_to(model, kind, items, id, (t0, t1), (r0, r1), raw) {
+                Ok(r) => {
+                    done = Some((id, r));
+                    break;
+                }
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
+        state.status = match done {
+            Some((id, (tx, msg))) => Some(match doc.commit(tx) {
+                Ok(()) => {
+                    selection.only(id);
+                    msg
+                }
+                Err(e) => format!("Couldn't do that: {e}"),
+            }),
+            None => first_err,
+        };
         return Ok(());
     }
     let model = doc.model();
@@ -300,20 +348,19 @@ pub fn click(
     Ok(())
 }
 
-/// Stretch the face the edge `t` of `id` stands for (picked at `at`) until
-/// it lies on the reference line `r`, in one undo step; walls joined to a
-/// stretched wall end follow it. The message for the status bar, or why
-/// it can't.
+/// The stretch of the face the edge `t` of `id` stands for (picked at
+/// `at`) to the reference line `r`, as one undo step; walls joined to a
+/// stretched wall end follow it. With it the message for the status bar;
+/// else why it can't.
 fn stretch_to(
-    doc: &mut Document,
+    model: &creabim_core::Model,
     kind: PaneKind,
     items: &[PlanItem],
     id: ElementId,
     (t0, t1): (DVec2, DVec2),
     (r0, r1): (DVec2, DVec2),
     at: DVec2,
-) -> Result<String, String> {
-    let model = doc.model();
+) -> Result<(Transaction, String), String> {
     let Some(e) = model.get(id) else {
         return Err("Click on the edge of what to stretch.".into());
     };
@@ -328,10 +375,7 @@ fn stretch_to(
         return Err("Stretch takes an edge parallel to the reference: turn it with Align first, or use Extend for a wall or beam end at an angle.".into());
     }
     let (space, z) = match kind {
-        PaneKind::Plan { level } => (
-            Space::Plan,
-            model.level(level).map_or(0.0, |l| l.elevation),
-        ),
+        PaneKind::Plan { level } => (Space::Plan, model.level(level).map_or(0.0, |l| l.elevation)),
         PaneKind::Section { start, end } => (Space::Section { start, end }, 0.0),
         _ => return Err("Stretch works in plans, sections and elevations.".into()),
     };
@@ -354,12 +398,11 @@ fn stretch_to(
     for (o, n) in follow {
         tx = tx.replace(o, n);
     }
-    doc.commit(tx).map_err(|e| format!("Couldn't do that: {e}"))?;
     let way = if s > 0.0 { "out" } else { "in" };
-    Ok(format!(
+    Ok((tx, format!(
         "Stretched {name} {} {way} to the reference. Click more edges to stretch them to it; Esc lets it go.",
         crate::units::len(s.abs())
-    ))
+    )))
 }
 
 /// Draw the picked reference across the pane, and the edge the pointer is
@@ -527,10 +570,13 @@ mod tests {
         let mut doc = Document::from_model(creabim_core::sample::sample_house());
         let l = level(&doc);
         let w = wall(&doc, l, DVec2::new(20.0, 0.0), DVec2::new(26.0, 0.0));
-        let (id, t) = (w.id, match &w.kind {
-            ElementKind::Wall(w) => w.thickness,
-            _ => unreachable!(),
-        });
+        let (id, t) = (
+            w.id,
+            match &w.kind {
+                ElementKind::Wall(w) => w.thickness,
+                _ => unreachable!(),
+            },
+        );
         doc.commit(Transaction::new("Wall").insert(w)).unwrap();
         let mut state = PlanState::default();
         let mut sel = Selection::default();
@@ -639,7 +685,11 @@ mod tests {
         assert!((after.top(z0) - top).abs() < 1e-9);
         // and its east edge out to x = 12 in the same section
         state.align.reference = Some((view, DVec2::new(12.0, 0.0), DVec2::new(12.0, 1.0), None));
-        let items = vec![fill(id, DVec2::new(0.0, bottom - 0.3), DVec2::new(10.0, top))];
+        let items = vec![fill(
+            id,
+            DVec2::new(0.0, bottom - 0.3),
+            DVec2::new(10.0, top),
+        )];
         click(
             &mut doc,
             view,

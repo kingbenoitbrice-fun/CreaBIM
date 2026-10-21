@@ -495,7 +495,13 @@ mod tests {
     }
 
     /// `kind` with the face through `point` facing `normal` pushed by `s`.
-    fn pushed(model: &Model, kind: ElementKind, point: DVec3, normal: DVec3, s: f64) -> Option<ElementKind> {
+    fn pushed(
+        model: &Model,
+        kind: ElementKind,
+        point: DVec3,
+        normal: DVec3,
+        s: f64,
+    ) -> Option<ElementKind> {
         let e = Element::new("Test", kind);
         let face = FaceRef {
             point,
@@ -574,7 +580,14 @@ mod tests {
         };
         assert!((b.depth - beam.depth - 0.1).abs() < 1e-9);
         // a sloping face isn't one of a beam's
-        assert!(pushed(&model, ElementKind::Beam(beam), DVec3::ZERO, DVec3::new(1.0, 0.0, 1.0), 0.1).is_none());
+        assert!(pushed(
+            &model,
+            ElementKind::Beam(beam),
+            DVec3::ZERO,
+            DVec3::new(1.0, 0.0, 1.0),
+            0.1
+        )
+        .is_none());
     }
 
     #[test]
@@ -603,9 +616,13 @@ mod tests {
         assert_eq!(r.boundary[0], DVec2::ZERO);
         // a slope pushed out is a thicker roof
         let slope = DVec3::new(0.5, 0.0, 0.866);
-        let Some(ElementKind::Roof(r)) =
-            pushed(&model, ElementKind::Roof(roof.clone()), DVec3::ZERO, slope, 0.05)
-        else {
+        let Some(ElementKind::Roof(r)) = pushed(
+            &model,
+            ElementKind::Roof(roof.clone()),
+            DVec3::ZERO,
+            slope,
+            0.05,
+        ) else {
             panic!()
         };
         assert!((r.thickness - roof.thickness - 0.05).abs() < 1e-9);
@@ -661,10 +678,7 @@ mod tests {
     fn a_railing_rises_and_a_door_widens_by_its_jamb() {
         use crate::members::Railing;
         let model = sample_house();
-        let rail = Railing::new(
-            level(&model),
-            vec![DVec3::ZERO, DVec3::new(3.0, 0.0, 0.0)],
-        );
+        let rail = Railing::new(level(&model), vec![DVec3::ZERO, DVec3::new(3.0, 0.0, 0.0)]);
         let Some(ElementKind::Railing(r)) = pushed(
             &model,
             ElementKind::Railing(rail.clone()),
