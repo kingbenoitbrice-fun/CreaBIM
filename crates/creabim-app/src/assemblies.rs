@@ -412,7 +412,7 @@ impl CreaBimApp {
                     .map(|e| e.id);
                 self.run_asm(AsmAsk::Assign(a));
             }
-            _ => return false,
+            _ => return self.types_action(head, arg),
         }
         true
     }

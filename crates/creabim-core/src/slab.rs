@@ -244,6 +244,7 @@ mod tests {
                 top: Default::default(),
                 disallow_join: [false; 2],
                 attach_top: vec![],
+                curtain: None,
             }),
         )
     }
@@ -423,5 +424,187 @@ mod tests {
         assert!(slab_from_sketch(&m, &up, 0.2).is_err());
         sk.closed = false;
         assert!(slab_from_sketch(&m, &sk, 0.2).is_err());
+    }
+}
+
+/// A shaft: a vertical hole through every slab and roof between its base
+/// (`base_offset` above `level`) and its top (`top_offset` above
+/// `top_level`), for a stair well, a lift or a riser. Like Revit's shaft
+/// opening, it is one element: move or reshape it and every floor it
+/// passes through follows.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Shaft {
+    pub level: ElementId,
+    /// Its outline in plan, counter-clockwise.
+    pub boundary: Vec<DVec2>,
+    #[serde(default)]
+    pub base_offset: f64,
+    /// The level its top is tied to; none (or one that is gone) stops it at
+    /// its own level's height above its base.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_level: Option<ElementId>,
+    #[serde(default)]
+    pub top_offset: f64,
+}
+
+impl Shaft {
+    pub fn new(level: ElementId, boundary: Vec<DVec2>, top_level: Option<ElementId>) -> Self {
+        let mut boundary = boundary;
+        if crate::polygon::signed_area2(&boundary) < 0.0 {
+            boundary.reverse();
+        }
+        Self {
+            level,
+            boundary,
+            base_offset: 0.0,
+            top_level,
+            top_offset: 0.0,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.boundary.len() < 3 || self.boundary.iter().any(|p| !p.is_finite()) {
+            return Err("a shaft needs an outline of at least 3 points".into());
+        }
+        if crate::polygon::signed_area2(&self.boundary).abs() < 1e-6 {
+            return Err("a shaft's outline has no area".into());
+        }
+        if !(self.base_offset.is_finite() && self.top_offset.is_finite()) {
+            return Err("shaft offsets must be numbers".into());
+        }
+        Ok(())
+    }
+
+    /// Absolute heights of its base and its top.
+    pub fn span(&self, model: &Model) -> (f64, f64) {
+        let own = model.level(self.level);
+        let z0 = own.map_or(0.0, |l| l.elevation) + self.base_offset;
+        let z1 = match self.top_level.and_then(|t| model.level(t)) {
+            Some(t) => t.elevation + self.top_offset,
+            None => z0 + own.map_or(3.0, |l| l.height) + self.top_offset,
+        };
+        (z0, z1.max(z0 + 0.01))
+    }
+}
+
+/// Holes must each be a polygon of at least 3 finite corners with an area.
+pub fn check_holes(holes: &[Vec<DVec2>]) -> Result<(), String> {
+    for h in holes {
+        if h.len() < 3 || h.iter().any(|p| !p.is_finite()) {
+            return Err("a hole needs at least 3 corners".into());
+        }
+        if crate::polygon::signed_area2(h).abs() < 1e-8 {
+            return Err("a hole has no area".into());
+        }
+    }
+    Ok(())
+}
+
+/// The outlines of the model's shafts passing through the heights `z0..z1`.
+fn shafts_through(model: &Model, z0: f64, z1: f64) -> Vec<Vec<DVec2>> {
+    model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Shaft(s) => {
+                let (b, t) = s.span(model);
+                (b < z1 - 1e-6 && t > z0 + 1e-6).then(|| s.boundary.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every hole through a slab or roof as built: its own holes, and the
+/// shafts passing through it that lie inside its outline. Empty for other
+/// elements.
+pub fn holes_of(model: &Model, e: &crate::Element) -> Vec<Vec<DVec2>> {
+    let (outline, mut holes, z0, z1) = match &e.kind {
+        ElementKind::Slab(s) => {
+            let top = s.top(model.level(s.level).map_or(0.0, |l| l.elevation));
+            (s.outline(), s.holes.clone(), top - s.thickness, top)
+        }
+        ElementKind::Roof(r) => {
+            let base = r.base(model);
+            (
+                r.eave_outline(),
+                r.holes.clone(),
+                base - r.vertical_thickness(),
+                base + r.peak(),
+            )
+        }
+        _ => return vec![],
+    };
+    for h in shafts_through(model, z0, z1) {
+        if h.iter().all(|p| crate::polygon::contains(&outline, *p)) {
+            holes.push(h);
+        }
+    }
+    holes.retain(|h| h.len() >= 3);
+    holes
+}
+
+/// The slabs and roofs a shaft cuts.
+pub fn cut_by_shaft(model: &Model, shaft: &Shaft) -> Vec<ElementId> {
+    model
+        .iter()
+        .filter(|e| matches!(e.kind, ElementKind::Slab(_) | ElementKind::Roof(_)))
+        .filter(|e| holes_of(model, e).iter().any(|h| h == &shaft.boundary))
+        .map(|e| e.id)
+        .collect()
+}
+
+#[cfg(test)]
+mod shaft_tests {
+    use super::*;
+    use crate::{Element, Level, Transaction};
+
+    #[test]
+    fn a_shaft_cuts_the_slabs_between_its_levels_and_old_slabs_have_no_holes() {
+        let mut model = Model::new();
+        let levels: Vec<Element> = [0.0, 3.0, 6.0]
+            .iter()
+            .map(|z| {
+                Element::new(
+                    format!("L{z}"),
+                    ElementKind::Level(Level {
+                        elevation: *z,
+                        height: 3.0,
+                    }),
+                )
+            })
+            .collect();
+        let mut tx = Transaction::new("setup");
+        for l in &levels {
+            tx = tx.insert(l.clone());
+        }
+        let outline = crate::polygon::rectangle(DVec2::ZERO, DVec2::new(8.0, 6.0));
+        let slabs: Vec<Element> = levels
+            .iter()
+            .map(|l| {
+                Element::new(
+                    "Floor",
+                    ElementKind::Slab(Slab::new(l.id, outline.clone(), 0.25)),
+                )
+            })
+            .collect();
+        for s in &slabs {
+            tx = tx.insert(s.clone());
+        }
+        let well = crate::polygon::rectangle(DVec2::new(1.0, 1.0), DVec2::new(3.0, 4.0));
+        let shaft = Shaft::new(levels[0].id, well.clone(), Some(levels[2].id));
+        tx = tx.insert(Element::new("Shaft", ElementKind::Shaft(shaft.clone())));
+        tx.apply(&mut model).unwrap();
+        // the ground slab is under the shaft's base; the floors above are cut
+        let cut = cut_by_shaft(&model, &shaft);
+        assert_eq!(cut, vec![slabs[1].id, slabs[2].id]);
+        // own holes count against the area, and round-trip
+        let mut s = Slab::new(levels[0].id, outline.clone(), 0.25);
+        s.holes = vec![well.clone()];
+        assert!((s.area() - 42.0).abs() < 1e-9);
+        let text = serde_json::to_string(&s).unwrap();
+        assert_eq!(serde_json::from_str::<Slab>(&text).unwrap(), s);
+        let plain = serde_json::to_string(&Slab::new(levels[0].id, outline, 0.25)).unwrap();
+        assert!(!plain.contains("holes"));
+        assert!(check_holes(&[vec![DVec2::ZERO, DVec2::X]]).is_err());
     }
 }

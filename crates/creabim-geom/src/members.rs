@@ -20,7 +20,13 @@ pub fn member_mesh(model: &Model, e: &Element) -> Option<(TriMesh, [f32; 3])> {
             slab_mesh(&b.outline(), b.top(model), b.depth),
             [0.72, 0.64, 0.52],
         ),
-        ElementKind::Roof(r) => (roof_mesh(r, r.base(model)), [0.66, 0.34, 0.26]),
+        ElementKind::Roof(r) => {
+            let holes = creabim_core::slab::holes_of(model, e);
+            (
+                cut_holes(roof_mesh(r, r.base(model)), &holes),
+                [0.66, 0.34, 0.26],
+            )
+        }
         ElementKind::Stair(s) => (
             stair_mesh(s, s.base(model), s.rise(model)),
             [0.82, 0.80, 0.76],
@@ -30,6 +36,18 @@ pub fn member_mesh(model: &Model, e: &Element) -> Option<(TriMesh, [f32; 3])> {
             [0.32, 0.34, 0.38],
         ),
         _ => return None,
+    })
+}
+
+/// A mesh with each hole (a polygon in plan) cut upright through it.
+pub fn cut_holes(mesh: TriMesh, holes: &[Vec<DVec2>]) -> TriMesh {
+    let Some((lo, hi)) = mesh.bounds() else {
+        return mesh;
+    };
+    let (z0, z1) = (lo.z as f64 - 1.0, hi.z as f64 + 1.0);
+    holes.iter().filter(|h| h.len() >= 3).fold(mesh, |m, h| {
+        let tool = slab_mesh(h, z1, z1 - z0);
+        crate::scene::boolean_mesh(&m, &tool, creabim_core::BoolOp::Difference)
     })
 }
 
@@ -302,6 +320,10 @@ pub fn member_plan(model: &Model, e: &Element, cut: f64) -> Vec<PlanItem> {
             // the wall plate, where the roof meets the walls, dashed
             if r.overhang > 1e-6 {
                 ring(&mut items, e, Pen::Hidden, &r.boundary);
+            }
+            // holes through it, crossed
+            for h in creabim_core::slab::holes_of(model, e) {
+                items.extend(crate::plan::hole_marks(e.id, &h, Pen::Projection));
             }
         }
         ElementKind::Stair(s) => stair_plan(&mut items, e, s, s.rise(model), cut - s.base_offset),

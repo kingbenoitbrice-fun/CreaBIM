@@ -155,6 +155,7 @@ fn kind_and_class(e: &creabim_core::Element) -> (&'static str, String) {
         ElementKind::Opening(o) => match o.kind {
             OpeningKind::Door => ("door", "IfcDoor".into()),
             OpeningKind::Window => ("window", "IfcWindow".into()),
+            OpeningKind::Hole => ("mesh", "IfcOpeningElement".into()),
         },
         ElementKind::FreeMesh(f) => ("mesh", f.ifc_class.clone()),
         _ => ("mesh", e.ifc_class().to_string()),
@@ -168,6 +169,7 @@ fn default_material(k: &ElementKind) -> &'static str {
         ElementKind::Opening(o) => match o.kind {
             OpeningKind::Door => "Door",
             OpeningKind::Window => "Glass",
+            OpeningKind::Hole => "Mass",
         },
         _ => "Mass",
     }

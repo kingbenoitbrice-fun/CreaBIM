@@ -30,6 +30,12 @@ pub struct Outline {
     wall: bool,
     /// Draw a roof of this shape and pitch instead of a slab.
     pub roof: Option<(creabim_core::RoofShape, f64)>,
+    /// Draw a shaft from the level up instead of a slab.
+    pub shaft: bool,
+    /// Draw a hole in this slab or roof instead.
+    pub hole_in: Option<ElementId>,
+    /// The type the new slab or roof is an instance of.
+    pub of_type: Option<ElementId>,
 }
 
 /// What a pane does after passing a frame's input to [`Outline::input`].
@@ -60,6 +66,32 @@ impl Outline {
             level,
             wall,
             roof: None,
+            shaft: false,
+            hole_in: None,
+            of_type: None,
+        })
+    }
+
+    /// Start drawing a hole in `id`, a slab or a roof.
+    pub fn hole(model: &Model, id: ElementId) -> Option<Outline> {
+        let elevation = |l: ElementId| model.level(l).map_or(0.0, |l| l.elevation);
+        let (level, z) = match &model.get(id)?.kind {
+            ElementKind::Slab(s) => (s.level, s.top(elevation(s.level))),
+            ElementKind::Roof(r) => (r.level, elevation(r.level) + r.base_offset),
+            _ => return None,
+        };
+        Some(Outline {
+            target: None,
+            points: vec![],
+            bulges: vec![],
+            arc_end: None,
+            z,
+            level,
+            wall: false,
+            roof: None,
+            shaft: false,
+            hole_in: Some(id),
+            of_type: None,
         })
     }
 
@@ -74,6 +106,9 @@ impl Outline {
             level,
             wall: false,
             roof: None,
+            shaft: false,
+            hole_in: None,
+            of_type: None,
         }
     }
 
@@ -87,6 +122,10 @@ impl Outline {
         }
         let what = if self.target.is_some() {
             "Redrawing the slab"
+        } else if self.hole_in.is_some() {
+            "Drawing a hole"
+        } else if self.shaft {
+            "Drawing a shaft"
         } else if self.roof.is_some() {
             "Drawing a roof"
         } else {
@@ -185,6 +224,10 @@ impl Outline {
                 }
                 return Next::Cancel(if self.target.is_some() {
                     "Redraw cancelled."
+                } else if self.hole_in.is_some() {
+                    "Hole cancelled."
+                } else if self.shaft {
+                    "Shaft cancelled. Right-click again to leave the Shaft tool."
                 } else {
                     "Slab cancelled. Right-click again to leave the Slab tool."
                 });
@@ -220,8 +263,26 @@ impl Outline {
                 slab.bulges = bulges;
             }
             slab.make_ccw();
+            if let Some(host) = self.hole_in {
+                return add_hole(doc, host, slab.outline());
+            }
+            if self.shaft {
+                let e = shaft_from_outline(doc.model(), self.level, slab.outline());
+                let id = e.id;
+                doc.commit(Transaction::new("Draw shaft").insert(e))?;
+                return Ok((
+                    "Shaft added: it cuts every slab and roof up to the level above. Set its base and top in Properties. Ctrl+Z to undo.".into(),
+                    Some(id),
+                ));
+            }
+            let stamp = |doc: &Document, mut e: Element| {
+                if let Some(t) = self.of_type {
+                    creabim_core::types::stamp(doc.model(), &mut e, t);
+                }
+                e
+            };
             if let (None, Some((shape, pitch))) = (self.target, self.roof) {
-                let e = crate::memberstool::roof_from_slab(&slab, shape, pitch);
+                let e = stamp(doc, crate::memberstool::roof_from_slab(&slab, shape, pitch));
                 let id = e.id;
                 doc.commit(Transaction::new("Draw roof").insert(e))?;
                 return Ok((
@@ -230,7 +291,7 @@ impl Outline {
                 ));
             }
             let Some(target) = self.target else {
-                let e = Element::new("Slab", ElementKind::Slab(slab));
+                let e = stamp(doc, Element::new("Slab", ElementKind::Slab(slab)));
                 let id = e.id;
                 doc.commit(Transaction::new("Draw slab").insert(e))?;
                 return Ok((
@@ -378,10 +439,98 @@ impl Outline {
     }
 }
 
+/// A shaft with outline `pts` from `level` up to the next level above
+/// (or one storey up from the top level).
+pub fn shaft_from_outline(model: &Model, level: ElementId, pts: Vec<DVec2>) -> Element {
+    let z = model.level(level).map_or(0.0, |l| l.elevation);
+    let top = model
+        .levels()
+        .filter(|(_, l)| l.elevation > z + 1e-6)
+        .min_by(|a, b| a.1.elevation.total_cmp(&b.1.elevation))
+        .map(|(e, _)| e.id);
+    Element::new(
+        "Shaft",
+        ElementKind::Shaft(creabim_core::Shaft::new(level, pts, top)),
+    )
+}
+
+/// Add a hole of outline `pts` to slab or roof `host`; it must lie inside
+/// the host's outline.
+pub fn add_hole(
+    doc: &mut Document,
+    host: ElementId,
+    pts: Vec<DVec2>,
+) -> Result<(String, Option<ElementId>), ModelError> {
+    let Some(before) = doc.model().get(host).cloned() else {
+        return Ok(("The slab is gone.".into(), None));
+    };
+    let mut after = before.clone();
+    let (outline, holes) = match &mut after.kind {
+        ElementKind::Slab(s) => (s.outline(), &mut s.holes),
+        ElementKind::Roof(r) => (r.boundary.clone(), &mut r.holes),
+        _ => return Ok(("Holes go in slabs and roofs.".into(), None)),
+    };
+    if !pts
+        .iter()
+        .all(|p| creabim_core::polygon::contains(&outline, *p))
+    {
+        return Ok((
+            "A hole must lie inside the slab's outline: draw it again inside. To cut through its edge, redraw the outline instead.".into(),
+            None,
+        ));
+    }
+    holes.push(pts);
+    doc.commit(Transaction::new("Draw hole").replace(before, after))?;
+    Ok((
+        "Hole cut. Remove it in Properties, or draw a shaft to cut several floors at once. Ctrl+Z to undo.".into(),
+        None,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use creabim_core::sample::sample_house;
+
+    #[test]
+    fn a_hole_drawn_in_a_slab_cuts_it_and_a_shaft_reaches_the_next_level() {
+        let mut doc = Document::from_model(sample_house());
+        let slab = doc.model().iter().find(|e| e.name == "GF Slab").unwrap().id;
+        let mut o = Outline::hole(doc.model(), slab).unwrap();
+        for p in [(2.0, 2.0), (3.0, 2.0), (3.0, 3.0), (2.0, 3.0)] {
+            o.click(DVec2::new(p.0, p.1), false, false);
+        }
+        o.finish(&mut doc, true).unwrap();
+        let ElementKind::Slab(s) = &doc.model().get(slab).unwrap().kind else {
+            panic!()
+        };
+        assert_eq!(s.holes.len(), 1);
+        assert!((s.area() - 59.0).abs() < 1e-9);
+        // one outside the slab is refused
+        let mut o = Outline::hole(doc.model(), slab).unwrap();
+        for p in [(20.0, 2.0), (21.0, 2.0), (21.0, 3.0)] {
+            o.click(DVec2::new(p.0, p.1), false, false);
+        }
+        let (msg, _) = o.finish(&mut doc, true).unwrap();
+        assert!(msg.contains("inside"));
+        let l = level(doc.model());
+        let e = shaft_from_outline(
+            doc.model(),
+            l,
+            creabim_core::polygon::rectangle(DVec2::new(1.0, 1.0), DVec2::new(2.0, 2.0)),
+        );
+        let ElementKind::Shaft(sh) = &e.kind else {
+            panic!()
+        };
+        let first = doc
+            .model()
+            .levels()
+            .find(|(e, _)| e.name == "First Floor")
+            .unwrap()
+            .0
+            .id;
+        assert_eq!(sh.top_level, Some(first));
+    }
 
     fn level(m: &Model) -> ElementId {
         m.levels().next().unwrap().0.id

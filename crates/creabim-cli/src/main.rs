@@ -14,6 +14,9 @@ usage: (<model> is a .creabim project or a legacy .creabim.json file)
                                        write the sample house model
   creabim sample-layered <out.creabim.json>
                                        the sample house built of layered assemblies
+  creabim sample-typed <out.creabim.json>
+                                       the sample house built of element types,
+                                       with a curtain wall, openings and a shaft
   creabim save-db <in.creabim.json> <out.creabim>
                                        convert a JSON model to a project file
   creabim ifc <model> <out.ifc>        export a model to IFC4
@@ -50,6 +53,10 @@ fn main() -> ExitCode {
         }
         ["sample-layered", out] if is_json(out) => {
             std::fs::write(out, creabim_core::sample::layered_house().to_json())
+                .map_err(|e| e.to_string())
+        }
+        ["sample-typed", out] if is_json(out) => {
+            std::fs::write(out, creabim_core::sample::typed_house().to_json())
                 .map_err(|e| e.to_string())
         }
         ["sample", out] => creabim_store::save(out, &Document::from_model(sample_house()))
