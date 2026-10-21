@@ -25,6 +25,8 @@ use std::collections::HashMap;
 
 #[path = "assemblies.rs"]
 mod assemblies;
+#[path = "drafting.rs"]
+mod drafting;
 #[path = "gridvis.rs"]
 mod gridvis;
 #[path = "levelsui.rs"]
@@ -154,6 +156,8 @@ pub struct CreaBimApp {
     asm: assemblies::AssembliesUi,
     /// The Levels manager and the Project units dialog.
     levels: levelsui::LevelsUi,
+    /// The annotation styles and sheet templates windows.
+    drafting: drafting::DraftingUi,
     /// Orbit about the selection rather than the middle of the view.
     orbit_selection: bool,
     /// Where the 3D view was drawn last frame, for its navigation buttons.
@@ -219,6 +223,7 @@ impl CreaBimApp {
             mat: Default::default(),
             asm: Default::default(),
             levels: Default::default(),
+            drafting: Default::default(),
             orbit_selection: false,
             rect_3d: None,
             status: "Loaded the sample house. Orbit with left drag, pan with right drag, zoom with the wheel.".into(),
@@ -882,6 +887,7 @@ impl CreaBimApp {
                             | ElementKind::Viewport(_)
                             | ElementKind::Material(_)
                             | ElementKind::Units(_)
+                            | ElementKind::SheetTemplate(_)
                     )
             })
             .map(|e| e.id)
@@ -3624,6 +3630,9 @@ impl CreaBimApp {
                             }
                         }
                     });
+                if let Some(l) = self.sheet_template_ui(ui, sh) {
+                    label = l;
+                }
                 if self.active_view != Some(id) && ui.button("Open this sheet").clicked() {
                     self.active_view = Some(id);
                 }
@@ -3728,6 +3737,17 @@ impl CreaBimApp {
                 if num(ui, what, &mut d.offset, -100.0, 100.0) {
                     label = "Move dimension line"
                 }
+                if d.kind == creabim_core::DimensionKind::Linear {
+                    egui::ComboBox::from_label("Measures")
+                        .selected_text(d.axis.label())
+                        .show_ui(ui, |ui| {
+                            for a in creabim_core::DimAxis::ALL {
+                                if ui.selectable_value(&mut d.axis, a, a.label()).changed() {
+                                    label = "Dimension direction"
+                                }
+                            }
+                        });
+                }
                 match crate::annotate::look_ui(ui, self.doc.model(), &mut d.style, &mut d.color) {
                     crate::annotate::LookEdit::Changed(l) => label = l,
                     crate::annotate::LookEdit::NewStyle => new_style = true,
@@ -3789,6 +3809,27 @@ impl CreaBimApp {
                     ))
                     .weak(),
                 );
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(users > 0, egui::Button::new("Select all using it"))
+                        .clicked()
+                    {
+                        self.select_style_users(id);
+                    }
+                    if ui.button("Annotation styles…").clicked() {
+                        self.open_styles(Some(id));
+                    }
+                });
+            }
+            ElementKind::SheetTemplate(_) => {
+                let users = sheets::sheets(self.doc.model())
+                    .into_iter()
+                    .filter(|(_, s)| s.template == Some(id))
+                    .count();
+                ui.label(egui::RichText::new(format!("Used by {users} sheets.")).weak());
+                if ui.button("Sheet templates…").clicked() {
+                    self.drafting.templates_open = true;
+                }
             }
             ElementKind::Grid(g) => {
                 ui.horizontal(|ui| {
@@ -4361,6 +4402,8 @@ impl eframe::App for CreaBimApp {
         self.materials_window(&ctx);
         self.assemblies_window(&ctx);
         self.levels_window(&ctx);
+        self.styles_window(&ctx);
+        self.templates_window(&ctx);
         self.units_window(&ctx);
         self.ground_spacing_window(&ctx);
         // a plan in its own window keeps egui's menus
@@ -4594,6 +4637,7 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Tag(_) => "tag",
         ElementKind::Note(_) => "note",
         ElementKind::TextStyle(_) => "text style",
+        ElementKind::SheetTemplate(_) => "sheet template",
         ElementKind::Units(_) => "project units",
         ElementKind::View(_) => "view",
         ElementKind::Sheet(_) => "sheet",

@@ -249,6 +249,7 @@ pub fn show(
     };
     sheet::draw_frame(
         &mut canvas,
+        doc.model(),
         &s,
         &title,
         &sheet::scale_text(doc.model(), views),
