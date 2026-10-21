@@ -14,7 +14,8 @@
 use crate::modal::LiveEdit;
 use crate::snaps::{Snap, SnapKind};
 use creabim_core::{
-    transform, Document, Element, ElementId, ElementKind, Model, OpeningKind, ViewKind, Xform,
+    transform, walls, Document, Element, ElementId, ElementKind, Model, OpeningKind, ViewKind,
+    WallTop, Xform,
 };
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, Vec2};
 use glam::{DVec2, DVec3};
@@ -173,9 +174,11 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
             let z0 = elevation(model, Some(w.level)) + w.base_offset;
             let mid = (w.start + w.end) / 2.0;
             let n = w.direction().perp();
+            // the ends are gripped on the wall's location line
+            let (a, b) = walls::location_line(model, w);
             vec![
-                flat(HandleKind::WallEnd { end: false }, w.start.extend(z0)),
-                flat(HandleKind::WallEnd { end: true }, w.end.extend(z0)),
+                flat(HandleKind::WallEnd { end: false }, a.extend(z0)),
+                flat(HandleKind::WallEnd { end: true }, b.extend(z0)),
                 line(HandleKind::WallTop, mid.extend(z0 + w.height), DVec3::Z),
                 line(
                     HandleKind::WallFace,
@@ -308,13 +311,19 @@ pub fn originals(
     let mut joined = vec![];
     if let (HandleKind::WallEnd { end }, ElementKind::Wall(w)) = (kind, &e.kind) {
         let p = if end { w.end } else { w.start };
-        for other in model.iter() {
+        // an end that may not join drags alone
+        let models = if w.disallow_join[usize::from(end)] {
+            None
+        } else {
+            Some(model)
+        };
+        for other in models.into_iter().flat_map(|m| m.iter()) {
             if let ElementKind::Wall(o) = &other.kind {
                 if other.id == id || o.level != w.level {
                     continue;
                 }
                 for (oe, q) in [(false, o.start), (true, o.end)] {
-                    if q.distance(p) < 1e-3 {
+                    if q.distance(p) < 1e-3 && !o.disallow_join[usize::from(oe)] {
                         out.push(other.clone());
                         joined.push((out.len() - 1, oe));
                     }
@@ -352,23 +361,38 @@ pub fn apply(
     let first = out.first_mut().ok_or("nothing to drag")?;
     match (&mut first.kind, kind) {
         (ElementKind::Wall(w), HandleKind::WallEnd { end }) => {
+            // the grip is on the location line: move that, and the
+            // centreline with it
             let p = now.truncate();
+            let (mut a, mut b) = walls::location_line(model, w);
             if end {
-                w.end = p;
+                b = p;
             } else {
-                w.start = p;
+                a = p;
             }
-            if w.length() < 0.05 {
+            if a.distance(b) < 0.05 {
                 return Err("a wall needs some length".into());
             }
-            moved_end = Some(p);
+            walls::set_location_line(model, w, a, b);
+            moved_end = Some(if end { w.end } else { w.start });
         }
-        (ElementKind::Wall(w), HandleKind::WallTop) => {
-            w.height = round(w.height + d.z, step);
-            if w.height < 0.1 {
-                return Err("too low".into());
+        (ElementKind::Wall(w), HandleKind::WallTop) => match &mut w.top {
+            // tied to a level: the drag sets how far above it the top is
+            WallTop::UpToLevel { offset, .. } => {
+                let h = round(w.height + d.z, step);
+                if h < 0.1 {
+                    return Err("too low".into());
+                }
+                *offset += h - w.height;
+                w.height = h;
             }
-        }
+            WallTop::Unconnected => {
+                w.height = round(w.height + d.z, step);
+                if w.height < 0.1 {
+                    return Err("too low".into());
+                }
+            }
+        },
         (ElementKind::Wall(w), HandleKind::WallFace) => {
             let n = w.direction().perp().extend(0.0);
             w.thickness = round(w.thickness + 2.0 * d.dot(n), step / 5.0);
@@ -671,6 +695,102 @@ fn draw_view_range(painter: &Painter, input: &PaneInput, a: DVec2, b: DVec2, dep
     }
 }
 
+/// What a flip arrow turns round.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Flip {
+    /// A wall's exterior and interior.
+    Wall,
+    /// A door's swing, or a window's inside and outside.
+    Facing,
+    /// A door's hinge side.
+    Hand,
+}
+
+impl Flip {
+    pub fn label(self) -> &'static str {
+        match self {
+            Flip::Wall => "Flip wall",
+            Flip::Facing => "Flip facing",
+            Flip::Hand => "Flip door hand",
+        }
+    }
+}
+
+/// A clickable flip control: where it sits and which way its arrows point.
+#[derive(Clone, Copy, Debug)]
+pub struct FlipArrow {
+    pub flip: Flip,
+    pub at: DVec3,
+    pub dir: DVec2,
+}
+
+/// The flip arrows of a selected wall, door or window, in plan: a wall's
+/// beside its exterior face, square to it; a door's or window's on the
+/// side it faces (and, for a door, one along the wall for its hand).
+pub fn flip_arrows(model: &Model, id: ElementId) -> Vec<FlipArrow> {
+    match model.get(id).map(|e| &e.kind) {
+        Some(ElementKind::Wall(w)) if w.length() > 0.1 => {
+            let z = walls::base_z(model, w);
+            let n = w.direction().perp();
+            let out = if w.flip { n } else { -n };
+            let mid = (w.start + w.end) / 2.0;
+            vec![FlipArrow {
+                flip: Flip::Wall,
+                at: (mid + out * (w.thickness / 2.0 + 0.35)).extend(z),
+                dir: n,
+            }]
+        }
+        Some(ElementKind::Opening(o)) => {
+            let Some(ElementKind::Wall(w)) = model.get(o.host).map(|h| &h.kind) else {
+                return vec![];
+            };
+            let z = walls::base_z(model, w);
+            let d = w.direction();
+            let n = d.perp();
+            let side = if o.faces_left(w) { n } else { -n };
+            let mid = w.start + d * (o.offset + o.width / 2.0);
+            let mut v = vec![FlipArrow {
+                flip: Flip::Facing,
+                at: (mid + side * (w.thickness / 2.0 + 0.3)).extend(z),
+                dir: n,
+            }];
+            if o.kind == OpeningKind::Door {
+                v.push(FlipArrow {
+                    flip: Flip::Hand,
+                    at: (mid - side * (w.thickness / 2.0 + 0.3)).extend(z),
+                    dir: d,
+                });
+            }
+            v
+        }
+        _ => vec![],
+    }
+}
+
+/// Two arrowheads back to back across `c`, along screen direction `v`.
+fn draw_flip_arrow(painter: &Painter, c: Pos2, v: Vec2, hot: bool) {
+    let col = if hot {
+        ACCENT
+    } else {
+        ACCENT.gamma_multiply(0.85)
+    };
+    painter.circle(
+        c,
+        11.0,
+        Color32::WHITE.gamma_multiply(0.9),
+        Stroke::new(1.0, col),
+    );
+    let p = v.rot90();
+    let stroke = Stroke::new(if hot { 2.2 } else { 1.6 }, col);
+    painter.line_segment([c - v * 7.5, c + v * 7.5], stroke);
+    for s in [1.0, -1.0] {
+        let tip = c + v * 7.5 * s;
+        let back = tip - v * 4.0 * s;
+        painter.line_segment([tip, back + p * 3.5], stroke);
+        painter.line_segment([tip, back - p * 3.5], stroke);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn interact(
     doc: &mut Document,
@@ -745,6 +865,71 @@ pub fn interact(
         }
     }
 
+    // a selected wall's location line, and a cross at an end that may not join
+    if let Some(ElementKind::Wall(w)) = doc.model().get(id).map(|e| &e.kind) {
+        let z = walls::base_z(doc.model(), w);
+        let (a, b) = walls::location_line(doc.model(), w);
+        if let (Some(pa), Some(pb)) = ((input.project)(a.extend(z)), (input.project)(b.extend(z))) {
+            painter.add(egui::Shape::dashed_line(
+                &[pa, pb],
+                Stroke::new(1.2, ACCENT),
+                8.0,
+                3.0,
+            ));
+            for (i, p) in [pa, pb].into_iter().enumerate() {
+                if w.disallow_join[i] {
+                    let o = Vec2::new(10.0, -10.0);
+                    let s = Stroke::new(2.0, Color32::from_rgb(200, 40, 40));
+                    let c = p + o;
+                    painter.line_segment([c - Vec2::splat(4.0), c + Vec2::splat(4.0)], s);
+                    painter.line_segment([c + Vec2::new(-4.0, 4.0), c + Vec2::new(4.0, -4.0)], s);
+                }
+            }
+        }
+    }
+
+    // flip arrows, in plans: a click turns the wall, door or window round
+    if drag.is_none() && input.look.z.abs() > 0.9 {
+        let arrows = flip_arrows(doc.model(), id);
+        let pointer = response.hover_pos();
+        let mut hit = None;
+        for a in &arrows {
+            let (Some(c), Some(tip)) = (
+                (input.project)(a.at),
+                (input.project)(a.at + a.dir.extend(0.0) * 0.3),
+            ) else {
+                continue;
+            };
+            let v = (tip - c).normalized();
+            if !v.is_finite() {
+                continue;
+            }
+            let hot = pointer.is_some_and(|p| p.distance(c) < 11.0);
+            if hot {
+                hit = Some(a.flip);
+            }
+            draw_flip_arrow(painter, c, v, hot);
+        }
+        if let (Some(f), true) = (hit, response.clicked()) {
+            let r = doc.edit(id, f.label(), |e| match (&mut e.kind, f) {
+                (ElementKind::Wall(w), Flip::Wall) => walls::flip_wall(w),
+                (ElementKind::Opening(o), Flip::Hand) => walls::flip_hand(o),
+                (ElementKind::Opening(o), _) => walls::flip_facing(o),
+                _ => {}
+            });
+            *status = Some(match r {
+                Ok(()) => format!("{}. Ctrl+Z to undo.", f.label()),
+                Err(e) => format!("Couldn't do that: {e}"),
+            });
+            return true;
+        }
+        if hit.is_some() {
+            response
+                .clone()
+                .on_hover_text(hit.map_or("", |f| f.label()));
+        }
+    }
+
     // a click on a handle keeps the selection (it may be the first half of
     // a double-click), rather than picking what lies under it
     if drag.is_none() && response.clicked() {
@@ -812,19 +997,29 @@ pub fn interact(
             }
         };
         if let Some((kind, constraint, grab)) = start {
-            let (originals, joined) = match kind {
+            let (mut originals, mut joined) = match kind {
                 Some(k) => originals(doc.model(), id, k),
                 None => (doc.model().get(id).cloned().into_iter().collect(), vec![]),
             };
+            // Ctrl or Alt drags a wall end free of the walls joined to it
+            let free = matches!(kind, Some(HandleKind::WallEnd { .. }))
+                && painter
+                    .ctx()
+                    .input(|i| i.modifiers.command || i.modifiers.alt);
+            if free {
+                originals.truncate(1);
+                joined.clear();
+            }
             let name = originals.first().map_or(String::new(), |e| e.name.clone());
             let label = match kind {
+                Some(k) if free => format!("{} {name} free", k.verb()),
                 Some(k) => format!("{} {name}", k.verb()),
                 None => format!("Move {name}"),
             };
             *drag = Some(Drag {
                 kind,
                 constraint,
-                edit: LiveEdit::new(label, originals),
+                edit: LiveEdit::new(label, originals).free(free),
                 joined,
                 grab,
                 press,
@@ -860,7 +1055,8 @@ pub fn interact(
     };
     let fixed = match (d.kind, d.edit.originals().first().map(|e| &e.kind)) {
         (Some(HandleKind::WallEnd { end }), Some(ElementKind::Wall(w))) => {
-            Some(if end { w.start } else { w.end }.extend(free.z))
+            let (a, b) = walls::location_line(doc.model(), w);
+            Some(if end { a } else { b }.extend(free.z))
         }
         (None, _) => Some(d.grab),
         _ => None,
@@ -1049,6 +1245,45 @@ mod tests {
             let p = if oe { o.end } else { o.start };
             assert!(p.distance(to.truncate()) < 1e-9);
         }
+    }
+
+    #[test]
+    fn a_wall_end_is_gripped_on_its_location_line_and_may_be_left_unjoined() {
+        let m = sample_house();
+        let (id, mut w) = m
+            .iter()
+            .find_map(|e| match &e.kind {
+                ElementKind::Wall(w) => Some((e.id, w.clone())),
+                _ => None,
+            })
+            .unwrap();
+        w.location = creabim_core::LocationLine::ExteriorFace;
+        w.disallow_join[1] = true;
+        let mut doc = Document::from_model(m);
+        doc.edit(id, "edit", |e| e.kind = ElementKind::Wall(w.clone()))
+            .unwrap();
+        let m = doc.model().clone();
+        let kind = HandleKind::WallEnd { end: true };
+        let grip = handles(&m, id, None)
+            .into_iter()
+            .find(|h| h.kind == kind)
+            .unwrap();
+        let (_, b) = walls::location_line(&m, &w);
+        assert!(
+            grip.at.truncate().distance(b) < 1e-9,
+            "on the exterior face"
+        );
+        assert!(b.distance(w.end) > 0.05);
+        // the end may not join: nothing comes along
+        let (orig, joined) = originals(&m, id, kind);
+        assert!(joined.is_empty() && orig.len() == 1);
+        let to = (b + w.direction() * 0.5).extend(0.0);
+        let out = apply(&m, &orig, &joined, kind, grip.at, to, 0.05).unwrap();
+        let ElementKind::Wall(n) = &out[0].kind else {
+            panic!()
+        };
+        let (_, nb) = walls::location_line(&m, n);
+        assert!(nb.distance(to.truncate()) < 1e-9);
     }
 
     #[test]

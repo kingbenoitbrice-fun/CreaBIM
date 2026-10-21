@@ -33,6 +33,8 @@ mod levelsui;
 mod materials;
 #[path = "shell.rs"]
 mod shell;
+#[path = "wallsui.rs"]
+mod wallsui;
 
 /// What the 3D geometry was last built from; rebuild when any of it changes.
 /// ((model revision, hidden revision), selection, selected face, drawing
@@ -705,6 +707,19 @@ impl CreaBimApp {
         });
         if m_key && self.plan.modal.is_none() && !self.plan.busy() {
             self.run_command(ctx, Command::Move, None);
+        }
+        // Space flips: the wall being drawn, else the selected walls, doors
+        // and windows; Shift+Space a door's hand
+        let flip = ctx.input(|i| {
+            (!i.modifiers.command && !i.modifiers.alt && i.key_pressed(egui::Key::Space))
+                .then_some(i.modifiers.shift)
+        });
+        if let Some(hand) = flip.filter(|_| self.plan.modal.is_none()) {
+            if self.plan.tool == Tool::Wall && !hand {
+                self.wall_action("wall.flipnew", "");
+            } else if !self.plan.busy() {
+                self.flip_selected(hand);
+            }
         }
         let (palette, next_theme, home, frame_sel) = ctx.input(|i| {
             let (cmd, shift) = (i.modifiers.command, i.modifiers.shift);
@@ -2907,6 +2922,14 @@ impl CreaBimApp {
             }
             ui.label("Wall thickness:");
             ui.add(crate::units::drag(&mut self.plan.wall_thickness).range(0.05..=1.0));
+            egui::ComboBox::from_id_salt("wall_location")
+                .selected_text(self.plan.wall_location.label())
+                .show_ui(ui, |ui| {
+                    for l in creabim_core::LocationLine::ALL {
+                        ui.selectable_value(&mut self.plan.wall_location, l, l.label());
+                    }
+                });
+            ui.checkbox(&mut self.plan.wall_flip, "Exterior left");
         });
     }
 
@@ -3285,35 +3308,15 @@ impl CreaBimApp {
                         "Thickness {}, from its layers",
                         crate::units::len(w.thickness)
                     ));
-                    if ui
-                        .checkbox(&mut w.flip, "Exterior on the left")
-                        .on_hover_text("Which face the assembly's first (exterior) layer is on, looking from the wall's start to its end")
-                        .changed()
-                    {
-                        label = "Flip wall"
-                    }
                 } else if num(ui, "Thickness", &mut w.thickness, 0.02, 2.0) {
                     label = "Wall thickness"
-                }
-                if num(ui, "Height", &mut w.height, 0.1, 50.0) {
-                    label = "Wall height"
-                }
-                if num(ui, "Base offset", &mut w.base_offset, -10.0, 50.0) {
-                    label = "Wall base offset"
                 }
                 if !layered && self.material_combo(ui, &mut w.material) {
                     label = "Wall material"
                 }
-                ui.label(format!("Length {}", crate::units::len(w.length())));
-                if num(ui, "Start X", &mut w.start.x, -1e4, 1e4)
-                    | num(ui, "Start Y", &mut w.start.y, -1e4, 1e4)
-                {
-                    label = "Move wall start"
-                }
-                if num(ui, "End X", &mut w.end.x, -1e4, 1e4)
-                    | num(ui, "End Y", &mut w.end.y, -1e4, 1e4)
-                {
-                    label = "Move wall end"
+                let l = wallsui::wall_fields(ui, self.doc.model(), id, w);
+                if !l.is_empty() {
+                    label = l;
                 }
                 if ui
                     .button("Redraw path")
@@ -3403,6 +3406,10 @@ impl CreaBimApp {
                 }
                 if self.material_combo(ui, &mut o.material) {
                     label = "Material";
+                }
+                let l = wallsui::opening_fields(ui, self.doc.model(), o);
+                if !l.is_empty() {
+                    label = l;
                 }
                 ui.separator();
                 ui.label(egui::RichText::new("Frame").strong());

@@ -63,6 +63,8 @@ impl Element {
     pub fn references(&self) -> Vec<ElementId> {
         match &self.kind {
             ElementKind::Level(_) | ElementKind::Grid(_) | ElementKind::GridGroup(_) => vec![],
+            // a top level and attached roofs are soft: when one goes the wall
+            // keeps the height it had
             ElementKind::Wall(w) => vec![w.level],
             ElementKind::Slab(s) => vec![s.level],
             // a missing material falls back to the element type's default,
@@ -163,6 +165,14 @@ impl Element {
             ElementKind::Wall(w) => {
                 positive(w.thickness, "wall thickness")?;
                 positive(w.height, "wall height")?;
+                if let WallTop::UpToLevel { offset, .. } = w.top {
+                    if !offset.is_finite() {
+                        return Err("wall top offset must be a number".into());
+                    }
+                }
+                if w.attach_top.contains(&self.id) {
+                    return Err("a wall can't be attached to itself".into());
+                }
                 positive(w.length(), "wall length")
             }
             ElementKind::Slab(s) => {
@@ -654,17 +664,116 @@ pub struct Wall {
     /// thickness is the assembly's total and `material` is not drawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assembly: Option<ElementId>,
-    /// The assembly's exterior face is on the wall's left (start → end)
-    /// instead of its right.
+    /// The wall's exterior face is on its left (start → end) instead of
+    /// its right: where an assembly's first layer goes, which face the
+    /// location line names, and which side doors open away from.
     #[serde(default, skip_serializing_if = "is_false")]
     pub flip: bool,
+    /// The line the wall is drawn along and kept on (Revit's location
+    /// line). `start` and `end` are always the centreline; this says which
+    /// line stays put when the wall gets thicker, changes assembly or flips.
+    #[serde(default, skip_serializing_if = "LocationLine::is_centre")]
+    pub location: LocationLine,
+    /// Where the top is: `height` above the base, or tied to a level (then
+    /// `height` follows the levels; see [`crate::walls`]).
+    #[serde(default, skip_serializing_if = "WallTop::is_unconnected")]
+    pub top: WallTop,
+    /// Joins disallowed at the start and at the end: that end butts into
+    /// what it meets instead of joining, and walls joined there no longer
+    /// follow it.
+    #[serde(default, skip_serializing_if = "no_flags")]
+    pub disallow_join: [bool; 2],
+    /// Roofs and slabs the top is attached to: where one is overhead, the
+    /// top follows its underside instead of stopping at `height`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attach_top: Vec<ElementId>,
 }
 
 fn is_false(v: &bool) -> bool {
     !*v
 }
 
+fn no_flags(v: &[bool; 2]) -> bool {
+    !v[0] && !v[1]
+}
+
+/// Which line of a wall is its location line. The exterior is on the
+/// wall's right unless it is flipped; a wall without layers is all core.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LocationLine {
+    #[default]
+    Centre,
+    CoreCentre,
+    ExteriorFace,
+    InteriorFace,
+    CoreExterior,
+    CoreInterior,
+}
+
+impl LocationLine {
+    pub const ALL: [LocationLine; 6] = [
+        LocationLine::Centre,
+        LocationLine::CoreCentre,
+        LocationLine::ExteriorFace,
+        LocationLine::InteriorFace,
+        LocationLine::CoreExterior,
+        LocationLine::CoreInterior,
+    ];
+
+    pub fn is_centre(&self) -> bool {
+        *self == LocationLine::Centre
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LocationLine::Centre => "Wall centre",
+            LocationLine::CoreCentre => "Core centre",
+            LocationLine::ExteriorFace => "Exterior face",
+            LocationLine::InteriorFace => "Interior face",
+            LocationLine::CoreExterior => "Core exterior face",
+            LocationLine::CoreInterior => "Core interior face",
+        }
+    }
+}
+
+/// What a wall's top is tied to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum WallTop {
+    /// `height` above the base, whatever the levels do.
+    #[default]
+    Unconnected,
+    /// `offset` above (below, when negative) a level. A level that is gone
+    /// leaves the wall at the height it had.
+    UpToLevel { level: ElementId, offset: f64 },
+}
+
+impl WallTop {
+    pub fn is_unconnected(&self) -> bool {
+        *self == WallTop::Unconnected
+    }
+}
+
 impl Wall {
+    /// A plain wall on `level` along the centreline `start` → `end`, its
+    /// base on the level, its top unconnected.
+    pub fn new(level: ElementId, start: DVec2, end: DVec2, thickness: f64, height: f64) -> Self {
+        Self {
+            level,
+            start,
+            end,
+            thickness,
+            height,
+            base_offset: 0.0,
+            material: None,
+            assembly: None,
+            flip: false,
+            location: LocationLine::Centre,
+            top: WallTop::Unconnected,
+            disallow_join: [false; 2],
+            attach_top: vec![],
+        }
+    }
+
     pub fn length(&self) -> f64 {
         self.start.distance(self.end)
     }
@@ -837,6 +946,30 @@ pub struct Opening {
     /// Its frame, glazing bars and leaf.
     #[serde(default, skip_serializing_if = "OpeningFrame::is_default")]
     pub frame: OpeningFrame,
+    /// A door hinged on its other jamb: the one at the wall's end side
+    /// instead of its start side.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flip_hand: bool,
+    /// A door opening to the wall's exterior instead of its interior; a
+    /// window with its outside face (and its sill) to the wall's interior.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flip_facing: bool,
+}
+
+impl Opening {
+    /// Does the door open to (the window face out of) the wall's left,
+    /// looking from its start to its end? Doors open into the interior and
+    /// windows face the exterior unless flipped; the exterior is the
+    /// wall's right unless the wall is flipped, so flipping a wall turns
+    /// its doors and windows round with it.
+    pub fn faces_left(&self, wall: &Wall) -> bool {
+        let interior_left = !wall.flip;
+        let left = match self.kind {
+            OpeningKind::Door => interior_left,
+            OpeningKind::Window => !interior_left,
+        };
+        left != self.flip_facing
+    }
 }
 
 /// How a door or window is built inside its opening: a frame round the

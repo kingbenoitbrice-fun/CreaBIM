@@ -1039,6 +1039,10 @@ impl Builder {
                             material,
                             assembly: None,
                             flip: false,
+                            location: Default::default(),
+                            top: Default::default(),
+                            disallow_join: [false; 2],
+                            attach_top: vec![],
                         }),
                     });
                     continue;
@@ -1096,6 +1100,8 @@ impl Builder {
                             height,
                             material,
                             frame: Default::default(),
+                            flip_hand: false,
+                            flip_facing: false,
                         }),
                     });
                     continue;

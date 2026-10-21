@@ -14,8 +14,8 @@ use crate::shape::{Geo, Warnings};
 use crate::step_read::{parse, Entity, StepError, StepFile, Value};
 use crate::tess::{area2, bounds, merge_coplanar, weld};
 use creabim_core::{
-    Document, EditMesh, Element, ElementId, ElementKind, FreeMesh, Grid, Hatch, Level, Material,
-    Model, Opening, OpeningKind, Slab, Transaction, Wall,
+    Document, EditMesh, Element, ElementId, ElementKind, FreeMesh, Grid, Hatch, Level,
+    LocationLine, Material, Model, Opening, OpeningKind, Slab, Transaction, Wall,
 };
 use glam::{DMat4, DVec2, DVec3};
 use std::collections::{HashMap, HashSet};
@@ -939,6 +939,19 @@ impl<'a> Importer<'a> {
                 let left = (w.end - w.start).normalize_or_zero().perp();
                 positive == (y.dot(left) < 0.0)
             });
+            // an axis on a face is that face's location line
+            let location = self.axis(e, &world).map_or(LocationLine::Centre, |(a, _)| {
+                let off = (a - w.start).dot((w.end - w.start).normalize_or_zero().perp());
+                let t = w.thickness / 2.0;
+                let ext = if flip { t } else { -t };
+                if t > 1e-3 && (off - ext).abs() < 1e-3 {
+                    LocationLine::ExteriorFace
+                } else if t > 1e-3 && (off + ext).abs() < 1e-3 {
+                    LocationLine::InteriorFace
+                } else {
+                    LocationLine::Centre
+                }
+            });
             let material = match layered {
                 Some((a, _)) => self.core_material(a),
                 None => self.material_for(id),
@@ -962,6 +975,7 @@ impl<'a> Importer<'a> {
                     material,
                     assembly: layered.map(|l| l.0),
                     flip,
+                    location,
                     ..w
                 }),
             });
@@ -1015,6 +1029,10 @@ impl<'a> Importer<'a> {
             material: None,
             assembly: None,
             flip: false,
+            location: Default::default(),
+            top: Default::default(),
+            disallow_join: [false; 2],
+            attach_top: vec![],
         })
     }
 
@@ -1147,6 +1165,8 @@ impl<'a> Importer<'a> {
                 height,
                 material,
                 frame: Default::default(),
+                flip_hand: false,
+                flip_facing: false,
             }),
         });
     }

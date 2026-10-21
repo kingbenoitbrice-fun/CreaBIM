@@ -24,6 +24,10 @@ fn wall(level: ElementId) -> Element {
             material: None,
             assembly: None,
             flip: false,
+            location: Default::default(),
+            top: Default::default(),
+            disallow_join: [false; 2],
+            attach_top: vec![],
         }),
     )
 }
@@ -40,6 +44,8 @@ fn door(host: ElementId) -> Element {
             height: 2.1,
             material: None,
             frame: Default::default(),
+            flip_hand: false,
+            flip_facing: false,
         }),
     )
 }

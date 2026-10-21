@@ -144,7 +144,7 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                 OpeningKind::Window
             };
             let marks = creabim_core::marks(model);
-            let columns = vec![
+            let mut columns = vec![
                 col("Mark", None, 16.0, false),
                 col("Level", None, 28.0, false),
                 col("Wall", None, 26.0, false),
@@ -152,6 +152,11 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                 col("Height", Some(Field::Height), 18.0, true),
                 col("Sill", Some(Field::Sill), 16.0, true),
             ];
+            let doors = kind == OpeningKind::Door;
+            if doors {
+                // hinge side seen from where it opens to, into or out of the building
+                columns.push(col("Swing", None, 22.0, false));
+            }
             for e in model.iter() {
                 let ElementKind::Opening(o) = &e.kind else {
                     continue;
@@ -160,21 +165,21 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
                     continue;
                 }
                 let mark = marks.get(&e.id).cloned().unwrap_or_default();
-                rows.push((
-                    0.0,
+                let mut cells = vec![
                     mark.clone(),
-                    Row {
-                        id: e.id,
-                        cells: vec![
-                            mark,
-                            level_of(e).map(name).unwrap_or_default(),
-                            name(o.host),
-                            mm(o.width),
-                            mm(o.height),
-                            mm(o.sill),
-                        ],
-                    },
-                ));
+                    level_of(e).map(name).unwrap_or_default(),
+                    name(o.host),
+                    mm(o.width),
+                    mm(o.height),
+                    mm(o.sill),
+                ];
+                if doors {
+                    cells.push(match model.get(o.host).map(|h| &h.kind) {
+                        Some(ElementKind::Wall(w)) => crate::opening::door_hand(o, w).into(),
+                        _ => String::new(),
+                    });
+                }
+                rows.push((0.0, mark, Row { id: e.id, cells }));
             }
             let what = if kind == OpeningKind::Door {
                 "doors"

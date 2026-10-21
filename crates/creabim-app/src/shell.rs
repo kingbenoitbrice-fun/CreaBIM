@@ -31,7 +31,7 @@ pub(super) struct Shell {
     /// A right-click menu was asked for from the 3D view this frame.
     pub menu_3d: bool,
     /// The open right-click menu came from the 3D view (else a 2D pane).
-    context_3d: bool,
+    pub(super) context_3d: bool,
     /// Give the popup the keyboard once it is shown (the palette).
     focus_popup: bool,
 }
@@ -226,6 +226,7 @@ impl CreaBimApp {
             "menu:Materials" => self.materials_menu(),
             "menu:Create" => self.create_menu(),
             "underlay" => self.underlay_items(),
+            "wall.location" => self.wall_location_items(),
             "palette" => self.palette_items(),
             "look" => crate::camera::Look::ALL
                 .iter()
@@ -305,6 +306,7 @@ impl CreaBimApp {
                         1 => "1 selected".into(),
                         n => format!("{n} selected"),
                     }));
+                    items.extend(self.wall_menu_items());
                     for group in [
                         &[
                             Command::Move,
@@ -1004,6 +1006,7 @@ impl CreaBimApp {
                 }
             }
             "note.leader" => self.plan.anno.leader = !self.plan.anno.leader,
+            _ if self.wall_action(head, arg) => {}
             _ => {
                 if !self.materials_action(head, arg) {
                     self.grid_vis_action(head, arg);
@@ -1202,6 +1205,16 @@ impl CreaBimApp {
                 "kind": "number", "key": "wall.thickness", "label": "Thickness",
                 "value": self.plan.wall_thickness, "unit": "m", "step": 0.01, "min": 0.05, "max": 1.0,
                 "hint": "Thickness of new walls. Drag the label or type a value.",
+            }));
+            options.push(json!({
+                "kind": "menu", "key": "wall.location", "label": "Location line",
+                "value": self.plan.wall_location.label(),
+                "hint": "The line you draw new walls on: it stays put when they get thicker or are flipped",
+            }));
+            options.push(json!({
+                "kind": "toggle", "id": "wall.flipnew", "label": "Exterior left",
+                "on": self.plan.wall_flip, "icon": "brick-wall",
+                "hint": "Which side of the line you draw the exterior face goes on (Space flips it while drawing)",
             }));
         }
         let redrawing = self.plan.outline.as_ref().is_some_and(|o| !o.is_wall());

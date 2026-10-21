@@ -136,6 +136,10 @@ pub fn fit(
                 material,
                 assembly: None,
                 flip: false,
+                location: Default::default(),
+                top: Default::default(),
+                disallow_join: [false; 2],
+                attach_top: vec![],
             }))
         }
         Assign::Slab => {
@@ -193,6 +197,8 @@ pub fn fit(
                 height: (hi.z - base - sill).min(w.height - sill),
                 material,
                 frame: Default::default(),
+                flip_hand: false,
+                flip_facing: false,
             }))
         }
         Assign::Class(_) => Err("A class is not a shape.".into()),

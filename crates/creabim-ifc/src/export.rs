@@ -186,6 +186,8 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
 
     let mut contained: HashMap<Option<ElementId>, Vec<Ref>> = HashMap::new();
     let mut wall_refs: HashMap<ElementId, (Ref, Ref)> = HashMap::new(); // entity, placement
+                                                                        // how far each wall's axis (its location line) is from its centreline
+    let mut wall_axes: HashMap<ElementId, f64> = HashMap::new();
     let joins = creabim_core::wall_joins(model);
     let mut by_material: HashMap<ElementId, Vec<Ref>> = HashMap::new();
     // layered elements, associated with their assembly's layer set instead
@@ -216,33 +218,68 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     continue;
                 };
                 let d = wall.direction();
+                let n = d.perp();
+                // the wall's axis is its location line: its placement sits
+                // on it and the footprint is measured from it
+                let loc = creabim_core::walls::location_offset(model, wall);
+                let origin = wall.start + n * loc;
                 let pl = c.local_placement(
                     Some(spl),
-                    DVec3::new(wall.start.x, wall.start.y, wall.base_offset),
+                    DVec3::new(origin.x, origin.y, wall.base_offset),
                     Some(DVec3::new(d.x, d.y, 0.0)),
                 );
-                // footprint in wall-local coordinates, following its joins
-                let ends = joins.get(&e.id).copied().unwrap_or_default();
+                wall_axes.insert(e.id, loc);
+                // footprint in wall-local coordinates, following its joins,
+                // one piece between each pair of walls crossing it
+                let ends = joins.get(&e.id).cloned().unwrap_or_default();
                 let t = wall.thickness / 2.0;
                 let asm = creabim_core::assembly_of(model, e);
                 // a layered wall's core may run on past its faces at a T
                 let core = asm.map_or((-t, t), |(_, a)| creabim_core::assembly::wall_core(a, wall));
-                let local = ends.local_outline(wall, core);
-                let mut pts: Vec<Ref> = local
-                    .iter()
-                    .map(|p| c.w.add("IFCCARTESIANPOINT", point2(p.x, p.y)))
-                    .collect();
-                pts.push(pts[0]);
-                let poly = c.w.add("IFCPOLYLINE", list(&pts));
-                let prof =
-                    c.w.add("IFCARBITRARYCLOSEDPROFILEDEF", format!(".AREA.,$,{poly}"));
-                let pos = c.placement3d(DVec3::ZERO, None, None);
-                let solid = c.w.add(
-                    "IFCEXTRUDEDAREASOLID",
-                    format!("{prof},{pos},{},{}", c.z_axis, real(wall.height)),
-                );
+                // an attached top is cut by the undersides over it
+                let top = creabim_core::walls::top_profile(model, wall);
+                let z0 = elevation(Some(wall.level)) + wall.base_offset;
+                let depth = top.as_ref().map_or(wall.height, |tp| {
+                    let steps = 16;
+                    (0..=steps)
+                        .flat_map(|i| {
+                            let p = wall.start.lerp(wall.end, i as f64 / steps as f64);
+                            [p + n * t, p - n * t]
+                        })
+                        .filter_map(|p| tp.z_at(p))
+                        .map(|z| z - z0)
+                        .fold(wall.height, f64::max)
+                });
+                let mut solids = vec![];
+                for local in ends.local_outlines(wall, core) {
+                    let mut pts: Vec<Ref> = local
+                        .iter()
+                        .map(|p| c.w.add("IFCCARTESIANPOINT", point2(p.x, p.y - loc)))
+                        .collect();
+                    pts.push(pts[0]);
+                    let poly = c.w.add("IFCPOLYLINE", list(&pts));
+                    let prof =
+                        c.w.add("IFCARBITRARYCLOSEDPROFILEDEF", format!(".AREA.,$,{poly}"));
+                    let pos = c.placement3d(DVec3::ZERO, None, None);
+                    let mut solid = c.w.add(
+                        "IFCEXTRUDEDAREASOLID",
+                        format!("{prof},{pos},{},{}", c.z_axis, real(depth)),
+                    );
+                    if let Some(tp) = &top {
+                        // wall-local: x along the wall from its axis start
+                        let to_local = |p: DVec2| {
+                            let q = p - origin;
+                            DVec2::new(q.dot(d), q.dot(n))
+                        };
+                        for f in &tp.faces {
+                            solid = clip_under(&mut c, solid, f, to_local, d, n, origin, z0);
+                        }
+                    }
+                    solids.push(solid);
+                }
+                let clipped = top.is_some();
                 // the axis lets other tools (and our importer) recover the
-                // centreline whatever the joins did to the ends
+                // location line whatever the joins did to the ends
                 let a0 = c.w.add("IFCCARTESIANPOINT", point2(0.0, 0.0));
                 let a1 = c.w.add("IFCCARTESIANPOINT", point2(wall.length(), 0.0));
                 let axis_line = c.w.add("IFCPOLYLINE", format!("({a0},{a1})"));
@@ -252,15 +289,14 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 );
                 let body_rep = match cut {
                     Some(m) => {
-                        let z0 = elevation(Some(wall.level)) + wall.base_offset;
-                        let n = DVec2::new(-d.y, d.x);
                         let fs = tessellate(&mut c, m, |p| {
-                            let q = p.truncate() - wall.start;
+                            let q = p.truncate() - origin;
                             DVec3::new(q.dot(d), q.dot(n), p.z - z0)
                         });
                         c.body_rep("Tessellation", &[fs])
                     }
-                    None => c.body_rep("SweptSolid", &[solid]),
+                    None if clipped => c.body_rep("Clipping", &solids),
+                    None => c.body_rep("SweptSolid", &solids),
                 };
                 let shape = c.w.add(
                     "IFCPRODUCTDEFINITIONSHAPE",
@@ -270,8 +306,13 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 wall_refs.insert(e.id, (r, pl));
                 contained.entry(Some(wall.level)).or_default().push(r);
                 if let Some((a, _)) = asm {
-                    // layers run across the wall from its exterior face
-                    let (sense, offset) = if wall.flip { (false, t) } else { (true, -t) };
+                    // layers run across the wall from its exterior face,
+                    // measured from the axis
+                    let (sense, offset) = if wall.flip {
+                        (false, t - loc)
+                    } else {
+                        (true, -t - loc)
+                    };
                     layered.push((r, a.id, LayerUse::Usage("AXIS2", sense, offset)));
                 } else if let Some((m, _)) = creabim_core::material_of(model, e) {
                     by_material.entry(m.id).or_default().push(r);
@@ -399,7 +440,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             continue;
         };
         let eps = 0.05;
-        let pl = c.local_placement(Some(wall_pl), DVec3::new(o.offset, 0.0, o.sill), None);
+        // on the wall's centreline, wherever its axis is
+        let loc = wall_axes.get(&o.host).copied().unwrap_or(0.0);
+        let pl = c.local_placement(Some(wall_pl), DVec3::new(o.offset, -loc, o.sill), None);
         let pos = c.placement3d(
             DVec3::new(o.width / 2.0, wall.thickness / 2.0 + eps, o.height / 2.0),
             Some(-DVec3::Y),
@@ -428,28 +471,49 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         );
 
         // the door or window itself: its frame, glass, leaf and handle,
-        // each part a box, placed where the opening starts in the wall
-        let fill_pl = c.local_placement(Some(pl), DVec3::ZERO, None);
-        let start = creabim_geom::wall::Cut::of(o, wall).map_or(DVec3::ZERO, |cut| {
+        // each part a box, placed where the opening starts in the wall. A
+        // door's own y axis points the way it swings, as IFC has it, so a
+        // door opening to the wall's right is placed turned round.
+        let cut = creabim_geom::wall::Cut::of(o, wall);
+        let start = cut.map_or(DVec3::ZERO, |cut| {
             DVec3::new(cut.u0 - o.offset, 0.0, cut.v0 - o.sill)
         });
+        let width = cut.map_or(o.width, |cut| cut.u1 - cut.u0);
+        let turned = o.kind == OpeningKind::Door && !o.faces_left(wall);
+        let fill_pl = if turned {
+            c.local_placement(Some(pl), start + DVec3::X * width, Some(-DVec3::X))
+        } else {
+            c.local_placement(Some(pl), start, None)
+        };
         let mut parts = Vec::new();
         for b in creabim_geom::opening::opening_boxes(o, wall) {
             let size = b.hi - b.lo;
-            let pos = c.placement3d(start + b.lo, None, None);
+            let lo = if turned {
+                DVec3::new(width - b.hi.x, -b.hi.y, b.lo.z)
+            } else {
+                b.lo
+            };
+            let pos = c.placement3d(lo, None, None);
             parts.push(c.rect_extrusion(size.truncate() / 2.0, size.x, size.y, pos, size.z));
         }
         if parts.is_empty() {
             continue;
         }
         let fill_shape = c.shape("SweptSolid", &parts);
+        // hinged on the left seen along its y axis (the way it swings)
+        let hinge_left = !o.flip_hand != turned;
         let (class, tail) = match o.kind {
             OpeningKind::Door => (
                 "IFCDOOR",
                 format!(
-                    ",$,{},{},.DOOR.,.SINGLE_SWING_LEFT.,$",
+                    ",$,{},{},.DOOR.,{},$",
                     real(o.height),
-                    real(o.width)
+                    real(o.width),
+                    if hinge_left {
+                        ".SINGLE_SWING_LEFT."
+                    } else {
+                        ".SINGLE_SWING_RIGHT."
+                    }
                 ),
             ),
             OpeningKind::Window => (
@@ -657,6 +721,50 @@ enum LayerUse {
 
 /// A triangle mesh as an `IfcTriangulatedFaceSet`, its corners taken into
 /// the product's own coordinates by `to_local`.
+/// `solid`, in a wall's own axes (`x` along `d` and `y` along `n` from
+/// `origin`, `z` up from `z0`), with what lies above the underside `f` cut
+/// away: a half-space over the face's plane, bounded by its outline in
+/// plan, as Revit writes walls attached to roofs.
+#[allow(clippy::too_many_arguments)]
+fn clip_under(
+    c: &mut Ctx,
+    solid: Ref,
+    f: &creabim_core::walls::TopFace,
+    to_local: impl Fn(DVec2) -> DVec2,
+    d: DVec2,
+    n: DVec2,
+    origin: DVec2,
+    z0: f64,
+) -> Ref {
+    // the plane z = h + a x + b y in the wall's axes
+    let (a, b) = (f.g.dot(d), f.g.dot(n));
+    let h = f.c + f.g.dot(origin) - z0;
+    let normal = DVec3::new(-a, -b, 1.0).normalize();
+    let along = DVec3::new(1.0, 0.0, a).normalize();
+    let pos = c.placement3d(DVec3::new(0.0, 0.0, h), Some(normal), Some(along));
+    let plane = c.w.add("IFCPLANE", pos.to_string());
+    let mut pts: Vec<Ref> = f
+        .outline
+        .iter()
+        .map(|p| {
+            let q = to_local(*p);
+            c.w.add("IFCCARTESIANPOINT", point2(q.x, q.y))
+        })
+        .collect();
+    pts.push(pts[0]);
+    let boundary = c.w.add("IFCPOLYLINE", list(&pts));
+    let at = c.placement3d(DVec3::ZERO, None, None);
+    // the material is above the plane, on the side its normal points to
+    let half = c.w.add(
+        "IFCPOLYGONALBOUNDEDHALFSPACE",
+        format!("{plane},.F.,{at},{boundary}"),
+    );
+    c.w.add(
+        "IFCBOOLEANCLIPPINGRESULT",
+        format!(".DIFFERENCE.,{solid},{half}"),
+    )
+}
+
 fn tessellate(
     c: &mut Ctx,
     m: &creabim_geom::mesh::TriMesh,
