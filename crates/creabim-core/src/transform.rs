@@ -302,6 +302,18 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
                 s.top_offset += d.z;
             }
         }
+        ElementKind::Object(o) => match t {
+            // its shape is its type's: it moves and turns, but keeps its size
+            Xform::Move(d) => {
+                o.position += d.truncate();
+                o.offset += d.z;
+            }
+            Xform::Rotate { degrees, .. } if t.keeps_upright() => {
+                o.position = t.point2(o.position);
+                o.rotation = (o.rotation + degrees).rem_euclid(360.0);
+            }
+            _ => return None,
+        },
         ElementKind::Column(_)
         | ElementKind::Beam(_)
         | ElementKind::Roof(_)
@@ -368,6 +380,7 @@ pub fn pivot(model: &Model, id: ElementId) -> Option<DVec3> {
         ElementKind::Guide(g) => (g.a + g.b) / 2.0 + DVec3::Z * elevation(g.level),
         ElementKind::CropBox(c) => c.center(),
         ElementKind::Shaft(s) => mean(&s.boundary).extend(s.span(model).0),
+        ElementKind::Object(o) => o.position.extend(elevation(Some(o.level)) + o.offset),
         _ => return crate::members::pivot(model, e),
     })
 }
@@ -388,11 +401,14 @@ pub fn duplicate(model: &Model, id: ElementId) -> Vec<Element> {
             | ElementKind::Grid(_)
             | ElementKind::Guide(_)
             | ElementKind::Shaft(_)
+            | ElementKind::Object(_)
     ) && !crate::members::is_member(&e.kind)
     {
         return vec![];
     }
     let mut copy = Element::new(format!("{} copy", e.name), e.kind.clone());
+    // a copy is of the same type
+    copy.of_type = e.of_type.clone();
     if let ElementKind::Grid(g) = &mut copy.kind {
         // a copied grid line follows on in its group
         g.label = crate::grids::next_label(model, g.group, g.start, g.end);
@@ -416,7 +432,9 @@ pub fn duplicate(model: &Model, id: ElementId) -> Vec<Element> {
                 if let ElementKind::Opening(o) = &h.kind {
                     let mut o = o.clone();
                     o.host = out[0].id;
-                    out.push(Element::new(h.name.clone(), ElementKind::Opening(o)));
+                    let mut c = Element::new(h.name.clone(), ElementKind::Opening(o));
+                    c.of_type = h.of_type.clone();
+                    out.push(c);
                 }
             }
         }
@@ -523,6 +541,7 @@ pub fn fresh_copies(model: &Model, elements: &[Element]) -> (Vec<Element>, usize
                 ElementKind::FreeMesh(m) => m.level.iter_mut().for_each(fix),
                 ElementKind::Sketch(s) => s.level.iter_mut().for_each(fix),
                 ElementKind::Guide(g) => g.level.iter_mut().for_each(fix),
+                ElementKind::Object(o) => fix(&mut o.level),
                 k => {
                     if let Some(l) = crate::members::level_mut(k) {
                         fix(l);

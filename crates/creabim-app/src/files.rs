@@ -223,7 +223,7 @@ impl Settings {
     }
 }
 
-fn settings_dir() -> Option<std::path::PathBuf> {
+pub fn settings_dir() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("APPDATA")
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
         .map(std::path::PathBuf::from)

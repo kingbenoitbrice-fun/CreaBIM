@@ -39,10 +39,12 @@ pub(super) enum TypeAsk {
     SaveToType(ElementId),
     /// An element: make a new type of it.
     FromElement(ElementId),
+    /// Open the Catalogue window.
+    Catalogue,
 }
 
 /// The groups of the Types window, in order: (heading, category, curtain).
-const GROUPS: [(&str, TypeCategory, bool); 8] = [
+const GROUPS: [(&str, TypeCategory, bool); 9] = [
     ("Walls", TypeCategory::Wall, false),
     ("Curtain walls", TypeCategory::Wall, true),
     ("Doors", TypeCategory::Door, false),
@@ -51,6 +53,7 @@ const GROUPS: [(&str, TypeCategory, bool); 8] = [
     ("Roofs", TypeCategory::Roof, false),
     ("Columns", TypeCategory::Column, false),
     ("Beams", TypeCategory::Beam, false),
+    ("Objects", TypeCategory::Object, false),
 ];
 
 /// The tool that draws elements of a category.
@@ -390,6 +393,12 @@ pub(super) fn type_fields(ui: &mut egui::Ui, model: &Model, t: &mut ElementType)
                 label = "Type material";
             }
         }
+        TypeParams::Object(o) => {
+            let l = super::objectsui::type_fields(ui, model, o);
+            if !l.is_empty() {
+                label = l;
+            }
+        }
     }
     label
 }
@@ -486,7 +495,7 @@ impl CreaBimApp {
             Item::Separator,
             Item::new("types.browser", "Types…")
                 .icon("element-types")
-                .hint("Wall, curtain wall, door, window, slab, roof, column and beam types: add, edit, assign"),
+                .hint("Wall, curtain wall, door, window, slab, roof, column, beam and object types: add, edit, assign"),
             Item::new("types.starters", "Add starter types")
                 .icon("plus")
                 .hint("Walls, curtain walls, doors, windows, slabs, roofs, columns and beams to start from"),
@@ -614,7 +623,7 @@ impl CreaBimApp {
                 self.set_tool_type(TypeCategory::Wall, id);
                 self.status = "Curtain wall: click to start, click again to place each wall. Pick another type, or No type, in the bar.".into();
             }
-            _ => return false,
+            _ => return self.objects_action(head, arg),
         }
         true
     }
@@ -659,7 +668,10 @@ impl CreaBimApp {
                 .selected_text(shown)
                 .width(180.0)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut chosen, None, "No type");
+                    // an object is its type: it can change type, not lose it
+                    if cat != TypeCategory::Object {
+                        ui.selectable_value(&mut chosen, None, "No type");
+                    }
                     let mut curtain_header = false;
                     for (tid, n, curtain) in &choices {
                         if *curtain && !curtain_header {
@@ -737,10 +749,11 @@ impl CreaBimApp {
                 }
             });
         }
-        if ui
-            .small_button("Make a type of it")
-            .on_hover_text("A new type with its values, which it becomes an instance of")
-            .clicked()
+        if cat != TypeCategory::Object
+            && ui
+                .small_button("Make a type of it")
+                .on_hover_text("A new type with its values, which it becomes an instance of")
+                .clicked()
         {
             asks.push(TypeAsk::FromElement(id));
         }
@@ -845,7 +858,16 @@ impl CreaBimApp {
                                     asks.push(TypeAsk::Pick(*id));
                                 }
                             }
-                            if ui.small_button("+ New").clicked() {
+                            if cat == TypeCategory::Object {
+                                // objects come from the catalogue, not from sizes
+                                if ui
+                                    .small_button("Catalogue…")
+                                    .on_hover_text("Place furniture and fixtures from the catalogue; their types appear here")
+                                    .clicked()
+                                {
+                                    asks.push(TypeAsk::Catalogue);
+                                }
+                            } else if ui.small_button("+ New").clicked() {
                                 asks.push(TypeAsk::New(cat, curtain));
                             }
                             ui.add_space(6.0);
@@ -863,9 +885,16 @@ impl CreaBimApp {
                         if ui.button("Duplicate").clicked() {
                             asks.push(TypeAsk::Duplicate(c));
                         }
+                        let object = all.iter().any(|(id, _, t)| {
+                            *id == c && t.category() == TypeCategory::Object
+                        });
                         if ui
                             .button("Delete")
-                            .on_hover_text("Its instances keep their values, with no type. Ctrl+Z brings it back.")
+                            .on_hover_text(if object {
+                                "Deletes the objects of this type too. Ctrl+Z brings them back."
+                            } else {
+                                "Its instances keep their values, with no type. Ctrl+Z brings it back."
+                            })
                             .clicked()
                         {
                             asks.push(TypeAsk::Delete(c));
@@ -965,6 +994,7 @@ impl CreaBimApp {
     pub(super) fn run_types(&mut self, ask: TypeAsk) {
         match ask {
             TypeAsk::Pick(id) => self.types.current = Some(id),
+            TypeAsk::Catalogue => self.catalogue.open = true,
             TypeAsk::New(cat, curtain) => {
                 let base = if curtain {
                     "New curtain wall type".to_string()

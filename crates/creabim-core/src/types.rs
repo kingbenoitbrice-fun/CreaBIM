@@ -89,6 +89,9 @@ pub enum TypeCategory {
     Roof,
     Column,
     Beam,
+    /// Furniture and fixtures, placed from the catalogue (not drawn with a
+    /// tool, so not in [`TypeCategory::ALL`]).
+    Object,
 }
 
 impl TypeCategory {
@@ -111,6 +114,7 @@ impl TypeCategory {
             TypeCategory::Roof => "Roofs",
             TypeCategory::Column => "Columns",
             TypeCategory::Beam => "Beams",
+            TypeCategory::Object => "Objects",
         }
     }
 
@@ -123,6 +127,7 @@ impl TypeCategory {
             TypeCategory::Roof => "roof",
             TypeCategory::Column => "column",
             TypeCategory::Beam => "beam",
+            TypeCategory::Object => "object",
         }
     }
 
@@ -140,6 +145,7 @@ impl TypeCategory {
             ElementKind::Roof(_) => TypeCategory::Roof,
             ElementKind::Column(_) => TypeCategory::Column,
             ElementKind::Beam(_) => TypeCategory::Beam,
+            ElementKind::Object(_) => TypeCategory::Object,
             _ => return None,
         })
     }
@@ -166,6 +172,8 @@ impl TypeCategory {
             }
             TypeCategory::Column => &[Param::Profile, Param::Material],
             TypeCategory::Beam => &[Param::Width, Param::Depth, Param::Material],
+            // an object's shape is its type's alone
+            TypeCategory::Object => &[],
         }
     }
 }
@@ -237,6 +245,7 @@ pub enum TypeParams {
     Roof(SlabType),
     Column(ColumnType),
     Beam(BeamType),
+    Object(crate::objects::ObjectType),
 }
 
 /// An element type. The element's name is the type's name.
@@ -264,6 +273,7 @@ impl ElementType {
             TypeParams::Roof(_) => TypeCategory::Roof,
             TypeParams::Column(_) => TypeCategory::Column,
             TypeParams::Beam(_) => TypeCategory::Beam,
+            TypeParams::Object(_) => TypeCategory::Object,
         }
     }
 
@@ -291,6 +301,7 @@ impl ElementType {
             TypeParams::Roof(_) => "IfcRoofType",
             TypeParams::Column(_) => "IfcColumnType",
             TypeParams::Beam(_) => "IfcBeamType",
+            TypeParams::Object(o) => o.ifc.type_class(),
         }
     }
 
@@ -301,6 +312,7 @@ impl ElementType {
             TypeParams::Slab(s) | TypeParams::Roof(s) => s.material,
             TypeParams::Column(c) => c.material,
             TypeParams::Beam(b) => b.material,
+            TypeParams::Object(o) => o.materials().first().copied(),
         }
     }
 
@@ -351,6 +363,7 @@ impl ElementType {
                 positive(b.width, "beam width")?;
                 positive(b.depth, "beam depth")
             }
+            TypeParams::Object(o) => o.validate(),
         }
     }
 
@@ -385,6 +398,7 @@ impl ElementType {
             }
             TypeParams::Column(c) => c.profile.label_in(&u),
             TypeParams::Beam(b) => format!("{} × {}", d(b.width), d(b.depth)),
+            TypeParams::Object(o) => o.summary(model),
         }
     }
 }
@@ -419,6 +433,7 @@ pub fn fits(params: &TypeParams, kind: &ElementKind) -> bool {
             | (TypeParams::Roof(_), ElementKind::Roof(_))
             | (TypeParams::Column(_), ElementKind::Column(_))
             | (TypeParams::Beam(_), ElementKind::Beam(_))
+            | (TypeParams::Object(_), ElementKind::Object(_))
     ) || matches!((params, kind),
         (TypeParams::Door(_), ElementKind::Opening(o)) if o.kind == OpeningKind::Door)
         || matches!((params, kind),
@@ -703,7 +718,8 @@ pub fn assign(
                 }
             }
             None => {
-                if e.of_type.is_none() {
+                // an object can't be without its type: it is its shape
+                if e.of_type.is_none() || matches!(e.kind, ElementKind::Object(_)) {
                     continue;
                 }
                 after.of_type = None;
@@ -821,7 +837,13 @@ pub fn duplicate(model: &Model, id: ElementId) -> Option<Element> {
         return None;
     };
     let name = unique_name(model, &format!("{} copy", e.name));
-    Some(Element::new(name, ElementKind::ElementType(t.clone())))
+    let mut t = t.clone();
+    // a copy is no longer the catalogue's object: placing that again
+    // should not find this one
+    if let TypeParams::Object(o) = &mut t.params {
+        o.catalogue = None;
+    }
+    Some(Element::new(name, ElementKind::ElementType(t)))
 }
 
 /// A new type made from an element, and the element made its instance:

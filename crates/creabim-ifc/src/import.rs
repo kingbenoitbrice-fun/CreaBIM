@@ -20,6 +20,8 @@ use creabim_core::{
 use glam::{DMat4, DVec2, DVec3};
 use std::collections::{HashMap, HashSet};
 
+mod objects;
+
 /// A model read from a file, with what could not be brought across.
 #[derive(Debug)]
 pub struct ImportResult {
@@ -206,6 +208,8 @@ struct Importer<'a> {
     psets: HashMap<u64, Vec<u64>>,
     /// Imported element types, by the IFC type entity they came from.
     types: HashMap<u64, ElementId>,
+    /// Which of those are object types (furniture, fixtures).
+    object_types: HashSet<u64>,
     type_elems: Vec<Element>,
     /// Native slabs, by IFC instance: where in `wall_elems` they are.
     slabs: HashMap<u64, usize>,
@@ -254,6 +258,7 @@ impl<'a> Importer<'a> {
             type_of: HashMap::new(),
             psets: HashMap::new(),
             types: HashMap::new(),
+            object_types: HashSet::new(),
             type_elems: vec![],
             slabs: HashMap::new(),
             styles: HashMap::new(),
@@ -281,6 +286,7 @@ impl<'a> Importer<'a> {
         self.read_storeys();
         self.read_grids();
         self.read_types();
+        self.read_object_types();
         for &id in self.ids("IFCCURTAINWALL") {
             self.import_curtain_wall(id);
         }
@@ -305,6 +311,7 @@ impl<'a> Importer<'a> {
             }
         }
         self.import_bare_openings();
+        self.import_objects();
         let mut rest: Vec<u64> = self
             .f
             .entities
@@ -457,6 +464,8 @@ impl<'a> Importer<'a> {
                 P::Door(o) | P::Window(o) => o.material = material,
                 P::Column(c) => c.material = material,
                 P::Beam(b) => b.material = material,
+                // object types are read by read_object_types
+                P::Object(_) => continue,
             }
             let mut t = creabim_core::ElementType::new(params);
             t.description = e.arg(3).as_str().unwrap_or("").trim().to_string();

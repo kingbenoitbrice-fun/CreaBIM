@@ -53,6 +53,8 @@ CUSTOM={
  "wall-opening": '<rect x="3" y="3" width="18" height="18" rx="2" /> <rect x="8" y="8" width="8" height="8" stroke-dasharray="2 2" />',
  "shaft": '<path d="M3 8h18M3 16h18" /> <rect x="9" y="3" width="6" height="18" stroke-dasharray="2 2" />',
  "element-types": '<rect x="3" y="3" width="7" height="7" /> <rect x="14" y="3" width="7" height="7" /> <rect x="3" y="14" width="7" height="7" /> <path d="M14 17.5h7M17.5 14v7" />',
+ # furniture and fixtures: the Object tool and the Catalogue
+ "sofa": '<path d="M5 11V8a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3" /> <path d="M3 13a2 2 0 0 1 4 0v2h10v-2a2 2 0 0 1 4 0v4H3z" /> <path d="M5 17v2M19 17v2" />',
 }
 out={}
 for n in names:

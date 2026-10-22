@@ -8,8 +8,10 @@
 
 pub mod assign;
 pub mod blend;
+pub mod catalogue;
 pub mod freecad;
 pub mod gltf;
+pub mod gltf_read;
 pub mod link;
 pub mod materials;
 pub mod shape;

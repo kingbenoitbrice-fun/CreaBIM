@@ -53,6 +53,9 @@ jobs:
       - run: cargo run -q -p creabim-cli -- sample-typed typed.creabim.json
       - run: cargo run -q -p creabim-cli -- ifc typed.creabim.json typed.ifc
       - run: python tools/validate_ifc.py typed.ifc
+      - run: cargo run -q -p creabim-cli -- sample-furnished furnished.creabim.json
+      - run: cargo run -q -p creabim-cli -- ifc furnished.creabim.json furnished.ifc
+      - run: python tools/validate_ifc.py furnished.ifc
       - run: cargo run -q -p creabim-cli -- plan house.creabim.json "Ground Floor" ground-floor.svg
       - run: cargo run -q -p creabim-cli -- view house.creabim.json "Section A" section-a.svg
       - run: cargo run -q -p creabim-cli -- view house.creabim.json "South Elevation S" south-elevation.svg

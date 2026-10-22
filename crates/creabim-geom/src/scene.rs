@@ -231,6 +231,26 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                 out.extend(opening_items(model, e, o, w, level.elevation));
                 continue;
             }
+            ElementKind::Object(_) => {
+                // one item per part, each in its own material
+                for (mesh, material) in creabim_core::objects::model_parts(model, e) {
+                    let look = material.and_then(|m| match &model.get(m)?.kind {
+                        ElementKind::Material(m) => Some((m.color, m.surface())),
+                        _ => None,
+                    });
+                    let (color, surface) = look.unwrap_or(([0.8, 0.78, 0.74], PLAIN_SURFACE));
+                    out.push(SceneItem {
+                        id: e.id,
+                        mesh: edit_mesh_to_tri(&mesh, DVec3::ZERO),
+                        color,
+                        surface,
+                        ghost: false,
+                        layer: None,
+                        finish: None,
+                    });
+                }
+                continue;
+            }
             ElementKind::FreeMesh(f) => {
                 let z = f
                     .level
