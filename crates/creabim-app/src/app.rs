@@ -6,7 +6,7 @@ use crate::hoverpick;
 use crate::icons::{self, Icon};
 use crate::modal::{Outcome, PaneMap, Space};
 use crate::planview::{self, PaneStyle, PlanState, Tool};
-use crate::render3d::{Vertex, Viewport3d};
+use crate::render3d::{RenderMode, Vertex, Viewport3d};
 use crate::selection::Selection;
 use crate::sheetview::{self, SheetState};
 use crate::sketch::{Click, SketchDraft};
@@ -1172,7 +1172,11 @@ impl CreaBimApp {
         let mut see_through = Vec::new();
         let highlight = [0.95, 0.55, 0.20];
         let mut ghost_lines: Vec<(DVec3, DVec3, [f32; 3])> = Vec::new();
+        // what is selected of the cutters and shafts shows through everything
+        let mut on_top: Vec<(DVec3, DVec3, [f32; 3])> = Vec::new();
         let xray = self.shell.settings.xray;
+        let mode = self.shell.settings.render_3d;
+        let edge_colour = [0.10, 0.10, 0.11];
         for item in &self.scene {
             let selected = self.selection.contains(item.id);
             // X-ray: what holds others turns see-through with its edges
@@ -1191,9 +1195,23 @@ impl CreaBimApp {
                 } else {
                     [0.35, 0.45, 0.75]
                 };
+                let out = if selected {
+                    &mut on_top
+                } else {
+                    &mut ghost_lines
+                };
+                for (a, b) in snaps::feature_edges(&item.mesh) {
+                    out.push((a, b, c));
+                }
+                continue;
+            }
+            if mode.edges() && !xrayed {
+                let c = if selected { highlight } else { edge_colour };
                 for (a, b) in snaps::feature_edges(&item.mesh) {
                     ghost_lines.push((a, b, c));
                 }
+            }
+            if mode == crate::render3d::RenderMode::Wireframe {
                 continue;
             }
             let base = vertices.len() as u32;
@@ -1213,11 +1231,16 @@ impl CreaBimApp {
                 }
                 _ => None,
             };
+            let plain = if mode == crate::render3d::RenderMode::HiddenLine {
+                [0.97, 0.97, 0.96]
+            } else {
+                item.color
+            };
             let mut colors = vec![
                 if selected && face_tris.is_none() {
                     highlight
                 } else {
-                    item.color
+                    plain
                 };
                 item.mesh.positions.len()
             ];
@@ -1416,6 +1439,10 @@ impl CreaBimApp {
         } else {
             vec![]
         };
+        for (a, b, c) in &on_top {
+            overlay.push(line_vertex(a.as_vec3().to_array(), *c));
+            overlay.push(line_vertex(b.as_vec3().to_array(), *c));
+        }
         if let Some(vp) = &mut self.viewport {
             vp.set_geometry(
                 &rs.device,
@@ -3309,15 +3336,7 @@ impl CreaBimApp {
                         crate::units::drag(value).range(0.1..=200.0)
                     };
                     let changed = ui.add(field).changed();
-                    let mut shaded = v.style == ViewStyle::Shaded;
-                    let restyled = shadable && ui.checkbox(&mut shaded, "Shaded").changed();
-                    if restyled {
-                        v.style = if shaded {
-                            ViewStyle::Shaded
-                        } else {
-                            ViewStyle::HiddenLine
-                        };
-                    }
+                    let restyled = shadable && view_style_combo(ui, "classic_style", &mut v.style);
                     if changed || restyled {
                         let r = self.doc.edit_merged(id, "Change view", |e| {
                             e.kind = ElementKind::View(v.clone())
@@ -4044,13 +4063,7 @@ impl CreaBimApp {
                     v.kind,
                     ViewKind::Section { .. } | ViewKind::Axonometric { .. }
                 ) {
-                    let mut shaded = v.style == ViewStyle::Shaded;
-                    if ui.checkbox(&mut shaded, "Shaded surfaces").changed() {
-                        v.style = if shaded {
-                            ViewStyle::Shaded
-                        } else {
-                            ViewStyle::HiddenLine
-                        };
+                    if view_style_combo(ui, "view_style", &mut v.style) {
                         label = "View style"
                     }
                 }
@@ -5273,4 +5286,20 @@ fn draw_guide_3d(
     if run.len() > 1 {
         painter.extend(egui::Shape::dashed_line(&run, stroke, 6.0, 4.0));
     }
+}
+
+/// A drop-down of the ways a section, elevation or 3D view draws.
+fn view_style_combo(ui: &mut egui::Ui, salt: &str, style: &mut ViewStyle) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt(salt)
+            .selected_text(style.label())
+            .show_ui(ui, |ui| {
+                for s in ViewStyle::ALL {
+                    changed |= ui.selectable_value(style, s, s.label()).changed();
+                }
+            });
+        ui.label("Style");
+    });
+    changed
 }

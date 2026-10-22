@@ -21,6 +21,61 @@ pub struct Vertex {
 /// of lines.
 pub const PLAIN: [f32; 3] = [0.8, 0.0, 1.0];
 
+/// How the 3D view draws the model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RenderMode {
+    /// Surfaces in their materials' colours.
+    #[default]
+    Shaded,
+    /// The same with every edge drawn over them.
+    ShadedEdges,
+    /// White surfaces with their edges: a drawing in 3D.
+    HiddenLine,
+    /// Edges only, the hidden ones too: what is inside and behind shows.
+    Wireframe,
+}
+
+impl RenderMode {
+    pub const ALL: [RenderMode; 4] = [
+        RenderMode::Shaded,
+        RenderMode::ShadedEdges,
+        RenderMode::HiddenLine,
+        RenderMode::Wireframe,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RenderMode::Shaded => "Shaded",
+            RenderMode::ShadedEdges => "Shaded with edges",
+            RenderMode::HiddenLine => "Hidden line",
+            RenderMode::Wireframe => "Wireframe",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            RenderMode::Shaded => "sun",
+            RenderMode::ShadedEdges => "render-edges",
+            RenderMode::HiddenLine => "render-hidden-line",
+            RenderMode::Wireframe => "render-wireframe",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            RenderMode::Shaded => "Surfaces in their materials' colours",
+            RenderMode::ShadedEdges => "Surfaces in colour with every edge drawn: openings and shafts read clearly",
+            RenderMode::HiddenLine => "White surfaces and their visible edges, like a drawing",
+            RenderMode::Wireframe => "Edges only, the hidden ones too: see shafts and what is inside walls and slabs",
+        }
+    }
+
+    /// Are the model's edges drawn?
+    pub fn edges(self) -> bool {
+        self != RenderMode::Shaded
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
@@ -192,7 +247,17 @@ impl Viewport3d {
                     depth_write_enabled: Some(depth_compare != wgpu::CompareFunction::Always && !blend),
                     depth_compare: Some(depth_compare),
                     stencil: Default::default(),
-                    bias: Default::default(),
+                    // surfaces sit a hair behind their own edges, so edges
+                    // drawn over them don't flicker
+                    bias: if topology == wgpu::PrimitiveTopology::TriangleList {
+                        wgpu::DepthBiasState {
+                            constant: 2,
+                            slope_scale: 1.5,
+                            clamp: 0.0,
+                        }
+                    } else {
+                        Default::default()
+                    },
                 }),
                 multisample: wgpu::MultisampleState {
                     count: SAMPLES,

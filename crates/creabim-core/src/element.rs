@@ -1283,6 +1283,21 @@ pub enum ViewStyle {
     HiddenLine,
     /// Visible edges over surfaces shaded in their material colours.
     Shaded,
+    /// Every edge, the hidden ones too: to see what is inside and behind,
+    /// like a shaft running through the floors.
+    Wireframe,
+}
+
+impl ViewStyle {
+    pub const ALL: [ViewStyle; 3] = [ViewStyle::HiddenLine, ViewStyle::Shaded, ViewStyle::Wireframe];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ViewStyle::HiddenLine => "Hidden line",
+            ViewStyle::Shaded => "Shaded with edges",
+            ViewStyle::Wireframe => "Wireframe",
+        }
+    }
 }
 
 /// What a schedule lists.

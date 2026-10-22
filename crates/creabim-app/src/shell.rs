@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 pub(super) const TOP_H: f32 = 113.0;
 pub(super) const STATUS_H: f32 = 30.0;
 /// Size of the 3D view's navigation buttons.
-const NAV_W: f32 = 372.0;
+const NAV_W: f32 = 420.0;
 const NAV_H: f32 = 34.0;
 
 pub(super) struct Shell {
@@ -67,6 +67,14 @@ struct Popup {
     /// opens upwards from there instead.
     above: Option<f32>,
     size: egui::Vec2,
+}
+
+pub(super) fn view_style_icon(s: ViewStyle) -> &'static str {
+    match s {
+        ViewStyle::HiddenLine => "render-hidden-line",
+        ViewStyle::Shaded => "render-edges",
+        ViewStyle::Wireframe => "render-wireframe",
+    }
 }
 
 fn tool_icon(t: Tool) -> &'static str {
@@ -262,6 +270,8 @@ impl CreaBimApp {
             "menu:Materials" => self.materials_menu(),
             "menu:Create" => self.create_menu(),
             "underlay" => self.underlay_items(),
+            "render3d" => self.render_items(),
+            "viewstyle" => self.view_style_items(),
             "wall.location" => self.wall_location_items(),
             "type.tool" => self.tool_type_items(),
             "palette" => self.palette_items(),
@@ -700,6 +710,8 @@ impl CreaBimApp {
                   self.shell.settings.xray),
             ],
             "menus": [
+                {"key": "render3d", "icon": self.shell.settings.render_3d.icon(), "label": "",
+                 "hint": format!("How the 3D view draws: {}. Shaded, with edges, hidden line or wireframe", self.shell.settings.render_3d.label())},
                 {"key": "vis3d", "icon": if self.vis3d.is_empty() { "eye" } else { "eye-off" },
                  "label": "Show", "on": !self.vis3d.is_empty(),
                  "hint": "What the 3D view shows: grids, annotation, guides, sketches and every category"},
@@ -813,6 +825,7 @@ impl CreaBimApp {
                 .checked(self.shell.settings.xray)
                 .icon("xray")
                 .hint("Walls, slabs, roofs and masses see-through, so beams, columns and what is inside them show"),
+            Item::sub("Render", self.render_items()).icon(self.shell.settings.render_3d.icon()),
             Item::sub("Crop boxes", self.crop_menu()).icon("crop-box"),
             Item::sub("Camera", camera).icon("axis-3d"),
             Item::sub("Ground grid", ground).icon("grid-3x3"),
@@ -1082,6 +1095,20 @@ impl CreaBimApp {
                 };
             }
             "xray" => self.set_xray(!self.shell.settings.xray),
+            "render3d" => {
+                if let Some(m) = index.and_then(|i| RenderMode::ALL.get(i)) {
+                    let s = &mut self.shell.settings;
+                    s.render_3d = *m;
+                    s.store();
+                    self.geometry_key = None;
+                    self.status = format!("3D view: {}. {}.", m.label(), m.hint());
+                }
+            }
+            "viewstyle" => {
+                if let Some(st) = index.and_then(|i| ViewStyle::ALL.get(i)) {
+                    self.set_view_style(*st);
+                }
+            }
             "guides.toggle" => self.set_guides_hidden(!self.shell.settings.guides_hidden),
             "ground.custom" => {
                 let now = ground_spacing(self.shell.settings.ground_grid_spacing);
@@ -1272,6 +1299,47 @@ impl CreaBimApp {
             .doc
             .edit_merged(id, "Change view", |e| e.kind = ElementKind::View(v.clone()));
         self.report(r, "View changed.");
+    }
+
+    /// How the 3D view can draw, the one it uses ticked.
+    fn render_items(&self) -> Vec<Item> {
+        RenderMode::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                Item::new(format!("render3d:{i}"), m.label())
+                    .checked(self.shell.settings.render_3d == *m)
+                    .icon(m.icon())
+                    .hint(m.hint())
+            })
+            .collect()
+    }
+
+    /// How the active section, elevation or 3D view can draw.
+    fn view_style_items(&self) -> Vec<Item> {
+        let now = self.active_view.and_then(|id| self.view(id)).map(|v| v.style);
+        ViewStyle::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                Item::new(format!("viewstyle:{i}"), s.label())
+                    .checked(now == Some(*s))
+                    .icon(view_style_icon(*s))
+            })
+            .collect()
+    }
+
+    /// Draw the active view in `style`.
+    pub(super) fn set_view_style(&mut self, style: ViewStyle) {
+        let Some(id) = self.active_view else { return };
+        let Some(mut v) = self.view(id).cloned() else {
+            return;
+        };
+        v.style = style;
+        let r = self
+            .doc
+            .edit_merged(id, "View style", |e| e.kind = ElementKind::View(v.clone()));
+        self.report(r, format!("Drawn {}.", style.label().to_lowercase()));
     }
 
     fn view_action(&mut self, what: &str) {
@@ -1504,9 +1572,9 @@ impl CreaBimApp {
                     ViewKind::Section { .. } | ViewKind::Axonometric { .. }
                 ) {
                     options.push(json!({
-                        "kind": "toggle", "id": "view.shaded", "label": "Shaded",
-                        "on": v.style == ViewStyle::Shaded, "icon": "sun",
-                        "hint": "Shade the view's surfaces",
+                        "kind": "menu", "key": "viewstyle", "label": "Style",
+                        "value": v.style.label(), "icon": view_style_icon(v.style),
+                        "hint": "How this view draws, on its sheets too: hidden line, shaded with edges, or wireframe (every edge, the hidden ones too)",
                     }));
                 }
                 options.push(json!({
