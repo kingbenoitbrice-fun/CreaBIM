@@ -835,7 +835,7 @@ impl Modal {
         self.hover = None;
         let mut skipped = self.skipped_note();
         if self.works_on == Target::Face && self.can_take_faces() {
-            skipped.push_str(" (faces are picked in the 3D view; here Move takes whole elements)");
+            skipped.push_str(" (this view picks no faces; here Move takes whole elements)");
         }
         match self.stage {
             Stage::Base => {
@@ -958,10 +958,10 @@ impl Modal {
                 }
                 (None, Some(u)) => {
                     let name = model.get(u.id).map_or("", |e| e.name.as_str());
-                    format!("Move face: {name} has no faces to push or pull; walls, slabs and masses do. F moves whole elements.")
+                    format!("Move face: {name} has no faces to push or pull; walls, slabs, roofs, columns, beams, stairs, railings, doors, windows and masses do. F moves whole elements.")
                 }
                 (None, None) => {
-                    "Move face: point at a face of a wall, slab or mass, and click on it. F moves whole elements instead.".into()
+                    "Move face: point at a face of an element (in a plan or section, its edge), and click on it. F moves whole elements instead.".into()
                 }
             });
         }
@@ -1001,7 +1001,7 @@ impl Modal {
         let label = p.edit.label().to_string();
         let way = if s < 0.0 { " in" } else { " out" };
         self.shown = format!("{label}: {}{way}", crate::units::len(s.abs()));
-        let result = match pushpull::push_face(p.edit.originals(), &p.pick.face, s) {
+        let result = match pushpull::push_face(doc.model(), p.edit.originals(), &p.pick.face, s) {
             Some(changed) => p.edit.update(doc, changed).map_err(|e| e.to_string()),
             None if s.abs() < 1e-9 => {
                 p.edit.cancel(doc);
