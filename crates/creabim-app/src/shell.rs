@@ -10,10 +10,10 @@ use serde_json::{json, Value};
 
 /// Height of the top bar (menus, tools and the tool options strip) and the
 /// status bar, in points.
-const TOP_H: f32 = 113.0;
-const STATUS_H: f32 = 30.0;
+pub(super) const TOP_H: f32 = 113.0;
+pub(super) const STATUS_H: f32 = 30.0;
 /// Size of the 3D view's navigation buttons.
-const NAV_W: f32 = 372.0;
+const NAV_W: f32 = 420.0;
 const NAV_H: f32 = 34.0;
 
 pub(super) struct Shell {
@@ -59,13 +59,25 @@ impl Default for Shell {
     }
 }
 
+#[derive(Clone)]
 struct Popup {
     key: String,
     /// Top-left corner, in points.
     at: egui::Pos2,
     /// When the popup opens upwards, where its bottom goes.
     up: Option<f32>,
+    /// The top of the button it opened from: a menu with no room below it
+    /// opens upwards from there instead.
+    above: Option<f32>,
     size: egui::Vec2,
+}
+
+pub(super) fn view_style_icon(s: ViewStyle) -> &'static str {
+    match s {
+        ViewStyle::HiddenLine => "render-hidden-line",
+        ViewStyle::Shaded => "render-edges",
+        ViewStyle::Wireframe => "render-wireframe",
+    }
 }
 
 fn tool_icon(t: Tool) -> &'static str {
@@ -265,6 +277,8 @@ impl CreaBimApp {
             "menu:Help" => self.help_menu(),
             "menu:Create" => self.create_menu(),
             "underlay" => self.underlay_items(),
+            "render3d" => self.render_items(),
+            "viewstyle" => self.view_style_items(),
             "wall.location" => self.wall_location_items(),
             "type.tool" => self.tool_type_items(),
             "palette" => self.palette_items(),
@@ -722,6 +736,8 @@ impl CreaBimApp {
                 {"key": "vis3d", "icon": if self.vis3d.is_empty() { "eye" } else { "eye-off" },
                  "label": "Show", "on": !self.vis3d.is_empty(),
                  "hint": "What the 3D view shows: grids, annotation, guides, sketches and every category"},
+                {"key": "render3d", "icon": self.shell.settings.render_3d.icon(), "label": "",
+                 "hint": format!("How the 3D view draws: {}. Shaded, with edges, hidden line or wireframe", self.shell.settings.render_3d.label())},
             ],
             "look": {"key": "look", "hint": "Look from the top, a side or the corner"},
         })
@@ -832,6 +848,7 @@ impl CreaBimApp {
                 .checked(self.shell.settings.xray)
                 .icon("xray")
                 .hint("Walls, slabs, roofs and masses see-through, so beams, columns and what is inside them show"),
+            Item::sub("Render", self.render_items()).icon(self.shell.settings.render_3d.icon()),
             Item::sub("Crop boxes", self.crop_menu()).icon("crop-box"),
             Item::sub("Camera", camera).icon("axis-3d"),
             Item::sub("Ground grid", ground).icon("grid-3x3"),
@@ -1107,6 +1124,20 @@ impl CreaBimApp {
                 };
             }
             "xray" => self.set_xray(!self.shell.settings.xray),
+            "render3d" => {
+                if let Some(m) = index.and_then(|i| RenderMode::ALL.get(i)) {
+                    let s = &mut self.shell.settings;
+                    s.render_3d = *m;
+                    s.store();
+                    self.geometry_key = None;
+                    self.status = format!("3D view: {}. {}.", m.label(), m.hint());
+                }
+            }
+            "viewstyle" => {
+                if let Some(st) = index.and_then(|i| ViewStyle::ALL.get(i)) {
+                    self.set_view_style(*st);
+                }
+            }
             "guides.toggle" => self.set_guides_hidden(!self.shell.settings.guides_hidden),
             "ground.custom" => {
                 let now = ground_spacing(self.shell.settings.ground_grid_spacing);
@@ -1303,6 +1334,50 @@ impl CreaBimApp {
             .doc
             .edit_merged(id, "Change view", |e| e.kind = ElementKind::View(v.clone()));
         self.report(r, "View changed.");
+    }
+
+    /// How the 3D view can draw, the one it uses ticked.
+    fn render_items(&self) -> Vec<Item> {
+        RenderMode::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                Item::new(format!("render3d:{i}"), m.label())
+                    .checked(self.shell.settings.render_3d == *m)
+                    .icon(m.icon())
+                    .hint(m.hint())
+            })
+            .collect()
+    }
+
+    /// How the active section, elevation or 3D view can draw.
+    fn view_style_items(&self) -> Vec<Item> {
+        let now = self
+            .active_view
+            .and_then(|id| self.view(id))
+            .map(|v| v.style);
+        ViewStyle::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                Item::new(format!("viewstyle:{i}"), s.label())
+                    .checked(now == Some(*s))
+                    .icon(view_style_icon(*s))
+            })
+            .collect()
+    }
+
+    /// Draw the active view in `style`.
+    pub(super) fn set_view_style(&mut self, style: ViewStyle) {
+        let Some(id) = self.active_view else { return };
+        let Some(mut v) = self.view(id).cloned() else {
+            return;
+        };
+        v.style = style;
+        let r = self
+            .doc
+            .edit_merged(id, "View style", |e| e.kind = ElementKind::View(v.clone()));
+        self.report(r, format!("Drawn {}.", style.label().to_lowercase()));
     }
 
     fn view_action(&mut self, what: &str) {
@@ -1539,9 +1614,9 @@ impl CreaBimApp {
                     ViewKind::Section { .. } | ViewKind::Axonometric { .. }
                 ) {
                     options.push(json!({
-                        "kind": "toggle", "id": "view.shaded", "label": "Shaded",
-                        "on": v.style == ViewStyle::Shaded, "icon": "sun",
-                        "hint": "Shade the view's surfaces",
+                        "kind": "menu", "key": "viewstyle", "label": "Style",
+                        "value": v.style.label(), "icon": view_style_icon(v.style),
+                        "hint": "How this view draws, on its sheets too: hidden line, shaded with edges, or wireframe (every edge, the hidden ones too)",
                     }));
                 }
                 options.push(json!({
@@ -1879,12 +1954,13 @@ impl CreaBimApp {
 
     /// The command palette: every action, found by typing.
     pub(super) fn open_palette(&mut self, ctx: &egui::Context) {
-        let screen = ctx.content_rect();
+        let screen = ctx.viewport_rect();
         let w = 560.0f32.min(screen.width() - 32.0);
         self.shell.popup = Some(Popup {
             key: "palette".into(),
             at: egui::pos2(screen.center().x - w / 2.0, screen.top() + 90.0),
             up: None,
+            above: None,
             size: egui::vec2(w, 380.0),
         });
         self.shell.focus_popup = true;
@@ -1955,12 +2031,14 @@ impl CreaBimApp {
                 let y = b["y"].as_f64().unwrap_or(0.0) as f32;
                 let w = b["w"].as_f64().unwrap_or(0.0) as f32;
                 let up = b["up"].as_f64().map(|u| origin.y + u as f32);
+                let above = b["top"].as_f64().map(|u| origin.y + u as f32);
                 let key = b["key"].as_str().unwrap_or("").to_string();
                 let n = self.menu_items(&key).len() as f32;
                 self.shell.popup = Some(Popup {
                     key,
                     at: origin + egui::vec2(x, y),
                     up,
+                    above,
                     size: egui::vec2(w.max(220.0), 12.0 + 29.0 * n),
                 });
             }
@@ -2177,15 +2255,17 @@ impl CreaBimApp {
         // drawn last frame)
         let nav = self
             .rect_3d
-            .filter(|r| r.width() > NAV_W + 40.0 && r.height() > 120.0)
+            .filter(|r| r.width() > 320.0 && r.height() > 120.0)
             .map(|r| {
+                // as wide as it needs, or as the view when that is narrower
+                let w = NAV_W.min(r.width() - 16.0);
                 // the overlaid 2D view takes the top-right corner
                 let x = if self.placement == PlanPlacement::Overlay {
                     r.left() + 36.0
                 } else {
-                    r.right() - NAV_W - 8.0
+                    r.right() - w - 8.0
                 };
-                egui::Rect::from_min_size(egui::pos2(x, r.top() + 8.0), egui::vec2(NAV_W, NAV_H))
+                egui::Rect::from_min_size(egui::pos2(x, r.top() + 8.0), egui::vec2(w, NAV_H))
             });
         let states = [
             (Pane::Top, top, self.top_state(&ctx)),
@@ -2193,11 +2273,13 @@ impl CreaBimApp {
             (Pane::Status, status, self.status_state()),
         ];
         let nav_state = self.nav_state();
-        let screen = ctx.content_rect();
+        // web menus float over the whole window, the web bands included
+        let screen = ctx.viewport_rect();
         let popup = self.shell.popup.as_ref().map(|p| {
-            let size = popup_size(p, screen);
+            let up = p.up.or_else(|| opens_up(p, screen));
+            let size = popup_size(&Popup { up, ..p.clone() }, screen);
             let mut at = p.at;
-            if let Some(bottom) = p.up {
+            if let Some(bottom) = up {
                 at.y = bottom - size.y;
             }
             at.x =
@@ -2305,6 +2387,7 @@ impl CreaBimApp {
                     key: "views".into(),
                     at: r.rect.left_bottom() + egui::vec2(0.0, 4.0),
                     up: None,
+                    above: Some(r.rect.top() - 4.0),
                     size: egui::vec2(260.0, 300.0),
                 });
             }
@@ -2342,6 +2425,7 @@ impl CreaBimApp {
             key: "context".into(),
             at: pos + egui::vec2(2.0, 2.0),
             up: None,
+            above: Some(pos.y - 2.0),
             size: egui::vec2(230.0, 12.0 + 28.0 * n),
         });
     }
@@ -2372,6 +2456,15 @@ impl CreaBimApp {
 /// How big a popup is shown: as its page asks, but never past the window.
 /// A menu opening down keeps to the room below where it opens (or the
 /// whole window height when that is too little); the page scrolls the rest.
+/// Where the bottom of a menu goes that has no room below its button but
+/// more above it: it opens upwards from the button's top.
+fn opens_up(p: &Popup, screen: egui::Rect) -> Option<f32> {
+    let top = p.above?;
+    let below = screen.bottom() - p.at.y - 6.0;
+    let above = top - screen.top() - 6.0;
+    (below < p.size.y && above > below).then_some(top)
+}
+
 fn popup_size(p: &Popup, screen: egui::Rect) -> egui::Vec2 {
     let margin = 6.0;
     let room = match p.up {

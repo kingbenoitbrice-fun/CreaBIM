@@ -19,6 +19,12 @@ Select it. Under *Curtain wall* in *Properties*:
 
 These usually come from its [type](types), so changing the type changes every curtain wall of it.
 
+## Set in a wall
+
+Draw a curtain wall along a wall, or move one into it, and it cuts its own opening there, like a door or window: the wall loses the curtain wall's length and height. The opening follows the curtain wall when you move it, and closes again when it leaves the wall. *Properties* says which wall it is set in. In IFC the wall gets an `IfcOpeningElement` that the curtain wall fills.
+
+A curtain wall drawn on its own stands alone, as before.
+
 ## Doors in it
 
 Place a door or window on a curtain wall like on any wall: it sits in a panel.

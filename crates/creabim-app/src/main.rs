@@ -7,6 +7,7 @@ mod boxsel;
 mod browser;
 mod camera;
 mod commands;
+mod editmode;
 mod files;
 mod handles;
 mod help;

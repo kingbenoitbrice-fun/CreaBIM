@@ -37,8 +37,15 @@ CUSTOM={
  "sheet-template": '<rect x="3" y="4" width="18" height="16" /> <path d="M11 14h10M11 14v6M16 14v6" />',
  # the Stair tool: a flight seen from the side, with its handrail
  "stair": '<path d="M3 21h4v-4h4v-4h4V9h4V5h2v16z" /> <path d="M3 14 12 5" />',
- # X-ray and hidden elements: a solid with what is inside it, dashed
- "xray": '<rect x="3" y="4" width="18" height="16" rx="2" /> <rect x="8" y="9" width="8" height="6" stroke-dasharray="2 2" />',
+ # X-ray and hidden elements: a see-through (dashed) wall with the solid
+ # beam inside it showing, unlike the Wall opening tool's solid frame
+ "xray": '<rect x="7" y="2.5" width="10" height="19" rx="1" stroke-dasharray="2.5 2" /> <path d="M2 10h20v4H2z" fill="currentColor" fill-opacity=".35" />',
+ # how the 3D view draws: shaded with edges, hidden line, wireframe
+ "render-edges": '<path d="M3 9h12v12H3z" fill="currentColor" fill-opacity=".3" /> <path d="m3 9 6-6h12v12l-6 6M15 9l6-6" fill="currentColor" fill-opacity=".15" />',
+ "render-hidden-line": '<rect x="3" y="9" width="12" height="12" /> <path d="m3 9 6-6h12v12l-6 6M15 9l6-6" />',
+ "render-wireframe": '<rect x="3" y="9" width="12" height="12" /> <path d="m3 9 6-6h12v12l-6 6M15 9l6-6" /> <path d="M9 3v12h12M9 15l-6 6" stroke-dasharray="2 1.5" />',
+ # editing an element's outline: a shape with corner grips and an added one
+ "edit-outline": '<path d="M5 19 4 6l12-2 4 13z" /> <rect x="2.5" y="4.5" width="3" height="3" /> <rect x="14.5" y="2.5" width="3" height="3" /> <rect x="18.5" y="15.5" width="3" height="3" /> <path d="m12 16.5 2 2-2 2-2-2z" />',
  # crop boxes (section boxes) of 3D views: a dashed box with grips
  "crop-box": '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z" stroke-dasharray="2.5 2" /> <path d="M4 7.5 12 12l8-4.5M12 12v9" /> <rect x="10.5" y="1.5" width="3" height="3" /> <rect x="10.5" y="19.5" width="3" height="3" />',
  # element types, curtain walls, wall openings and shafts

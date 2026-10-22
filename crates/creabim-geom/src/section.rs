@@ -10,7 +10,7 @@
 
 use crate::plan::{Pen, PlanItem, PlanView};
 use crate::SceneItem;
-use creabim_core::{ElementId, ElementKind, Model};
+use creabim_core::{ElementId, ElementKind, Model, ViewStyle};
 use glam::{DVec2, DVec3, Vec3};
 use std::collections::{HashMap, HashSet};
 
@@ -72,11 +72,28 @@ pub fn section_view_at(
     shaded: bool,
     scale: f64,
 ) -> Drawing {
-    section_view_with(model, start, end, depth, cut, shaded, scale, false)
+    section_view_with(
+        model,
+        start,
+        end,
+        depth,
+        cut,
+        style_of(shaded),
+        scale,
+        false,
+    )
 }
 
-/// [`section_view_at`], with `reveal` drawing what is hidden inside other
-/// elements (a beam in a wall) dashed.
+fn style_of(shaded: bool) -> ViewStyle {
+    if shaded {
+        ViewStyle::Shaded
+    } else {
+        ViewStyle::HiddenLine
+    }
+}
+
+/// [`section_view_at`] drawn in `style`, with `reveal` drawing what is
+/// hidden inside other elements (a beam in a wall) dashed.
 #[allow(clippy::too_many_arguments)]
 pub fn section_view_with(
     model: &Model,
@@ -84,7 +101,7 @@ pub fn section_view_with(
     end: DVec2,
     depth: f64,
     cut: bool,
-    shaded: bool,
+    style: ViewStyle,
     scale: f64,
     reveal: bool,
 ) -> Drawing {
@@ -99,11 +116,17 @@ pub fn section_view_with(
         &project,
         frame.depth,
         Some((0.0, frame.length)),
-        shaded,
+        style,
         revealed.as_ref(),
     );
     items.extend(image);
     items.extend(lines);
+    items.extend(void_lines(
+        model,
+        &project,
+        frame.depth,
+        Some((0.0, frame.length)),
+    ));
 
     // Cut fill, drawn over the projection; layered elements layer by layer.
     let mut layers = vec![];
@@ -270,17 +293,18 @@ impl AxoFrame {
 
 /// A parallel 3D view of the whole model, hidden lines removed, optionally shaded.
 pub fn axonometric_view(model: &Model, azimuth: f64, altitude: f64, shaded: bool) -> Drawing {
-    axonometric_view_with(model, azimuth, altitude, shaded, false, &[])
+    axonometric_view_with(model, azimuth, altitude, style_of(shaded), false, &[])
 }
 
-/// [`axonometric_view`], with `reveal` drawing what is hidden inside other
-/// elements dashed, cropped by `crop` (the view's crop boxes). The view
-/// stays centred on the whole model, so cropping never shifts it on a sheet.
+/// [`axonometric_view`] drawn in `style`, with `reveal` drawing what is
+/// hidden inside other elements dashed, cropped by `crop` (the view's crop
+/// boxes). The view stays centred on the whole model, so cropping never
+/// shifts it on a sheet.
 pub fn axonometric_view_with(
     model: &Model,
     azimuth: f64,
     altitude: f64,
-    shaded: bool,
+    style: ViewStyle,
     reveal: bool,
     crop: &[creabim_core::CropBox],
 ) -> Drawing {
@@ -294,12 +318,95 @@ pub fn axonometric_view_with(
         &project,
         frame.radius * 2.0,
         None,
-        shaded,
+        style,
         revealed.as_ref(),
     );
+    let voids = if crop.is_empty() {
+        void_lines(model, &project, frame.radius * 2.0, None)
+    } else {
+        // only the shafts' edges inside the crop boxes
+        let keep = |p: DVec3| {
+            crop.iter()
+                .any(|b| p.cmpge(b.min - 1e-6).all() && p.cmple(b.max + 1e-6).all())
+        };
+        void_lines_where(model, &project, frame.radius * 2.0, &keep)
+    };
     PlanView {
-        items: image.into_iter().chain(lines).collect(),
+        items: image.into_iter().chain(lines).chain(voids).collect(),
     }
+}
+
+/// The edges of `model`'s shafts seen through `project`, dashed: they
+/// are empty space, so a section, elevation or 3D view shows where they
+/// run without hiding anything, and they can be clicked there.
+fn void_lines(
+    model: &Model,
+    project: &dyn Fn(DVec3) -> DVec3,
+    depth: f64,
+    crop: Option<(f64, f64)>,
+) -> Vec<PlanItem> {
+    let mut out = Vec::new();
+    for (id, a, b) in shaft_edges(model) {
+        let Some((a, b)) = clip_segment(project(a), project(b), 1e-4, depth) else {
+            continue;
+        };
+        let (a, b) = match crop {
+            Some((x0, x1)) => match crop_along(a, b, x0, x1) {
+                Some(seg) => seg,
+                None => continue,
+            },
+            None => (a, b),
+        };
+        out.push(PlanItem::Line {
+            id,
+            pen: Pen::Hidden,
+            a: a.truncate(),
+            b: b.truncate(),
+        });
+    }
+    out
+}
+
+/// [`void_lines`] of a cropped 3D view: the edges with both ends in `keep`.
+fn void_lines_where(
+    model: &Model,
+    project: &dyn Fn(DVec3) -> DVec3,
+    depth: f64,
+    keep: &dyn Fn(DVec3) -> bool,
+) -> Vec<PlanItem> {
+    shaft_edges(model)
+        .into_iter()
+        .filter(|(_, a, b)| keep(*a) && keep(*b))
+        .filter_map(|(id, a, b)| {
+            let (a, b) = clip_segment(project(a), project(b), 1e-4, depth)?;
+            Some(PlanItem::Line {
+                id,
+                pen: Pen::Hidden,
+                a: a.truncate(),
+                b: b.truncate(),
+            })
+        })
+        .collect()
+}
+
+/// Every edge of every shaft: its outline at its base and its top, and
+/// its corners between them.
+pub fn shaft_edges(model: &Model) -> Vec<(ElementId, DVec3, DVec3)> {
+    let mut out = Vec::new();
+    for e in model.iter() {
+        let ElementKind::Shaft(sh) = &e.kind else {
+            continue;
+        };
+        let (z0, z1) = sh.span(model);
+        let n = sh.boundary.len();
+        for i in 0..n {
+            let (p, q) = (sh.boundary[i], sh.boundary[(i + 1) % n]);
+            out.push((e.id, p.extend(z0), q.extend(z0)));
+            out.push((e.id, p.extend(z1), q.extend(z1)));
+            out.push((e.id, p.extend(z0), p.extend(z1)));
+        }
+    }
+    out
 }
 
 type Faces = Vec<(ElementId, [f32; 3], Vec<[DVec3; 3]>)>;
@@ -315,10 +422,11 @@ fn revealable(model: &Model) -> HashSet<ElementId> {
         .collect()
 }
 
-/// Feature edges of `scene` seen through `project`, hidden parts removed.
-/// `project` maps world points to (x, y, depth); only `0..=depth` is drawn,
-/// and with `crop`, only `x` within that range. With `shade`, also returns
-/// an image of the surfaces, lit from the viewer's upper left. Edges of the
+/// Feature edges of `scene` seen through `project`, hidden parts removed
+/// (all of them kept in [`ViewStyle::Wireframe`]). `project` maps world
+/// points to (x, y, depth); only `0..=depth` is drawn, and with `crop`,
+/// only `x` within that range. Shaded, it also returns an image of the
+/// surfaces, lit from the viewer's upper left. Edges of the
 /// `reveal` elements that are hidden because they are inside another
 /// element (behind its near face and in front of its far one) come back
 /// dashed, as [`Pen::Hidden`].
@@ -327,9 +435,11 @@ fn hidden_lines(
     project: &dyn Fn(DVec3) -> DVec3,
     depth: f64,
     crop: Option<(f64, f64)>,
-    shade: bool,
+    style: ViewStyle,
     reveal: Option<&HashSet<ElementId>>,
 ) -> (Vec<PlanItem>, Option<PlanItem>) {
+    let shade = style == ViewStyle::Shaded;
+    let wire = style == ViewStyle::Wireframe;
     let mut faces: Faces = Vec::new();
     for s in scene {
         let mut tris = Vec::new();
@@ -359,6 +469,15 @@ fn hidden_lines(
                 },
                 None => (a, b),
             };
+            if wire {
+                items.push(PlanItem::Line {
+                    id: s.id,
+                    pen: Pen::Projection,
+                    a: a.truncate(),
+                    b: b.truncate(),
+                });
+                continue;
+            }
             for (p, q) in zbuf.visible_runs(a, b) {
                 items.push(PlanItem::Line {
                     id: s.id,
@@ -396,7 +515,7 @@ pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<D
         return None;
     };
     let reveal = v.show_hidden || xray;
-    let shaded = v.style == creabim_core::ViewStyle::Shaded;
+    let style = v.style;
     // what the view leaves out: gone from the model it is drawn from, and
     // from the drawing (for what has to stay in that model, like levels)
     let mut hidden = v.hidden.hidden_set(model);
@@ -428,10 +547,10 @@ pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<D
             end,
             depth,
             cut,
-        } => section_view_with(model, *start, *end, *depth, *cut, shaded, v.scale, reveal),
+        } => section_view_with(model, *start, *end, *depth, *cut, style, v.scale, reveal),
         creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
             let crop = crate::cropbox::active(model, Some(view));
-            axonometric_view_with(model, *azimuth, *altitude, shaded, reveal, &crop)
+            axonometric_view_with(model, *azimuth, *altitude, style, reveal, &crop)
         }
         creabim_core::ViewKind::Schedule { category, by_type } => {
             let table = crate::schedule::schedule_by(model, *category, *by_type);

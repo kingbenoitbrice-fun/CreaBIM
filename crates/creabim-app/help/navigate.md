@@ -10,7 +10,7 @@
 | `Home` | Frame everything |
 | `.` | Frame the selection |
 
-The buttons at the top right of the 3D view do the same, and more: zoom in and out, orbit round the selection, perspective or orthographic, the ground grid, [X-ray](visibility#x-ray), **Show** (what the 3D view shows) and **View** (look from the top, the front, a side or a corner).
+The buttons at the top right of the 3D view do the same, and more: zoom in and out, orbit round the selection, perspective or orthographic, the ground grid, [X-ray](visibility#x-ray), **Show** (what the 3D view shows), the **render** menu (*Shaded*, *Shaded with edges*, *Hidden line* or *Wireframe*, also in *View › Render*; wireframe shows shafts and what is inside walls) and **View** (look from the top, the front, a side or a corner).
 
 ## In plans, sections and sheets
 

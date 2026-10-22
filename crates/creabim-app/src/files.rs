@@ -175,6 +175,8 @@ pub struct Settings {
     pub hidden_colour_3d: bool,
     /// Guides hidden everywhere (they are kept, and come back when shown).
     pub guides_hidden: bool,
+    /// How the 3D view draws: shaded, with edges, hidden line or wireframe.
+    pub render_3d: crate::render3d::RenderMode,
     /// Width of the Help panel, in points.
     pub help_width: f32,
 }
@@ -193,6 +195,7 @@ impl Default for Settings {
             xray: false,
             hidden_colour_3d: false,
             guides_hidden: false,
+            render_3d: Default::default(),
             help_width: 400.0,
         }
     }
@@ -278,6 +281,7 @@ mod tests {
         assert!(s.ground_grid);
         assert_eq!(s.ground_grid_spacing, 1.0);
         assert!(s.hidden_3d.is_empty() && !s.xray && !s.guides_hidden && !s.hidden_colour_3d);
+        assert_eq!(s.render_3d, crate::render3d::RenderMode::Shaded);
     }
 
     #[test]
@@ -291,6 +295,7 @@ mod tests {
             hidden_colour_3d: true,
             guides_hidden: true,
             ground_grid_spacing: 1.2,
+            render_3d: crate::render3d::RenderMode::Wireframe,
             ..Default::default()
         };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();

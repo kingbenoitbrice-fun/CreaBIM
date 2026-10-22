@@ -612,23 +612,9 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         let Some(ElementKind::Wall(wall)) = model.get(o.host).map(|h| &h.kind) else {
             continue;
         };
-        let eps = 0.05;
         // on the wall's centreline, wherever its axis is
         let loc = wall_axes.get(&o.host).copied().unwrap_or(0.0);
-        let pl = c.local_placement(Some(wall_pl), DVec3::new(o.offset, -loc, o.sill), None);
-        let pos = c.placement3d(
-            DVec3::new(o.width / 2.0, wall.thickness / 2.0 + eps, o.height / 2.0),
-            Some(-DVec3::Y),
-            Some(DVec3::X),
-        );
-        let solid = c.rect_extrusion(
-            DVec2::ZERO,
-            o.width,
-            o.height,
-            pos,
-            wall.thickness + 2.0 * eps,
-        );
-        let shape = c.shape("SweptSolid", &[solid]);
+        let (pl, shape) = opening_body(&mut c, wall_pl, loc, wall, o);
         // a bare hole is the opening itself, under its own id
         let hole = o.kind == OpeningKind::Hole;
         let (guid, name) = if hole {
@@ -717,6 +703,39 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             _ => continue,
         };
         contained.entry(Some(level)).or_default().push(fill);
+    }
+
+    // A curtain wall set in a wall cuts its own opening there and fills it,
+    // as a door does.
+    for e in model.iter() {
+        let ElementKind::Wall(wall) = &e.kind else {
+            continue;
+        };
+        for (cw, o) in creabim_core::curtain::voids_in(model, e.id) {
+            let (Some(&(wall_r, wall_pl)), Some(&(cw_r, _))) =
+                (wall_refs.get(&e.id), wall_refs.get(&cw))
+            else {
+                continue;
+            };
+            let loc = wall_axes.get(&e.id).copied().unwrap_or(0.0);
+            let (pl, shape) = opening_body(&mut c, wall_pl, loc, wall, &o);
+            let name = model.get(cw).map_or("Curtain wall", |x| x.name.as_str());
+            let opening = c.w.add(
+                "IFCOPENINGELEMENT",
+                format!(
+                    "{},$,{},$,$,{pl},{shape},$,.OPENING.",
+                    c.guid(),
+                    string(&format!("{name} opening"))
+                ),
+            );
+            let g = c.guid();
+            c.w.add(
+                "IFCRELVOIDSELEMENT",
+                format!("{g},$,$,$,{wall_r},{opening}"),
+            );
+            let g = c.guid();
+            c.w.add("IFCRELFILLSELEMENT", format!("{g},$,$,$,{opening},{cw_r}"));
+        }
     }
 
     // Materials, each associated with the elements made of it. Unused ones
@@ -1219,6 +1238,33 @@ fn tessellate(
         "IFCTRIANGULATEDFACESET",
         format!("{pts},$,.T.,({}),$", tris.join(",")),
     )
+}
+
+/// The placement and body of opening `o` in `wall` (placed at `wall_pl`,
+/// its axis `loc` off its centreline): a box through the wall, a little
+/// proud of both faces.
+fn opening_body(
+    c: &mut Ctx,
+    wall_pl: Ref,
+    loc: f64,
+    wall: &creabim_core::Wall,
+    o: &creabim_core::Opening,
+) -> (Ref, Ref) {
+    let eps = 0.05;
+    let pl = c.local_placement(Some(wall_pl), DVec3::new(o.offset, -loc, o.sill), None);
+    let pos = c.placement3d(
+        DVec3::new(o.width / 2.0, wall.thickness / 2.0 + eps, o.height / 2.0),
+        Some(-DVec3::Y),
+        Some(DVec3::X),
+    );
+    let solid = c.rect_extrusion(
+        DVec2::ZERO,
+        o.width,
+        o.height,
+        pos,
+        wall.thickness + 2.0 * eps,
+    );
+    (pl, c.shape("SweptSolid", &[solid]))
 }
 
 fn product(c: &mut Ctx, class: &str, e: &Element, pl: Ref, shape: Ref, tail: &str) -> Ref {

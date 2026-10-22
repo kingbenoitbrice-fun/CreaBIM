@@ -16,7 +16,7 @@ A **wall opening** is a rectangular hole in a wall with no door or window in it,
 2. Click **Draw a hole** under *Holes* in *Properties*.
 3. Draw the hole's outline, with lines or arcs, snapping as usual.
 
-The hole is cut in plan and in 3D, and the area updates. *Properties* lists the slab's holes, each with *Remove*.
+The hole is cut in plan and in 3D, and the area updates. *Properties* lists the slab's holes, each with *Remove*. To reshape a hole, open the slab in [Edit mode](edit-mode) (`Enter`): each hole shows its corners, edges and add-corner diamonds.
 
 ![A first floor slab with a hole and a shaft](img/slab-holes.jpg)
 
@@ -28,3 +28,7 @@ A **shaft** is a vertical hole through every slab and roof between two levels: a
 2. Draw its outline like a slab: `1` Polygon, `2` Rectangle, `3` Fill room or `4` From sketch.
 
 By default it runs from this level to the next one up. Set its base and top levels and offsets in *Properties*. Move it and every hole it cuts moves with it.
+
+You can select a shaft in every view it passes through: the plan of each level from its base to its top (click inside its crossed outline), sections and elevations (where it is drawn dashed) and 3D. Inside walls or slabs, `Tab` and [X-ray](visibility#x-ray) reach it.
+
+Selected, its corners and its base and top have grips. Open it in [Edit mode](edit-mode) to push its edges and add or take away corners.

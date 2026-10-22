@@ -103,3 +103,78 @@ fn typed_house_round_trips_through_ifcx() {
     assert_eq!(type_names(&back), type_names(&model));
     assert_eq!(typed(&back), typed(&model));
 }
+
+#[test]
+fn a_curtain_wall_set_in_a_wall_voids_and_fills_it_through_ifc() {
+    use creabim_core::{curtain, Element, WallTop};
+    let house = creabim_core::sample::sample_house();
+    // a storefront in the middle of the longest wall
+    let (host, w) = house
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Wall(w) if w.curtain.is_none() => Some((e.id, w.clone())),
+            _ => None,
+        })
+        .max_by(|a, b| a.1.length().total_cmp(&b.1.length()))
+        .unwrap();
+    let mid = (w.start + w.end) / 2.0;
+    let d = w.direction();
+    let mut cw = creabim_core::Wall::new(w.level, mid - d * 1.0, mid + d * 1.0, 0.15, 2.2);
+    cw.base_offset = w.base_offset;
+    cw.top = WallTop::Unconnected;
+    cw.curtain = Some(Default::default());
+    let model = Model::from_elements(
+        house
+            .iter()
+            .cloned()
+            .chain([Element::new("Storefront", ElementKind::Wall(cw))]),
+    )
+    .unwrap();
+    let voids = curtain::voids_in(&model, host);
+    assert_eq!(voids.len(), 1);
+    let openings = |m: &Model| {
+        m.iter()
+            .filter(|e| matches!(e.kind, ElementKind::Opening(_)))
+            .count()
+    };
+
+    let ifc = export_ifc4(&model, &ExportOptions::default());
+    // the opening voids the wall and the curtain wall fills it
+    let line_of = |needle: &str| {
+        ifc.lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle}"))
+            .to_string()
+    };
+    let cw_ref = line_of("IFCCURTAINWALL(")
+        .split('=')
+        .next()
+        .unwrap()
+        .to_string();
+    let opening_ref = line_of("'Storefront opening'")
+        .split('=')
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(ifc
+        .lines()
+        .any(|l| l.contains("IFCRELFILLSELEMENT(")
+            && l.contains(&format!("{opening_ref},{cw_ref})"))));
+    assert!(ifc
+        .lines()
+        .any(|l| l.contains("IFCRELVOIDSELEMENT(") && l.ends_with(&format!(",{opening_ref});"))));
+
+    // back again: the curtain wall is native, the void comes from it, and
+    // no stray hole is added
+    let back = import_ifc(&ifc).unwrap().model;
+    assert_eq!(openings(&back), openings(&model));
+    let host_back = back
+        .iter()
+        .find(|e| e.name == model.get(host).unwrap().name)
+        .unwrap()
+        .id;
+    let back_voids = curtain::voids_in(&back, host_back);
+    assert_eq!(back_voids.len(), 1, "{:?}", back_voids);
+    assert!((back_voids[0].1.width - voids[0].1.width).abs() < 1e-6);
+    assert!((back_voids[0].1.offset - voids[0].1.offset).abs() < 1e-6);
+}

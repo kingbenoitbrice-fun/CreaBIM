@@ -15,7 +15,7 @@ The tools, grouped: selecting, building elements (wall, door, window, slab…), 
 
 ## The tool options strip
 
-The row under the tools shows the tool in use and what it can be set to: a wall's thickness, a slab's drawing mode, a dimension's direction. The **?** beside the tool's name opens its page in this guide. At the right are the settings of the open view: cut height, depth, *Shaded*, *Hidden*, *X-ray*, visibility.
+The row under the tools shows the tool in use and what it can be set to: a wall's thickness, a slab's drawing mode, a dimension's direction. The **?** beside the tool's name opens its page in this guide. At the right are the settings of the open view: cut height, depth, *Style*, *Hidden*, *X-ray*, visibility.
 
 ## The project browser (left)
 

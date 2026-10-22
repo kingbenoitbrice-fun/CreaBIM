@@ -51,6 +51,7 @@ pub const PAGES: &[(&str, &str, &str)] = &[
     page!("Selecting and editing", "move"),
     page!("Selecting and editing", "align"),
     page!("Selecting and editing", "handles"),
+    page!("Selecting and editing", "edit-mode"),
     page!("Selecting and editing", "edit"),
     page!("Building the model", "levels"),
     page!("Building the model", "walls"),
@@ -336,6 +337,16 @@ pub const KEYS: &[Binding] = &[
         "Pick the next of the elements under the pointer",
     ),
     key(SELECT, "Shift+Tab", "Pick the previous one"),
+    key(
+        SELECT,
+        "Enter",
+        "Open the selected element in Edit mode, or finish editing",
+    ),
+    key(
+        SELECT,
+        "Double-click",
+        "On the selected element: open it in Edit mode",
+    ),
     key(SELECT, "Del", "Delete what is selected"),
     key(SELECT, "H", "Hide the selection"),
     key(SELECT, "Shift+H", "Show only the selection"),
@@ -410,7 +421,7 @@ pub fn key_names(keys: &str) -> Vec<String> {
     let last = keys.rsplit('+').next().unwrap_or(keys).trim();
     let last = last.trim_end_matches(" (hold)");
     match last {
-        "Ctrl" | "Shift" | "Alt" | "click" | "right-click" | "drag" => vec![],
+        "Ctrl" | "Shift" | "Alt" | "click" | "right-click" | "drag" | "Double-click" => vec![],
         "Del" => vec!["Delete".into()],
         "Esc" => vec!["Escape".into()],
         "." => vec!["Period".into()],

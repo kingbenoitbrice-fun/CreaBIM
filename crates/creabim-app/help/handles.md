@@ -13,7 +13,11 @@ Drag a wall's end and the walls joined to it follow, so the corner stays closed.
 
 ## Slab and roof corners
 
-Double-click an edge's handle to add a corner there; double-click a corner to take it away.
+Double-click an edge's handle to add a corner there; double-click a corner to take it away. [Edit mode](edit-mode) shows every corner and edge of an outline and of its holes, with a diamond in each edge to add a corner.
+
+## Shafts
+
+A selected shaft has a square grip on each corner and round grips for its base and its top, in every plan, section and 3D view it passes through.
 
 ## In sections
 

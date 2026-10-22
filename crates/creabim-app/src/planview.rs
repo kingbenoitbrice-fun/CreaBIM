@@ -262,6 +262,9 @@ pub struct PlanState {
     pub sketch: Option<SketchDraft>,
     /// A handle or selected element being dragged in a plan or section.
     grip: Option<handles::Drag>,
+    /// The element open in Edit mode (see [`crate::editmode`]): all its
+    /// grips show, in every view.
+    pub edit: Option<ElementId>,
     /// Snaps for each 2D view: built from its drawing without the listed
     /// elements, at a model revision.
     snaps: HashMap<ElementId, (u64, Vec<ElementId>, Snapper)>,
@@ -384,6 +387,7 @@ impl Default for PlanState {
             modal: None,
             sketch: None,
             grip: None,
+            edit: None,
             snaps: HashMap::new(),
             status: None,
             guide_edge: None,
@@ -473,6 +477,9 @@ impl PlanState {
             true
         } else if self.clear_references() > 0 {
             self.status = Some("Guide lines cleared. Esc again leaves the tool.".into());
+            true
+        } else if self.edit.take().is_some() {
+            self.status = Some("Finished editing.".into());
             true
         } else if self.tool != Tool::Select {
             self.tool = Tool::Select;
@@ -1084,12 +1091,14 @@ pub fn show(
                 },
             };
             let mut status = None;
+            let edit = state.edit.is_some() && state.edit == selection.active;
             let busy = handles::interact(
                 doc,
                 &painter,
                 &response,
                 selection.active,
                 None,
+                edit,
                 &mut state.grip,
                 &input,
                 &mut status,
@@ -1529,7 +1538,20 @@ pub fn show(
         };
         let result = match (kind, tool) {
             (_, Tool::Select) => {
-                match (picked(), shift) {
+                let under = picked();
+                // a double-click on the selected element opens it in Edit mode
+                if response.double_clicked()
+                    && !shift
+                    && under.is_some()
+                    && under == selection.active
+                {
+                    if let Some(id) = under {
+                        state.status =
+                            Some(crate::editmode::enter(doc.model(), id, &mut state.edit));
+                    }
+                    return None;
+                }
+                match (under, shift) {
                     (Some(id), true) => selection.toggle(id),
                     (None, true) => {}
                     (id, false) => selection.set(id),
