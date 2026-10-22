@@ -2,7 +2,7 @@
 
 A **type** is a reusable definition that many elements share: "Exterior wall 365, brick cavity", "Window 1200 × 1300, two panes". The type holds the shared values (the build-up, the sizes, the frame, the curtain grid). Each element, an **instance**, keeps its own place and anything it overrides.
 
-Change the type, and every instance follows, except where an instance overrides that value. Walls, curtain walls, doors, windows, slabs, roofs, columns and beams can have types.
+Change the type, and every instance follows, except where an instance overrides that value. Walls, curtain walls, doors, windows, slabs, roofs, columns and beams can have types. Furniture and fixtures always have one: see [Furniture and fixtures](furniture).
 
 ## The Types window
 
