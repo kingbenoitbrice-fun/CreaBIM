@@ -37,31 +37,31 @@ The **Move** column covers G, M and dragging a selected element. **Grips** means
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Wall | Plan | yes | yes: sides, ends | yes | yes | yes | yes |
 | Wall | Section / Elevation | yes | yes: top, bottom, ends | yes | yes | yes | yes (as Stretch) |
-| Wall | 3D | yes | yes: all faces | yes | — | — | — |
+| Wall | 3D | yes | yes: all faces | yes | yes | yes | yes |
 | Slab | Plan | yes | yes: edges | yes | yes | yes | — |
 | Slab | Section / Elevation | yes (sel in elevations) | yes: top, underside, edges | yes | yes | yes | yes (as Stretch) |
-| Slab | 3D | yes | yes | yes | — | — | — |
+| Slab | 3D | yes | yes | yes | yes | yes | yes (as Stretch) |
 | Roof | Plan | yes | yes: eaves and edges | yes | yes | yes | — |
 | Roof | Section / Elevation | yes | yes: top and underside thicken; edges move | yes | yes | yes | yes (as Stretch) |
-| Roof | 3D | yes | yes | yes | — | — | — |
+| Roof | 3D | yes | yes | yes | yes | yes | yes (as Stretch) |
 | Column | Plan | yes | yes: width, depth, diameter | yes | yes | yes | — |
 | Column | Section / Elevation | yes | yes: top, bottom, sides | yes | yes | yes | yes (as Stretch) |
-| Column | 3D | yes | yes | yes | — | — | — |
+| Column | 3D | yes | yes | yes | yes | yes | yes (as Stretch) |
 | Beam | Plan | yes | yes: ends, sides | yes | yes | yes | yes |
 | Beam | Section / Elevation | yes | yes: top, bottom, ends | yes | yes | yes | yes (as Stretch) |
-| Beam | 3D | yes | yes | yes | — | — | — |
+| Beam | 3D | yes | yes | yes | yes | yes | yes |
 | Stair | Plan | yes | yes: side (width), first and last riser | yes | yes | yes | — |
 | Stair | Section / Elevation | yes | yes: top, bottom, first and last riser | yes | yes | yes | yes (as Stretch) |
-| Stair | 3D | yes | yes | yes | — | — | — |
+| Stair | 3D | yes | yes | yes | yes | yes | yes (as Stretch) |
 | Railing | Plan | yes | yes: ends extend, sides move it | yes | yes | yes | — |
 | Railing | Section / Elevation | yes | yes: top (height), ends | yes | yes | yes | yes (as Stretch) |
-| Railing | 3D | yes | yes | yes | — | — | — |
+| Railing | 3D | yes | yes | yes | yes | yes | yes (as Stretch) |
 | Door / Window | Plan | yes, along its wall | yes: jambs (width) | yes | yes | yes | — |
 | Door / Window | Section / Elevation | yes, along its wall | yes: jambs, head, sill | yes | yes | yes | yes (as Stretch) |
-| Door / Window | 3D | yes | yes | yes | — | — | — |
+| Door / Window | 3D | yes | yes | yes | yes (its wall; by its centre line, along its wall) | yes | yes (as Stretch) |
 | Mass | Plan | yes | yes | yes | yes | yes | — |
 | Mass | Section / Elevation | yes | yes | yes | yes | yes | yes (as Stretch) |
-| Mass | 3D | yes | yes: any face, sloped too | yes | — | — | — |
+| Mass | 3D | yes | yes: any face, sloped too | yes | yes | yes | yes (as Stretch) |
 | Grid | Plan | yes | — | yes | yes | — (falls back to Extend) | yes |
 | Grid | Section / Elevation | — | — | yes | — | — | — |
 | Level | Section / Elevation | yes | — | yes | yes | — | — |
@@ -80,9 +80,9 @@ The **Move** column covers G, M and dragging a selected element. **Grips** means
 ## Known gaps
 
 - In elevations, a slab hidden behind a wall can't be clicked. Select it in a plan, in 3D or in the project browser, then use M, its grips or Stretch.
-- Align, Stretch and Extend work in plans, sections and elevations, not in 3D. In 3D, use Move face.
-- Stretch needs the edge to be parallel to the reference. It doesn't rotate the face to meet a slanted line.
-- Stretch's confirmation message in the status bar can be replaced right away by the "rest on" guide hints.
+- ~~Align, Stretch and Extend work in plans, sections and elevations, not in 3D. In 3D, use Move face.~~ They now work in 3D too, and the 3D rows of the table above are updated: see [phase1-stretch-3d](../phase1-stretch-3d/README.md).
+- Stretch needs the edge to be parallel to the reference. It doesn't rotate the face to meet a slanted line. (Since phase1-stretch-3d, within 5°.)
+- ~~Stretch's confirmation message in the status bar can be replaced right away by the "rest on" guide hints.~~ Fixed in phase1-stretch-3d.
 - After a flip, the section's pane keeps its old camera, so the drawing may sit off-centre until you press Home or fit the view.
 - Flip mirrors free dimension points. Points stuck to an element are worked out again from the model.
 - Pushing a stair's side changes the first flight's width only. Landings keep their own width.

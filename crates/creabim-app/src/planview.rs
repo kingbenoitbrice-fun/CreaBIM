@@ -158,8 +158,8 @@ impl Tool {
             Tool::Stair => "Click where the stair starts, then click the way it climbs. It rises to the next level in equal risers.",
             Tool::Railing => "Click inside a stair to rail both its sides, or click the points of a path; click the last point again to finish.",
             Tool::Level => "In a section or elevation, click where the level line starts (its height), then where it ends; its floor plan is made with it. In other views the Levels window opens to add, rename and move levels.",
+            Tool::Align => "Click a reference line (a wall face, slab edge, guide or grid line), then the edge of what to align: it turns parallel and moves flush. In Extend mode a wall, beam or grid line end stretches to the reference instead; in Stretch mode the face moves and the rest stays. Centre lines (dashed purple) can be picked too, both ways. In 3D, click a face, edge, corner, centre line or grid line, then a face.",
             Tool::Object => "Click to place the object picked in the Catalogue window. Sinks, WCs, kitchen units, beds and sofas back onto the nearest wall; Space turns the next one a quarter.",
-            Tool::Align => "Click a reference line (a wall face, slab edge, guide or grid line), then the edge of what to align: it turns parallel and moves flush. In Extend mode a wall, beam or grid line end stretches to the reference instead.",
         }
     }
 
@@ -354,6 +354,12 @@ pub struct PlanState {
     /// Each view's model as its view rays pick from, with the revision it
     /// was built at.
     pick_scenes: HashMap<ElementId, (u64, Arc<Vec<SceneItem>>)>,
+    /// Each 3D view's frame and snaps for the Align tool, with the
+    /// revision they were made at.
+    axo_snaps: HashMap<ElementId, (u64, Arc<(creabim_geom::section::AxoFrame, Snapper)>)>,
+    /// Each plan's and section's centre lines for the Align tool, with the
+    /// revision they were made at.
+    centre_lines: HashMap<ElementId, (u64, Arc<Vec<crate::aligntool::CentreLine>>)>,
     /// The type each tool draws new elements as.
     pub types: HashMap<creabim_core::TypeCategory, ElementId>,
 }
@@ -424,6 +430,8 @@ impl Default for PlanState {
             hover: None,
             xray: HashSet::new(),
             pick_scenes: HashMap::new(),
+            axo_snaps: HashMap::new(),
+            centre_lines: HashMap::new(),
             types: HashMap::new(),
         }
     }
@@ -545,6 +553,7 @@ pub fn show(
     let tool = match (kind, state.tool) {
         (PaneKind::Axonometric, Tool::Tag) => Tool::Tag,
         (PaneKind::Axonometric, Tool::Note) => Tool::Note,
+        (PaneKind::Axonometric, Tool::Align) => Tool::Align,
         (PaneKind::Axonometric | PaneKind::Schedule, _) => Tool::Select,
         (_, t) => t,
     };
@@ -617,7 +626,9 @@ pub fn show(
     // under the pointer (Tab cycles them)
     let pane = Pane::View(view);
     if !response.dragged() {
-        let reading = matches!(tool, Tool::Select | Tool::Tag)
+        // (the Align tool takes faces in a 3D view, so Tab reaches them)
+        let reading = (matches!(tool, Tool::Select | Tool::Tag)
+            || (tool == Tool::Align && kind == PaneKind::Axonometric))
             && state.modal.is_none()
             && state.boxsel.is_none();
         let pointer = response.hover_pos().filter(|_| reading);
@@ -675,26 +686,47 @@ pub fn show(
     }
     crate::annotate::draw_grips(&painter, &xf, &plan.items, selection);
     crate::sketch::draw_marks_in_pane(&painter, doc.model(), selection.active, kind, &xf);
-    if tool == Tool::Align {
+    // the centre lines the Align tool can take here
+    let centre_lines = match (tool, kind) {
+        (Tool::Align, PaneKind::Plan { .. } | PaneKind::Section { .. }) => {
+            pane_centre_lines(state, doc, view, kind, plan)
+        }
+        _ => Arc::new(vec![]),
+    };
+    if tool == Tool::Align && kind != PaneKind::Axonometric {
         let model = doc.model();
-        let hover = response
-            .hover_pos()
-            .and_then(|p| {
-                crate::aligntool::hover_edge(
-                    model,
-                    &state.align,
-                    &plan.items,
-                    xf.to_world(p),
-                    6.0 / xf.scale as f64,
-                )
-            })
-            .map(|(_, a, b)| (a, b));
-        crate::aligntool::draw_picks(&painter, &xf, &state.align, view, hover);
+        let hover = response.hover_pos().and_then(|p| {
+            crate::aligntool::hover_edge(
+                model,
+                &state.align,
+                &plan.items,
+                &centre_lines,
+                xf.to_world(p),
+                6.0 / xf.scale as f64,
+            )
+        });
+        crate::aligntool::draw_picks(&painter, &xf, &state.align, view, hover, &centre_lines);
     }
 
     let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
     // holding Alt picks free of snaps
     let snap_cfg = state.snap.live(alt);
+    // the Align tool in a 3D view works on the model's faces
+    let align_under = match (kind, tool) {
+        (PaneKind::Axonometric, Tool::Align) => {
+            let fs = axo_frame_snaps(state, doc, view);
+            let under = match (&fs, response.hover_pos()) {
+                (Some(fs), Some(p)) => axo_align_under(state, doc, view, fs, &xf, p, &snap_cfg),
+                _ => Default::default(),
+            };
+            if let Some(fs) = &fs {
+                let project = |m: DVec3| Some(xf.to_screen(fs.0.project(m).truncate()));
+                crate::align3d::draw(&painter, &project, doc.model(), &state.align, &under);
+            }
+            Some(under)
+        }
+        _ => None,
+    };
     // snaps: the selection and what joins it are left out while selecting,
     // since dragging them must not snap to themselves
     let moving = state
@@ -784,6 +816,7 @@ pub fn show(
         let q = response.hovered()
             && !ui.ctx().egui_wants_keyboard_input()
             && ui.input(|i| i.key_pressed(egui::Key::Q) && !i.modifiers.command);
+        click_is_not_a_rest(state, tool, response.clicked(), under, now);
         if let Some(msg) = rest_reference(state, view, under, now, q) {
             state.status = Some(msg);
         }
@@ -1564,11 +1597,22 @@ pub fn show(
                 }
                 _ => Ok(()),
             },
+            (PaneKind::Axonometric, Tool::Align) => {
+                let under = align_under.unwrap_or_default();
+                state.status = Some(crate::align3d::click(
+                    doc,
+                    &mut state.align,
+                    &under,
+                    selection,
+                ));
+                Ok(())
+            }
             (_, Tool::Align) => crate::aligntool::click(
                 doc,
                 view,
                 kind,
                 &plan.items,
+                &centre_lines,
                 raw,
                 tool_snap.filter(|_| !shift),
                 6.0 / scale as f64,
@@ -1636,6 +1680,9 @@ pub fn show(
                 (PaneKind::Section { .. }, t) => t.section_hint(),
                 (PaneKind::Axonometric, Tool::Tag) => Tool::Tag.hint(),
                 (PaneKind::Axonometric, Tool::Note) => Tool::Note.hint(),
+                (PaneKind::Axonometric, Tool::Align) => {
+                    "Align in 3D: click a face, edge, corner, centre line or grid line for the reference (empty space takes the plane of the level nearest the ground), then a face to align, stretch or extend to it. Tab picks what is behind. Esc lets go."
+                }
                 (PaneKind::Axonometric, _) => {
                     "Drag to orbit, click to select. The Tag tool works here too. Right-drag pans, the wheel zooms."
                 }
@@ -1919,6 +1966,118 @@ fn plan_click(
             selection.only(e.id);
             doc.commit(Transaction::new("Add mass").insert(e))
         }
+    }
+}
+
+/// The centre lines of what plan or section `view` draws, seen edge on
+/// (see `crate::centres`), kept until the model changes.
+fn pane_centre_lines(
+    state: &mut PlanState,
+    doc: &Document,
+    view: ElementId,
+    kind: PaneKind,
+    plan: &Drawing,
+) -> Arc<Vec<crate::aligntool::CentreLine>> {
+    let rev = doc.model().revision();
+    if let Some((r, lines)) = state.centre_lines.get(&view) {
+        if *r == rev {
+            return lines.clone();
+        }
+    }
+    let (space, look) = match kind {
+        PaneKind::Plan { .. } => (Space::Plan, -DVec3::Z),
+        PaneKind::Section { start, end } => (
+            Space::Section { start, end },
+            (end - start).normalize_or_zero().perp().extend(0.0),
+        ),
+        _ => return Arc::new(vec![]),
+    };
+    let drawn: HashSet<ElementId> = plan.items.iter().map(|i| i.id()).collect();
+    let scene = cached_pick_scene(state, doc, view);
+    let to_pane = |p: DVec3| model_to_pane(space, p);
+    let lines: Vec<crate::aligntool::CentreLine> =
+        crate::centres::all(doc.model(), &scene, &|id| drawn.contains(&id))
+            .iter()
+            .filter_map(|c| {
+                let (a, b) = crate::centres::edge_on(c, look, &to_pane)?;
+                Some((c.id, a, b))
+            })
+            .collect();
+    let lines = Arc::new(lines);
+    state.centre_lines.insert(view, (rev, lines.clone()));
+    lines
+}
+
+/// A 3D view's frame and the snaps of what it shows, kept until the model
+/// changes.
+fn axo_frame_snaps(
+    state: &mut PlanState,
+    doc: &Document,
+    view: ElementId,
+) -> Option<Arc<(creabim_geom::section::AxoFrame, Snapper)>> {
+    let rev = doc.model().revision();
+    if let Some((r, fs)) = state.axo_snaps.get(&view) {
+        if *r == rev {
+            return Some(fs.clone());
+        }
+    }
+    let Some(ElementKind::View(View {
+        kind: ViewKind::Axonometric { azimuth, altitude },
+        hidden,
+        ..
+    })) = doc.model().get(view).map(|e| &e.kind)
+    else {
+        return None;
+    };
+    let frame = creabim_geom::section::AxoFrame::new(doc.model(), *azimuth, *altitude);
+    let hidden = hidden.hidden_set(doc.model());
+    let scene = cached_pick_scene(state, doc, view);
+    let mut snapper = Snapper::from_scene(&scene, &[]);
+    snapper.add_grids(doc.model(), &hidden);
+    let fs = Arc::new((frame, snapper));
+    state.axo_snaps.insert(view, (rev, fs.clone()));
+    Some(fs)
+}
+
+/// What the Align tool takes under pointer `p` of 3D view `view`: the
+/// face of what the pre-selection reads there (Tab may have moved it), an
+/// object snap, and the lowest level for empty space.
+fn axo_align_under(
+    state: &mut PlanState,
+    doc: &Document,
+    view: ElementId,
+    fs: &(creabim_geom::section::AxoFrame, Snapper),
+    xf: &Xf,
+    p: Pos2,
+    cfg: &snaps::SnapSettings,
+) -> crate::align3d::Under {
+    let model = doc.model();
+    // the level nearest the ground
+    let level = model
+        .levels()
+        .map(|(e, l)| (e.id, l.elevation))
+        .min_by(|a, b| a.1.abs().total_cmp(&b.1.abs()));
+    let scene = cached_pick_scene(state, doc, view);
+    let (frame, snapper) = (&fs.0, &fs.1);
+    let (o, d) = frame.ray(xf.to_world(p));
+    let chosen = state.hover.as_ref().and_then(|h| h.at(Pane::View(view), p));
+    let face = crate::align3d::face_pick(model, &scene, o, d, chosen);
+    let project = |m: DVec3| Some(xf.to_screen(frame.project(m).truncate()));
+    let free = face.as_ref().map(|f| f.face.point);
+    let snap = snapper
+        .snap(cfg, p, &project, None, free)
+        .filter(|s| s.kind != SnapKind::Grid);
+    let edge = snap.and_then(|s| snapper.edge_at(s.p));
+    let (centres, centre) =
+        crate::align3d::centres_under(model, &scene, face.as_ref(), p, &project);
+    let centre = centre.filter(|_| crate::align3d::takes_centres(&state.align));
+    crate::align3d::Under {
+        face,
+        snap,
+        edge,
+        level,
+        centres,
+        centre,
     }
 }
 
@@ -4174,6 +4333,20 @@ fn shape_points(
 /// a snap reference in this view, its guide lines showing; rest on one
 /// again and it goes. Returns a status message when one is picked or
 /// dropped.
+/// An Align click is not a rest: the pointer left still on the edge it
+/// clicked doesn't make guides there, so the message for the click stays.
+fn click_is_not_a_rest(
+    state: &mut PlanState,
+    tool: Tool,
+    clicked: bool,
+    under: Option<snaps::Reference>,
+    now: f64,
+) {
+    if let (Tool::Align, true, Some(r)) = (tool, clicked, under) {
+        state.ref_rest = Some((r, now, true));
+    }
+}
+
 fn rest_reference(
     state: &mut PlanState,
     view: ElementId,
@@ -4258,6 +4431,31 @@ fn rest_on(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resting_after_an_align_click_keeps_its_message() {
+        let view = ElementId::new();
+        let edge = snaps::Reference::Edge {
+            a: DVec3::ZERO,
+            b: DVec3::X,
+            arc: None,
+        };
+        // resting on an edge makes guides from it, with a message
+        let mut state = PlanState::default();
+        assert!(rest_reference(&mut state, view, Some(edge), 0.0, false).is_none());
+        assert!(rest_reference(&mut state, view, Some(edge), 1.0, false).is_some());
+        // but not right after the Align tool clicked it
+        let mut state = PlanState::default();
+        click_is_not_a_rest(&mut state, Tool::Align, true, Some(edge), 0.0);
+        assert!(rest_reference(&mut state, view, Some(edge), 0.0, false).is_none());
+        assert!(rest_reference(&mut state, view, Some(edge), 5.0, false).is_none());
+        assert!(state.refs.get(&view).is_none_or(|r| r.is_empty()));
+        // other tools still rest where they clicked
+        let mut state = PlanState::default();
+        click_is_not_a_rest(&mut state, Tool::Wall, true, Some(edge), 0.0);
+        assert!(rest_reference(&mut state, view, Some(edge), 0.0, false).is_none());
+        assert!(rest_reference(&mut state, view, Some(edge), 1.0, false).is_some());
+    }
+
     use super::*;
     use creabim_core::{EditMesh, FreeMesh};
 

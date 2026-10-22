@@ -2043,6 +2043,10 @@ impl CreaBimApp {
             self.outline_3d(ui, &response, &painter, &project, &ray);
             return;
         }
+        if self.plan.tool == Tool::Align {
+            self.align_3d(ui, &response, &painter, &project, &ray);
+            return;
+        }
         if self.plan.tool != Tool::Select {
             self.tools_3d(ui, &response, &painter, &project, &ray);
             return;
@@ -2222,7 +2226,8 @@ impl CreaBimApp {
     ) {
         let pane = hoverpick::Pane::Window3d;
         if !response.dragged() {
-            let reading = self.plan.tool == Tool::Select
+            // (the Align tool takes faces here, so Tab reaches them too)
+            let reading = matches!(self.plan.tool, Tool::Select | Tool::Align)
                 && !modal_here
                 && self.plan.modal.is_none()
                 && self.plane_pick.is_none()
@@ -2500,6 +2505,71 @@ impl CreaBimApp {
 
     /// Walls, slabs, doors, windows, masses and section lines drawn right in
     /// the 3D view, on the working level, with the same snaps as dragging.
+    /// The Align tool in the 3D window: a reference, then a face to align,
+    /// stretch or extend to it (see [`crate::align3d`]).
+    fn align_3d(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        painter: &egui::Painter,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        ray: &dyn Fn(egui::Pos2) -> (DVec3, DVec3),
+    ) {
+        // the tool's hint, for 3D, once the pointer is here
+        if response.hovered() && self.plan.align.reference_3d.is_none() {
+            self.status = crate::align3d::hint(&self.plan.align);
+        }
+        let under = match response.hover_pos() {
+            Some(p) => {
+                let (o, d) = ray(p);
+                let chosen = self
+                    .plan
+                    .hover
+                    .as_ref()
+                    .and_then(|h| h.at(hoverpick::Pane::Window3d, p));
+                let face = crate::align3d::face_pick(self.doc.model(), &self.scene, o, d, chosen);
+                self.refresh_snaps_3d(&[]);
+                let snapper = &self.snaps_3d.as_ref().expect("just built").2;
+                let cfg = self.plan.snap.live(ui.input(|i| i.modifiers.alt));
+                let free = face.as_ref().map(|f| f.face.point);
+                let snap = snapper
+                    .snap(&cfg, p, project, None, free)
+                    .filter(|s| s.kind != SnapKind::Grid);
+                let edge = snap.and_then(|s| snapper.edge_at(s.p));
+                let (centres, centre) = crate::align3d::centres_under(
+                    self.doc.model(),
+                    &self.scene,
+                    face.as_ref(),
+                    p,
+                    project,
+                );
+                let centre = centre.filter(|_| crate::align3d::takes_centres(&self.plan.align));
+                crate::align3d::Under {
+                    face,
+                    snap,
+                    edge,
+                    level: self.work_level(),
+                    centres,
+                    centre,
+                }
+            }
+            None => Default::default(),
+        };
+        crate::align3d::draw(painter, project, self.doc.model(), &self.plan.align, &under);
+        if response.clicked() {
+            if let Some(h) = self.plan.hover.as_mut() {
+                h.list = false;
+            }
+            self.status = crate::align3d::click(
+                &mut self.doc,
+                &mut self.plan.align,
+                &under,
+                &mut self.selection,
+            );
+            self.face = None;
+        }
+    }
+
     fn tools_3d(
         &mut self,
         ui: &egui::Ui,

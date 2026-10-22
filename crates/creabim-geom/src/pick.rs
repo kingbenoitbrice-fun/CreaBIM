@@ -15,8 +15,18 @@ pub struct Hit {
 
 /// Closest element hit by a ray, using Möller–Trumbore intersection.
 pub fn pick(scene: &[SceneItem], origin: Vec3, dir: Vec3) -> Option<Hit> {
+    pick_where(scene, origin, dir, &|_| true)
+}
+
+/// [`pick`], of the elements `keep` takes only.
+fn pick_where(
+    scene: &[SceneItem],
+    origin: Vec3,
+    dir: Vec3,
+    keep: &dyn Fn(ElementId) -> bool,
+) -> Option<Hit> {
     let mut best: Option<Hit> = None;
-    for item in scene {
+    for item in scene.iter().filter(|i| keep(i.id)) {
         let p = &item.mesh.positions;
         for (tri, idx) in item.mesh.indices.chunks(3).enumerate() {
             let (a, b, c) = (
@@ -103,7 +113,27 @@ pub struct FaceHit {
 
 /// The face under a ray, as [`FaceHit`].
 pub fn pick_face(scene: &[SceneItem], origin: Vec3, dir: Vec3) -> Option<FaceHit> {
-    let hit = pick(scene, origin, dir)?;
+    pick_face_where(scene, origin, dir, &|_| true)
+}
+
+/// The face of element `id` under a ray, even where others are in front
+/// of it: what Tab moved the pre-selection to.
+pub fn pick_face_of(
+    scene: &[SceneItem],
+    origin: Vec3,
+    dir: Vec3,
+    id: ElementId,
+) -> Option<FaceHit> {
+    pick_face_where(scene, origin, dir, &|i| i == id)
+}
+
+fn pick_face_where(
+    scene: &[SceneItem],
+    origin: Vec3,
+    dir: Vec3,
+    keep: &dyn Fn(ElementId) -> bool,
+) -> Option<FaceHit> {
+    let hit = pick_where(scene, origin, dir, keep)?;
     // the item the hit came from: the closest of the element's items there
     let item = scene
         .iter()
@@ -199,6 +229,25 @@ mod tests {
         let mut ids: Vec<_> = all.iter().map(|h| h.id).collect();
         ids.dedup();
         assert_eq!(ids.len(), all.len(), "each element once");
+    }
+
+    #[test]
+    fn the_face_of_what_is_behind_can_be_picked() {
+        let model = sample_house();
+        let scene = crate::build_scene(&model);
+        let o = Vec3::new(5.0, 3.0, 50.0);
+        let all = pick_all(&scene, o, -Vec3::Z);
+        let behind = all[1];
+        let f = pick_face_of(&scene, o, -Vec3::Z, behind.id).unwrap();
+        assert_eq!(f.hit.id, behind.id);
+        assert!((f.hit.t - behind.t).abs() < 1e-4);
+        // looked at from above, it is its top
+        assert!(f.normal.z > 0.9, "{}", f.normal);
+        assert!(!f.triangles.is_empty());
+        assert_eq!(
+            pick_face(&scene, o, -Vec3::Z).map(|f| f.hit.id),
+            Some(all[0].id)
+        );
     }
 
     #[test]
