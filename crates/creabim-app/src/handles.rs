@@ -313,6 +313,25 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
     }
 }
 
+/// A handle that moves across the plan, seen in a section or elevation
+/// (looking level along `look`): there it slides across the paper, along
+/// the section line, so wall ends, slab corners, beam ends and the like
+/// can be dragged there too.
+pub fn in_section(h: Handle, look: DVec3) -> Handle {
+    match h.constraint {
+        Constraint::Plane { point, normal } if normal.z.abs() > 0.99 && look.z.abs() < 0.1 => {
+            Handle {
+                constraint: Constraint::Line {
+                    point,
+                    dir: DVec3::Z.cross(look).normalize_or(DVec3::X),
+                },
+                ..h
+            }
+        }
+        _ => h,
+    }
+}
+
 /// The elements a drag of `kind` on `id` changes: the element first, then
 /// for a wall end the walls whose ends sit on it (so corners stay closed).
 /// The second list says which end of each joined wall moves.
@@ -746,6 +765,8 @@ pub enum Flip {
     Facing,
     /// A door's hinge side.
     Hand,
+    /// The way a section or elevation looks.
+    View,
 }
 
 impl Flip {
@@ -754,6 +775,7 @@ impl Flip {
             Flip::Wall => "Flip wall",
             Flip::Facing => "Flip facing",
             Flip::Hand => "Flip door hand",
+            Flip::View => "Flip view direction",
         }
     }
 }
@@ -768,9 +790,23 @@ pub struct FlipArrow {
 
 /// The flip arrows of a selected wall, door or window, in plan: a wall's
 /// beside its exterior face, square to it; a door's or window's side by
-/// side on the face away from where it opens or faces.
+/// side on the face away from where it opens or faces. A section's or
+/// elevation's sits behind its line, pointing the way it looks.
 pub fn flip_arrows(model: &Model, id: ElementId) -> Vec<FlipArrow> {
     match model.get(id).map(|e| &e.kind) {
+        Some(ElementKind::View(v)) => match v.kind {
+            ViewKind::Section { start, end, .. } if start.distance(end) > 0.2 => {
+                let along = (end - start).normalize_or_zero();
+                let look = along.perp();
+                let at = start + along * (start.distance(end) * 0.25).min(1.5) - look * 0.6;
+                vec![FlipArrow {
+                    flip: Flip::View,
+                    at: at.extend(0.0),
+                    dir: look,
+                }]
+            }
+            _ => vec![],
+        },
         Some(ElementKind::Wall(w)) if w.length() > 0.1 => {
             let z = walls::base_z(model, w);
             let n = w.direction().perp();
@@ -850,6 +886,7 @@ pub fn interact(
     };
     let shown: Vec<Handle> = handles(doc.model(), id, face)
         .into_iter()
+        .map(|h| in_section(h, input.look))
         .filter(|h| h.constraint.usable(input.look))
         .collect();
     if let Some(ElementKind::View(v)) = doc.model().get(id).map(|e| &e.kind) {
@@ -951,6 +988,19 @@ pub fn interact(
                 hit = Some(a.flip);
             }
             draw_flip_arrow(painter, c, v, hot);
+        }
+        if let (Some(Flip::View), true) = (hit, response.clicked()) {
+            let r = match transform::flip_view(doc.model(), id) {
+                Some(tx) => doc.commit(tx).map_err(|e| e.to_string()),
+                None => Err("only sections and elevations flip".into()),
+            };
+            *status = Some(match r {
+                Ok(()) => {
+                    "Flipped: it looks the other way along the same line. Ctrl+Z to undo.".into()
+                }
+                Err(e) => format!("Couldn't do that: {e}"),
+            });
+            return true;
         }
         if let (Some(f), true) = (hit, response.clicked()) {
             let r = doc.edit(id, f.label(), |e| match (&mut e.kind, f) {
@@ -1414,5 +1464,33 @@ mod tests {
             edit_corners(&mut doc, id, HandleKind::SlabCorner(0)).unwrap();
         }
         assert!(edit_corners(&mut doc, id, HandleKind::SlabCorner(0)).is_err());
+    }
+
+    #[test]
+    fn plan_handles_slide_along_a_section() {
+        let m = sample_house();
+        let (id, _) = wall_with_door(&m);
+        // a section looking north: wall ends slide east and west
+        let look = DVec3::Y;
+        let end = handles(&m, id, None)
+            .into_iter()
+            .find(|h| matches!(h.kind, HandleKind::WallEnd { .. }))
+            .unwrap();
+        assert!(!end.constraint.usable(look));
+        let h = in_section(end, look);
+        assert!(h.constraint.usable(look));
+        let Constraint::Line { dir, .. } = h.constraint else {
+            panic!()
+        };
+        assert!(dir.dot(look).abs() < 1e-9 && dir.z.abs() < 1e-9);
+        // a ray straight into the paper lands on the line, at the pointer
+        let ray = Ray {
+            o: DVec3::new(3.0, -50.0, end.at.z),
+            d: look,
+        };
+        let p = h.constraint.hit(ray).unwrap();
+        assert!((p.x - 3.0).abs() < 1e-9);
+        // plans keep the handle as it was
+        assert_eq!(in_section(end, -DVec3::Z), end);
     }
 }
