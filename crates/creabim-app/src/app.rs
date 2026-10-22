@@ -3645,7 +3645,10 @@ impl CreaBimApp {
             );
             ui.separator();
         }
-        ui.label(egui::RichText::new(e.ifc_class()).weak());
+        // an object is what its type says: a basin an IfcSanitaryTerminal
+        let class = creabim_core::objects::type_of(self.doc.model(), &e)
+            .map_or_else(|| e.ifc_class().to_string(), |t| t.ifc.class.clone());
+        ui.label(egui::RichText::new(class).weak());
         let mut name = e.name.clone();
         if matches!(e.kind, ElementKind::Level(_)) {
             // a level is renamed with the plans named after it, once typed

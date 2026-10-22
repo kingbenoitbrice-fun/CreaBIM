@@ -122,8 +122,23 @@ pub fn object(
 /// What a thing called `words` probably is.
 pub fn guess(words: &str) -> (ObjectCategory, IfcKind, Mount) {
     use ObjectCategory as C;
-    let w = words.to_ascii_lowercase();
-    let has = |k: &[&str]| k.iter().any(|k| w.contains(k));
+    // whole words only, so a "floor plane" is no loo; plurals count
+    let lower = words.to_ascii_lowercase();
+    let list: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let joined = format!(" {} ", list.join(" "));
+    let has = |k: &[&str]| {
+        k.iter().any(|k| {
+            if k.contains(' ') {
+                joined.contains(&format!(" {k} "))
+            } else {
+                list.iter()
+                    .any(|w| *w == *k || w.strip_suffix('s').or(w.strip_suffix("es")) == Some(k))
+            }
+        })
+    };
     let (c, class, p, m) = if has(&["washbasin", "basin", "lavatory", "vanity"]) {
         (
             C::Bathroom,
@@ -174,6 +189,8 @@ pub fn guess(words: &str) -> (ObjectCategory, IfcKind, Mount) {
         (C::Bedroom, "IfcFurniture", "SHELF", Mount::Wall)
     } else if has(&["cabinet", "cupboard", "drawer", "unit"]) {
         (C::Kitchen, "IfcFurniture", "FILECABINET", Mount::Wall)
+    } else if has(&["lamp", "light", "plant", "rug", "mirror"]) {
+        (C::Living, "IfcFurniture", "NOTDEFINED", Mount::Floor)
     } else {
         (C::Other, "IfcFurniture", "NOTDEFINED", Mount::Floor)
     };
@@ -247,5 +264,10 @@ mod tests {
         assert_eq!(guess("Office desk").0, ObjectCategory::Office);
         assert_eq!(guess("Bar stool").2, Mount::Floor);
         assert_eq!(guess("Thing").1, IfcKind::default());
+        // words, not letters inside them
+        assert_eq!(guess("Floor lamp").1, IfcKind::default());
+        assert_eq!(guess("Floor lamp").0, ObjectCategory::Living);
+        assert_eq!(guess("Kitchen_Sink.001").1.predefined, "SINK");
+        assert_eq!(guess("Dining chairs").1.predefined, "CHAIR");
     }
 }

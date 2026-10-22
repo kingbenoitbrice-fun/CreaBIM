@@ -490,7 +490,7 @@ impl CreaBimApp {
             Item::Separator,
             Item::new("types.browser", "Types…")
                 .icon("element-types")
-                .hint("Wall, curtain wall, door, window, slab, roof, column and beam types: add, edit, assign"),
+                .hint("Wall, curtain wall, door, window, slab, roof, column, beam and object types: add, edit, assign"),
             Item::new("types.starters", "Add starter types")
                 .icon("plus")
                 .hint("Walls, curtain walls, doors, windows, slabs, roofs, columns and beams to start from"),

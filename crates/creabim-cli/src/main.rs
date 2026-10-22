@@ -22,6 +22,9 @@ usage: (<model> is a .creabim project or a legacy .creabim.json file)
                                        starter catalogue
   creabim catalogue [out-dir]          list the starter catalogue, or write
                                        each object as a catalogue file
+  creabim catalogue-import <file> <dir>
+                                       read a .blend, .FCStd, .gltf or .glb
+                                       file as one catalogue object into dir
   creabim save-db <in.creabim.json> <out.creabim>
                                        convert a JSON model to a project file
   creabim ifc <model> <out.ifc>        export a model to IFC4
@@ -83,6 +86,35 @@ fn main() -> ExitCode {
                 );
             }
             Ok(())
+        }
+        ["catalogue-import", file, dir] => {
+            let path = std::path::Path::new(file);
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("object")
+                .to_lowercase()
+                .replace(|c: char| !c.is_ascii_alphanumeric(), "-");
+            creabim_exchange::catalogue::read_file(path, &format!("user/{stem}"))
+                .map_err(|e| e.to_string())
+                .and_then(|c| {
+                    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                    let out = std::path::Path::new(dir).join(format!("{stem}.json"));
+                    std::fs::write(&out, c.to_json()).map_err(|e| e.to_string())?;
+                    let s = c.object.size();
+                    println!(
+                        "{}: {} parts, {:.2} × {:.2} × {:.2} m, {} {} → {}",
+                        c.name,
+                        c.object.parts.len(),
+                        s.x,
+                        s.y,
+                        s.z,
+                        c.object.ifc.class,
+                        c.object.ifc.predefined,
+                        out.display()
+                    );
+                    Ok(())
+                })
         }
         ["catalogue", dir] => std::fs::create_dir_all(dir)
             .map_err(|e| e.to_string())

@@ -579,11 +579,14 @@ impl CreaBimApp {
         let mut asks = vec![];
         let area = self.mat.area.unwrap_or_else(|| ctx.content_rect());
         let current = self.plan.objects.current.as_ref().map(|c| c.key.clone());
+        // as wide as five pictures, or what the views leave
+        let width = (area.width() - 120.0).clamp(420.0, 5.0 * (THUMB as f32 + 26.0));
         egui::Window::new("Catalogue")
+            .resizable(true)
             .open(&mut open)
-            .default_pos(area.min + Vec2::new(60.0, 48.0))
+            .default_pos(area.min + Vec2::new(40.0, 64.0))
             .constrain_to(area)
-            .default_size([560.0, (area.height() - 60.0).clamp(360.0, 640.0)])
+            .default_size([width, (area.height() - 90.0).clamp(360.0, 640.0)])
             .collapsible(false)
             .show(ctx, |ui| {
                 let cat = &mut self.catalogue;
@@ -689,11 +692,15 @@ impl CreaBimApp {
                                     .strong()
                                     .color(ui.visuals().weak_text_color()),
                             );
-                            ui.horizontal_wrapped(|ui| {
-                                for (c, own, user) in rows {
-                                    tile(ui, c, *own, *user, &mut asks);
-                                }
-                            });
+                            // rows of as many pictures as fit across
+                            let per = ((ui.available_width() / (THUMB as f32 + 26.0)) as usize).max(1);
+                            for chunk in rows.chunks(per) {
+                                ui.horizontal_top(|ui| {
+                                    for (c, own, user) in chunk {
+                                        tile(ui, c, *own, *user, &mut asks);
+                                    }
+                                });
+                            }
                             ui.add_space(6.0);
                         }
                     });
