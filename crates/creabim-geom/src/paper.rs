@@ -60,6 +60,13 @@ pub trait Canvas {
         self.fill(pts, 0.0);
     }
 
+    /// A see-through wash of a colour over what is already drawn, at
+    /// [`TINT_ALPHA`]. Canvases without transparency fill it with the
+    /// colour mixed toward white instead.
+    fn tint(&mut self, pts: &[DVec2], rgb: [f32; 3]) {
+        self.fill_rgb(pts, rgb.map(|c| 1.0 - (1.0 - c) * TINT_ALPHA));
+    }
+
     /// Text in a typeface, weight and colour. Canvases that only have one
     /// font draw it as `text_angle` would, at the look's size.
     fn styled_text(&mut self, at: DVec2, text: &str, anchor: Anchor, angle: f64, look: &TextLook) {
@@ -160,6 +167,9 @@ pub fn hatch_fill(h: Hatch) -> f64 {
     }
 }
 
+/// How strongly a [`PlanItem::Tint`] shows over what it lies on.
+pub const TINT_ALPHA: f32 = 0.55;
+
 /// Draw a generated drawing onto a canvas.
 pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
     let to = |p: DVec2| map.to_paper(p);
@@ -179,6 +189,10 @@ pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
                 for (a, b) in hatch_lines(*hatch, points, HATCH_SPACING / map.k()) {
                     canvas.line(&[to(a), to(b)], HATCH);
                 }
+            }
+            PlanItem::Tint { points, rgb, .. } => {
+                let pts: Vec<DVec2> = points.iter().map(|p| to(*p)).collect();
+                canvas.tint(&pts, *rgb);
             }
             PlanItem::Polygon { pen, points, .. } => {
                 let pts: Vec<DVec2> = points.iter().map(|p| to(*p)).collect();
@@ -468,6 +482,16 @@ impl Canvas for SvgCanvas {
 
     fn fill_rgb(&mut self, pts: &[DVec2], rgb: [f32; 3]) {
         self.polygon_fill(pts, &hex(rgb));
+    }
+
+    fn tint(&mut self, pts: &[DVec2], rgb: [f32; 3]) {
+        let pts: Vec<DVec2> = pts.iter().map(|p| self.y(*p)).collect();
+        let _ = writeln!(
+            self.body,
+            "<polygon points=\"{}\" fill=\"{}\" fill-opacity=\"{TINT_ALPHA}\" stroke=\"none\"/>",
+            points(&pts),
+            hex(rgb),
+        );
     }
 
     fn text_angle(&mut self, at: DVec2, size: f64, text: &str, anchor: Anchor, angle: f64) {

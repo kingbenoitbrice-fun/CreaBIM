@@ -468,6 +468,9 @@ impl CreaBimApp {
             Item::new("new.layered", "New layered sample house")
                 .icon("house")
                 .hint("Walls, floors and a roof built from layered assemblies, the upper walls attached to the roof"),
+            Item::new("new.buried", "New sample with a beam in a wall")
+                .icon("house")
+                .hint("The sample house with a lintel beam inside its south wall, to try picking and showing what is hidden inside others"),
             Item::new("new.typed", "New typed sample house")
                 .icon("house")
                 .hint("Walls, doors, windows and slabs of element types, a storefront curtain wall, a wall opening, a stair shaft and a slab hole"),
@@ -966,6 +969,10 @@ impl CreaBimApp {
                 self.load_model(sample_house());
                 self.status = "Loaded the sample house.".into();
             }
+            "new.buried" => {
+                self.load_model(creabim_core::sample::sample_with_buried_beam().0);
+                self.status = "Loaded the sample house with a beam inside its south wall. Hover it in Section A and press Tab to reach the beam.".into();
+            }
             "new.empty" => {
                 let mut m = Document::new();
                 let l = Element::new(
@@ -1115,7 +1122,10 @@ impl CreaBimApp {
                     web.hide_all(self.shell.classic);
                 }
             }
-            "view.shaded" | "view.tag" | "view.reveal" => self.view_action(head),
+            "view.shaded" | "view.tag" | "view.reveal" | "view.colour" | "view.xray" => {
+                self.view_action(head)
+            }
+            "hidden.colour3d" => self.set_hidden_colour_3d(!self.shell.settings.hidden_colour_3d),
             "member" => {
                 if arg == "square" || arg == "round" {
                     self.plan.types.remove(&creabim_core::TypeCategory::Column);
@@ -1278,6 +1288,8 @@ impl CreaBimApp {
                 self.report(r, "View changed.");
             }
             "view.reveal" => self.toggle_hidden_elements(id),
+            "view.colour" => self.toggle_hidden_colour(id),
+            "view.xray" => self.toggle_view_xray(id),
             "view.tag" => {
                 let r = planview::tag_openings(&mut self.doc, id);
                 self.status = match r {
@@ -1495,9 +1507,21 @@ impl CreaBimApp {
                 }
                 options.push(json!({
                     "kind": "toggle", "id": "view.reveal", "label": "Hidden",
-                    "on": v.show_hidden, "icon": "xray",
+                    "on": v.show_hidden, "icon": "eye",
                     "hint": "Show elements hidden inside others (a beam in a wall) with dashed lines",
                 }));
+                options.push(json!({
+                    "kind": "toggle", "id": "view.colour", "label": "In colour",
+                    "on": v.show_hidden && v.hidden_in_colour, "icon": "palette",
+                    "hint": "For detailing: hidden elements in their material colours, see-through over what hides them",
+                }));
+                if let Some(id) = self.active_view {
+                    options.push(json!({
+                        "kind": "toggle", "id": "view.xray", "label": "X-ray",
+                        "on": self.plan.xray.contains(&id), "icon": "xray",
+                        "hint": "X-ray this view while working (Alt+Z over it): walls, slabs and roofs see-through, what is inside them solid and clicked first",
+                    }));
+                }
             }
             options.push(json!({
                 "kind": "button", "id": "view.tag", "label": "Tag openings", "icon": "tag",

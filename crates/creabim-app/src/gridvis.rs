@@ -183,6 +183,7 @@ impl CreaBimApp {
     pub(super) fn set_xray(&mut self, on: bool) {
         let s = &mut self.shell.settings;
         s.xray = on;
+        self.plan.hover = None;
         s.store();
         self.geometry_key = None;
         self.status = if on {
@@ -219,6 +220,53 @@ impl CreaBimApp {
                 "Hidden elements are left out again."
             },
         );
+    }
+
+    /// Does view `id` draw what is hidden inside others in its colours?
+    pub(super) fn shows_hidden_colour(&self, id: ElementId) -> bool {
+        self.view(id).is_some_and(|v| v.hidden_in_colour)
+    }
+
+    /// Draw, or stop drawing, what is hidden inside other elements in view
+    /// `id` in its material colours, washed over what hides it (showing it
+    /// dashed too). One undo step.
+    pub(super) fn toggle_hidden_colour(&mut self, id: ElementId) {
+        let on = !self.shows_hidden_colour(id);
+        let label = if on {
+            "Show hidden elements in colour"
+        } else {
+            "Show hidden elements dashed only"
+        };
+        let r = self.doc.edit(id, label, |e| {
+            if let ElementKind::View(v) = &mut e.kind {
+                v.hidden_in_colour = on;
+                if on {
+                    v.show_hidden = true;
+                }
+            }
+        });
+        self.report(
+            r,
+            if on {
+                "Elements inside others show in their material colours, see-through over what hides them, in this view and on its sheets. Click inside one to pick it."
+            } else {
+                "Hidden elements are dashed only again."
+            },
+        );
+    }
+
+    /// Show, or stop showing, what is inside walls, slabs and roofs in the
+    /// 3D view in its colours, faintly through what hides it.
+    pub(super) fn set_hidden_colour_3d(&mut self, on: bool) {
+        let s = &mut self.shell.settings;
+        s.hidden_colour_3d = on;
+        s.store();
+        self.geometry_key = None;
+        self.status = if on {
+            "The 3D view shows beams, columns and what else is inside walls, slabs and roofs in their colours through them.".into()
+        } else {
+            "What is inside walls and slabs is hidden again in 3D.".into()
+        };
     }
 
     /// Hide the selection in `t`: the elements themselves, their
@@ -345,6 +393,11 @@ impl CreaBimApp {
                     .hint(
                         "Walls, slabs, roofs and masses see-through, so what is inside them shows",
                     ),
+                Item::new("hidden.colour3d", "Hidden elements in colour")
+                    .checked(s.hidden_colour_3d)
+                    .icon("palette")
+                    .keep_open()
+                    .hint("What is inside walls, slabs and roofs shows through them in its own colours"),
             ]);
         } else if let VisTarget::View(id) = t {
             items.extend([
@@ -359,6 +412,17 @@ impl CreaBimApp {
                 .hint(
                     "Draw what is inside another element, like a beam in a wall, with dashed lines",
                 ),
+                Item::new(format!("vis.colour:{}", id.0), "Hidden elements in colour")
+                    .checked(self.shows_hidden_colour(id))
+                    .icon("palette")
+                    .keep_open()
+                    .hint("For detailing: what is inside others in its material colours, see-through, as well as dashed. Sheets show it too"),
+                Item::new(format!("vis.xray:{}", id.0), "X-ray while working")
+                    .key("Alt+Z")
+                    .checked(self.plan.xray.contains(&id))
+                    .icon("xray")
+                    .keep_open()
+                    .hint("Walls, slabs and roofs see-through here, what is inside them solid and clicked first. Sheets don't change"),
             ]);
         }
         if self.shell.settings.guides_hidden {
@@ -638,6 +702,16 @@ impl CreaBimApp {
                             self.toggle_hidden_elements(v);
                         }
                     }
+                    "colour" => {
+                        if let Some(v) = id {
+                            self.toggle_hidden_colour(v);
+                        }
+                    }
+                    "xray" => {
+                        if let Some(v) = id {
+                            self.toggle_view_xray(v);
+                        }
+                    }
                     "cat" => {
                         if let Some(c) = index.and_then(|i| Category::ALL.get(i)).copied() {
                             let hide = !h.hides_category(c);
@@ -846,6 +920,8 @@ impl CreaBimApp {
         // switches that are not the view's own: run as menu actions
         let mut extra: Option<&str> = None;
         let mut reveal = None;
+        let mut colour_of = None;
+        let mut xray_of = None;
         let title = if h.is_empty() {
             "Visibility".to_string()
         } else {
@@ -904,6 +980,14 @@ impl CreaBimApp {
                         {
                             extra = Some("xray");
                         }
+                        let mut colour = self.shell.settings.hidden_colour_3d;
+                        if ui
+                            .checkbox(&mut colour, "Hidden elements in colour")
+                            .on_hover_text("What is inside walls, slabs and roofs shows through them in its own colours")
+                            .changed()
+                        {
+                            extra = Some("hidden.colour3d");
+                        }
                     });
                 } else if let VisTarget::View(id) = t {
                     let mut on = self.shows_hidden_elements(id);
@@ -913,6 +997,22 @@ impl CreaBimApp {
                         .changed()
                     {
                         reveal = Some(id);
+                    }
+                    let mut colour = self.shows_hidden_colour(id);
+                    if ui
+                        .checkbox(&mut colour, "…in their material colours")
+                        .on_hover_text("For detailing: washed in their own colours over what hides them, as well as dashed")
+                        .changed()
+                    {
+                        colour_of = Some(id);
+                    }
+                    let mut xray = self.plan.xray.contains(&id);
+                    if ui
+                        .checkbox(&mut xray, "X-ray while working")
+                        .on_hover_text("Walls, slabs and roofs see-through here, what is inside them solid and clicked first (Alt+Z). Sheets don't change")
+                        .changed()
+                    {
+                        xray_of = Some(id);
                     }
                 }
                 let mut guides = !self.shell.settings.guides_hidden;
@@ -1016,9 +1116,18 @@ impl CreaBimApp {
         if let Some(id) = reveal {
             self.toggle_hidden_elements(id);
         }
+        if let Some(id) = colour_of {
+            self.toggle_hidden_colour(id);
+        }
+        if let Some(id) = xray_of {
+            self.toggle_view_xray(id);
+        }
         match extra {
             Some("guides.toggle") => self.set_guides_hidden(!self.shell.settings.guides_hidden),
             Some("xray") => self.set_xray(!self.shell.settings.xray),
+            Some("hidden.colour3d") => {
+                self.set_hidden_colour_3d(!self.shell.settings.hidden_colour_3d)
+            }
             Some("ground.grid") => {
                 let s = &mut self.shell.settings;
                 s.ground_grid = !s.ground_grid;
@@ -1654,5 +1763,87 @@ mod tests {
         assert!(schedule
             .iter()
             .all(|i| matches!(i, Item::Action { icon, .. } if !icon.is_empty())));
+    }
+
+    #[test]
+    fn x_ray_and_colours_work_per_drawing_view_and_alt_z_follows_the_pointer() {
+        let mut app = CreaBimApp::blank(None);
+        let (model, beam) = creabim_core::sample::sample_with_buried_beam();
+        app.load_model(model);
+        let ctx = egui::Context::default();
+        let sec = app
+            .doc
+            .model()
+            .iter()
+            .find(|e| e.name == "Section A")
+            .unwrap()
+            .id;
+        app.active_view = Some(sec);
+        let is_dashed = |i: &PlanItem| matches!(i, PlanItem::Line { id, pen: creabim_geom::plan::Pen::Hidden, .. } if *id == beam);
+        assert!(!app.drawing(sec).unwrap().items.iter().any(is_dashed));
+        // X-ray is a working mode: no edit, nothing to undo
+        let rev = app.doc.model().revision();
+        app.run_action(&ctx, "view.xray");
+        assert!(app.plan.xray.contains(&sec));
+        assert_eq!(app.doc.model().revision(), rev);
+        assert!(app.drawing(sec).unwrap().items.iter().any(is_dashed));
+        // sheets draw the view as it is
+        let printed = creabim_geom::section::view_drawing(app.doc.model(), sec).unwrap();
+        assert!(!printed.items.iter().any(is_dashed));
+        let items = app.visibility_items(VisTarget::View(sec));
+        assert_eq!(checked(&items, &format!("vis.xray:{}", sec.0)), Some(true));
+        app.run_action(&ctx, &format!("vis.xray:{}", sec.0));
+        assert!(!app.plan.xray.contains(&sec));
+
+        // Alt+Z: in the 2D pane when the pointer was last over it
+        app.rect_2d = Some(Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(100.0, 100.0),
+        ));
+        app.last_in_2d = true;
+        assert_eq!(app.xray_view_target(), Some(sec));
+        app.last_in_2d = false;
+        assert_eq!(app.xray_view_target(), None);
+
+        // colours: shows hidden elements too, one undo step
+        app.run_action(&ctx, "view.colour");
+        assert!(app.shows_hidden_elements(sec) && app.shows_hidden_colour(sec));
+        assert!(app
+            .drawing(sec)
+            .unwrap()
+            .items
+            .iter()
+            .any(|i| matches!(i, PlanItem::Tint { id, .. } if *id == beam)));
+        app.run_command(&ctx, crate::commands::Command::Undo, None);
+        assert!(!app.shows_hidden_elements(sec) && !app.shows_hidden_colour(sec));
+
+        // in 3D
+        app.run_action(&ctx, "hidden.colour3d");
+        assert!(app.shell.settings.hidden_colour_3d);
+        app.scene = creabim_geom::build_scene(app.doc.model());
+        let buried = app.buried_vertices();
+        assert!(!buried.is_empty() && buried.len().is_multiple_of(3));
+        app.run_action(&ctx, "hidden.colour3d");
+        assert!(!app.shell.settings.hidden_colour_3d);
+    }
+
+    #[test]
+    fn in_3d_x_ray_a_click_takes_the_beam_inside_the_wall() {
+        let mut app = CreaBimApp::blank(None);
+        let (model, beam) = creabim_core::sample::sample_with_buried_beam();
+        app.load_model(model);
+        app.scene = creabim_geom::build_scene(app.doc.model());
+        let wall = app
+            .doc
+            .model()
+            .iter()
+            .find(|e| e.name == "GF Wall 1")
+            .unwrap()
+            .id;
+        // from the south, through the wall at the beam's height
+        let (o, d) = (glam::DVec3::new(2.5, -5.0, 2.45), glam::DVec3::Y);
+        assert_eq!(app.first_hit_3d(o, d).map(|h| h.id), Some(wall));
+        app.shell.settings.xray = true;
+        assert_eq!(app.first_hit_3d(o, d).map(|h| h.id), Some(beam));
     }
 }

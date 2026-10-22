@@ -170,6 +170,9 @@ pub struct Settings {
     /// The 3D view in X-ray: walls, slabs, roofs and masses see-through, so
     /// what is inside them shows.
     pub xray: bool,
+    /// The 3D view shows what is hidden inside walls, slabs and roofs in its
+    /// own colours, faintly through what hides it.
+    pub hidden_colour_3d: bool,
     /// Guides hidden everywhere (they are kept, and come back when shown).
     pub guides_hidden: bool,
 }
@@ -186,6 +189,7 @@ impl Default for Settings {
             ground_grid_spacing: 1.0,
             hidden_3d: vec![],
             xray: false,
+            hidden_colour_3d: false,
             guides_hidden: false,
         }
     }
@@ -270,7 +274,7 @@ mod tests {
         assert!(!s.single_view);
         assert!(s.ground_grid);
         assert_eq!(s.ground_grid_spacing, 1.0);
-        assert!(s.hidden_3d.is_empty() && !s.xray && !s.guides_hidden);
+        assert!(s.hidden_3d.is_empty() && !s.xray && !s.guides_hidden && !s.hidden_colour_3d);
     }
 
     #[test]
@@ -281,6 +285,7 @@ mod tests {
                 creabim_core::Category::Guides,
             ],
             xray: true,
+            hidden_colour_3d: true,
             guides_hidden: true,
             ground_grid_spacing: 1.2,
             ..Default::default()

@@ -531,6 +531,33 @@ pub fn layered_house() -> Model {
     doc.model().clone()
 }
 
+/// The sample house with a timber beam buried in the ground floor's south
+/// wall (GF Wall 1), under the first floor: for trying and testing how
+/// elements hidden inside others show and are picked. Returns the beam.
+pub fn sample_with_buried_beam() -> (Model, ElementId) {
+    let mut doc = Document::from_model(sample_house());
+    let model = doc.model();
+    let level = model
+        .levels()
+        .find(|(e, _)| e.name == "Ground Floor")
+        .map(|(e, _)| e.id);
+    let timber = model.iter().find(|e| e.name == "Timber").map(|e| e.id);
+    let mut beam = Beam::new(
+        level.expect("the sample has a ground floor"),
+        DVec2::new(1.0, 0.0),
+        DVec2::new(4.0, 0.0),
+    );
+    beam.width = 0.16;
+    beam.depth = 0.3;
+    beam.top_offset = 0.4;
+    beam.material = timber;
+    let e = Element::new("Lintel beam", ElementKind::Beam(beam));
+    let id = e.id;
+    doc.commit(Transaction::new("Add beam").insert(e))
+        .expect("the beam goes in");
+    (doc.model().clone(), id)
+}
+
 /// The sample house built of element types: typed walls, doors, windows
 /// and slabs, a storefront curtain wall at the back of the ground floor
 /// with a garden door in one bay, a bare hole through a wall, a stair

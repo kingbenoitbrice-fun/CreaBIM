@@ -327,17 +327,18 @@ mod tests {
         let old = r#"{"kind":{"Axonometric":{"azimuth":30.0,"altitude":30.0}},"scale":100.0}"#;
         let v: crate::View = serde_json::from_str(old).unwrap();
         assert!(v.hidden.is_empty());
-        assert!(!v.show_hidden);
+        assert!(!v.show_hidden && !v.hidden_in_colour);
         // nothing hidden writes nothing
         assert!(!serde_json::to_string(&v).unwrap().contains("hidden"));
         // showing elements hidden inside others is kept
         let shown = crate::View {
             show_hidden: true,
+            hidden_in_colour: true,
             ..v.clone()
         };
         let back: crate::View =
             serde_json::from_str(&serde_json::to_string(&shown).unwrap()).unwrap();
-        assert!(back.show_hidden);
+        assert!(back.show_hidden && back.hidden_in_colour);
         // a category this version doesn't know still reads
         let h: ViewHidden =
             serde_json::from_str(r#"{"categories":["Walls","StructuralColumns"]}"#).unwrap();
