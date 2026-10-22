@@ -928,10 +928,11 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                 items.extend(crate::members::member_plan(model, e, cut_height));
             }
             ElementKind::Shaft(sh) => {
-                // on every plan it passes through, crossed, to pick it by
+                // on every plan it passes through, crossed, to pick it by:
+                // the level its top reaches too, whose floor it cuts
                 let z = model.level(level).map_or(0.0, |l| l.elevation);
                 let (z0, z1) = sh.span(model);
-                if z0 - 1e-6 <= z && z < z1 - 1e-6 {
+                if z0 - 1e-6 <= z && z <= z1 + 1e-6 {
                     items.extend(hole_marks(e.id, &sh.boundary, Pen::Symbol));
                 }
             }

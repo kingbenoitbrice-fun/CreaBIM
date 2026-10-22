@@ -9,7 +9,11 @@
 //! thicker by their underside (the top stays) or by their top (the
 //! underside stays). Doors and windows widen from either jamb and
 //! change height and sill. A selected face of a mass pushes and pulls along
-//! its normal.
+//! its normal. Shafts move their corners, base and top.
+//!
+//! Edit mode (see [`crate::editmode`]) adds the grips of an element's
+//! outlines: the corners, edges and add-corner grips of a shaft, a hole,
+//! a roof or a sketch.
 
 use crate::modal::LiveEdit;
 use crate::snaps::{Snap, SnapKind};
@@ -72,6 +76,14 @@ impl Constraint {
     }
 }
 
+/// Which outline of an element an Edit-mode grip works on: its own, or
+/// hole `k` of a slab or a roof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ring {
+    Outline,
+    Hole(usize),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HandleKind {
     WallEnd {
@@ -109,6 +121,18 @@ pub enum HandleKind {
     CropFace(usize),
     /// A crop box as a whole, across the plan.
     CropMove,
+    /// Corner `i` of an outline: a shaft's, or in Edit mode a hole's, a
+    /// roof's or a sketch's.
+    Vertex { ring: Ring, i: usize },
+    /// In Edit mode, edge `i` of an outline, pushed out or pulled in
+    /// square to itself.
+    Edge { ring: Ring, i: usize },
+    /// In Edit mode, the middle of edge `i`: dragging it pulls a new
+    /// corner out of the edge, clicking it adds one there.
+    AddVertex { ring: Ring, i: usize },
+    /// A shaft's base and its top, up and down.
+    ShaftBase,
+    ShaftTop,
 }
 
 impl HandleKind {
@@ -122,12 +146,20 @@ impl HandleKind {
                 | HandleKind::Member { free: true, .. }
                 | HandleKind::ViewEnd { .. }
                 | HandleKind::CropMove
+                | HandleKind::Vertex { .. }
+                | HandleKind::AddVertex { .. }
         )
     }
 
     pub fn verb(self) -> &'static str {
         match self {
-            HandleKind::WallTop | HandleKind::OpeningHead => "Change height of",
+            HandleKind::WallTop
+            | HandleKind::OpeningHead
+            | HandleKind::ShaftBase
+            | HandleKind::ShaftTop => "Change height of",
+            HandleKind::Vertex { .. } | HandleKind::Edge { .. } | HandleKind::AddVertex { .. } => {
+                "Reshape"
+            }
             HandleKind::WallFace | HandleKind::SlabUnderside | HandleKind::SlabTop => {
                 "Change thickness of"
             }
@@ -147,6 +179,31 @@ pub struct Handle {
     pub kind: HandleKind,
     pub at: DVec3,
     pub constraint: Constraint,
+    /// Screen pixels the grip is drawn out from `at` along its line, to
+    /// keep it clear of another grip at the same point.
+    pub nudge: f32,
+}
+
+/// The handles of element `id`, with `edit` those Edit mode adds (see
+/// [`crate::editmode`]).
+pub fn handles_in(model: &Model, id: ElementId, face: Option<usize>, edit: bool) -> Vec<Handle> {
+    let mut out = handles(model, id, face);
+    if !edit {
+        return out;
+    }
+    if let Some(ElementKind::Roof(r)) = model.get(id).map(|e| &e.kind) {
+        // the roof's corner grips become outline corners, which come and go
+        let n = r.boundary.len();
+        out.retain(|h| !matches!(h.kind, HandleKind::Member { i, .. } if i < n));
+    }
+    for h in &mut out {
+        // a slab edge's push grip stands off the add-corner grip there
+        if matches!(h.kind, HandleKind::SlabEdge(_)) {
+            h.nudge = crate::editmode::EDGE_NUDGE;
+        }
+    }
+    out.extend(crate::editmode::extra_handles(model, id));
+    out
 }
 
 fn elevation(model: &Model, level: Option<ElementId>) -> f64 {
@@ -167,6 +224,7 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
             point: at,
             dir: dir.normalize(),
         },
+        nudge: 0.0,
     };
     let flat = |kind, at: DVec3| Handle {
         kind,
@@ -175,6 +233,7 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
             point: at,
             normal: DVec3::Z,
         },
+        nudge: 0.0,
     };
     match &e.kind {
         ElementKind::Wall(w) => {
@@ -247,9 +306,31 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
                     DVec3::Z,
                 ),
             ];
-            if o.kind == OpeningKind::Window {
+            if matches!(o.kind, OpeningKind::Window | OpeningKind::Hole) {
                 out.push(line(HandleKind::OpeningSill, at(mid, o.sill), DVec3::Z));
             }
+            out
+        }
+        ElementKind::Shaft(s) => {
+            let (z0, z1) = s.span(model);
+            let n = s.boundary.len().max(1) as f64;
+            let c = s.boundary.iter().copied().sum::<DVec2>() / n;
+            let mut out: Vec<Handle> = s
+                .boundary
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    flat(
+                        HandleKind::Vertex {
+                            ring: Ring::Outline,
+                            i,
+                        },
+                        p.extend(z0),
+                    )
+                })
+                .collect();
+            out.push(line(HandleKind::ShaftBase, c.extend(z0), DVec3::Z));
+            out.push(line(HandleKind::ShaftTop, c.extend(z1), DVec3::Z));
             out
         }
         ElementKind::View(v) => match v.kind {
@@ -541,6 +622,14 @@ pub fn apply(
         (_, HandleKind::Member { i, .. }) => {
             creabim_core::members::drag_grip(model, first, i, grab, now, step)?
         }
+        (
+            _,
+            HandleKind::Vertex { .. }
+            | HandleKind::Edge { .. }
+            | HandleKind::AddVertex { .. }
+            | HandleKind::ShaftBase
+            | HandleKind::ShaftTop,
+        ) => crate::editmode::reshape(model, first, kind, grab, now, step)?,
         _ => return Err("this handle doesn't fit this element".into()),
     }
     let opening_ok = match &first.kind {
@@ -630,6 +719,11 @@ pub fn readout(changed: &[Element]) -> String {
             )
         }
         Some(ElementKind::Railing(r)) => format!("height {}", crate::units::len(r.height)),
+        Some(ElementKind::Shaft(s)) => format!(
+            "{}, {} corners",
+            crate::units::area(creabim_core::polygon::signed_area2(&s.boundary).abs() / 2.0),
+            s.boundary.len()
+        ),
         Some(ElementKind::CropBox(c)) => {
             let s = c.size();
             format!(
@@ -690,6 +784,9 @@ const ACCENT: Color32 = Color32::from_rgb(230, 120, 30);
 /// the pointer alone, and puts a message for the status bar in `status`.
 /// Add a corner in the middle of a slab edge, or take a corner away.
 pub fn edit_corners(doc: &mut Document, id: ElementId, kind: HandleKind) -> Result<String, String> {
+    if matches!(kind, HandleKind::Vertex { .. } | HandleKind::AddVertex { .. }) {
+        return crate::editmode::add_or_remove(doc, id, kind);
+    }
     let Some(ElementKind::Slab(s)) = doc.model().get(id).map(|e| &e.kind) else {
         return Err("Only slab outlines have corners to add or remove.".into());
     };
@@ -723,6 +820,40 @@ pub fn edit_corners(doc: &mut Document, id: ElementId, kind: HandleKind) -> Resu
 /// as deep as it looks, so it can be found and its depth dragged.
 /// Whether `snapped` shows close to `free` on screen: in 3D a point that
 /// lies under the pointer can be far away along the line being slid on.
+/// Where handle `h` shows on screen: at its point, or nudged out along
+/// its line.
+fn screen_at(h: &Handle, input: &PaneInput) -> Option<Pos2> {
+    let c = (input.project)(h.at)?;
+    let Constraint::Line { dir, .. } = h.constraint else {
+        return Some(c);
+    };
+    if h.nudge == 0.0 {
+        return Some(c);
+    }
+    let tip = (input.project)(h.at + dir * 0.3)?;
+    let v = (tip - c).normalized();
+    Some(if v.is_finite() { c + v * h.nudge } else { c })
+}
+
+/// In Edit mode, the outlines being edited, traced so a hole inside a
+/// slab or a shaft inside walls reads clearly.
+fn draw_rings(model: &Model, id: ElementId, painter: &Painter, input: &PaneInput) {
+    let Some(e) = model.get(id) else {
+        return;
+    };
+    for r in crate::editmode::rings(model, e) {
+        let pts: Vec<Pos2> = r.corners.iter().filter_map(|p| (input.project)(*p)).collect();
+        if pts.len() != r.corners.len() || pts.len() < 2 {
+            continue;
+        }
+        let n = pts.len();
+        let edges = if r.closed { n } else { n - 1 };
+        for i in 0..edges {
+            painter.line_segment([pts[i], pts[(i + 1) % n]], Stroke::new(1.6, ACCENT));
+        }
+    }
+}
+
 fn near_on_screen(input: &PaneInput, snapped: DVec3, free: DVec3) -> bool {
     match ((input.project)(snapped), (input.project)(free)) {
         (Some(a), Some(b)) => a.distance(b) < 16.0,
@@ -876,6 +1007,7 @@ pub fn interact(
     response: &egui::Response,
     selection: Option<ElementId>,
     face: Option<usize>,
+    edit: bool,
     drag: &mut Option<Drag>,
     input: &PaneInput,
     status: &mut Option<String>,
@@ -884,11 +1016,15 @@ pub fn interact(
         *drag = None;
         return false;
     };
-    let shown: Vec<Handle> = handles(doc.model(), id, face)
+    let shown: Vec<Handle> = handles_in(doc.model(), id, face, edit)
         .into_iter()
         .map(|h| in_section(h, input.look))
         .filter(|h| h.constraint.usable(input.look))
         .collect();
+    let screen = |h: &Handle| screen_at(h, input);
+    if edit {
+        draw_rings(doc.model(), id, painter, input);
+    }
     if let Some(ElementKind::View(v)) = doc.model().get(id).map(|e| &e.kind) {
         if let ViewKind::Section {
             start, end, depth, ..
@@ -898,9 +1034,28 @@ pub fn interact(
         }
     }
     for h in &shown {
-        let Some(c) = (input.project)(h.at) else {
+        let Some(c) = screen(h) else {
             continue;
         };
+        if let HandleKind::AddVertex { .. } = h.kind {
+            // a small diamond with a plus: a corner to pull out
+            let r = 5.0;
+            let pts = vec![
+                c + Vec2::new(0.0, -r),
+                c + Vec2::new(r, 0.0),
+                c + Vec2::new(0.0, r),
+                c + Vec2::new(-r, 0.0),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                pts,
+                Color32::WHITE,
+                Stroke::new(1.2, ACCENT),
+            ));
+            let s = Stroke::new(1.0, ACCENT);
+            painter.line_segment([c - Vec2::X * 2.5, c + Vec2::X * 2.5], s);
+            painter.line_segment([c - Vec2::Y * 2.5, c + Vec2::Y * 2.5], s);
+            continue;
+        }
         if let Constraint::Line { dir, .. } = h.constraint {
             // a short stem shows which way the handle slides
             if let Some(tip) = (input.project)(h.at + dir * 0.3) {
@@ -923,14 +1078,22 @@ pub fn interact(
         }
     }
 
-    // a slab's outline: double-click an edge's square to add a corner
-    // there, or a corner to take it away
+    // an outline: double-click an edge's grip to add a corner there, or a
+    // corner to take it away
     if drag.is_none() && response.double_clicked() {
         if let Some(press) = response.interact_pointer_pos() {
             let near = shown
                 .iter()
-                .filter(|h| matches!(h.kind, HandleKind::SlabCorner(_) | HandleKind::SlabEdge(_)))
-                .filter_map(|h| Some((h, (input.project)(h.at)?.distance(press))))
+                .filter(|h| {
+                    matches!(
+                        h.kind,
+                        HandleKind::SlabCorner(_)
+                            | HandleKind::SlabEdge(_)
+                            | HandleKind::Vertex { .. }
+                            | HandleKind::AddVertex { .. }
+                    )
+                })
+                .filter_map(|h| Some((h, screen(h)?.distance(press))))
                 .filter(|(_, d)| *d < 10.0)
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .map(|(h, _)| h.kind);
@@ -1026,11 +1189,21 @@ pub fn interact(
     // a double-click), rather than picking what lies under it
     if drag.is_none() && response.clicked() {
         if let Some(p) = response.interact_pointer_pos() {
-            let on_handle = shown
+            let hit = shown
                 .iter()
-                .filter_map(|h| (input.project)(h.at))
-                .any(|c| c.distance(p) < 10.0);
-            if on_handle {
+                .filter_map(|h| Some((h, screen(h)?.distance(p))))
+                .filter(|(_, d)| *d < 10.0)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(h, _)| h.kind);
+            // a click on an add-corner grip adds the corner
+            if let Some(k @ HandleKind::AddVertex { .. }) = hit {
+                *status = Some(match edit_corners(doc, id, k) {
+                    Ok(s) => s,
+                    Err(e) => e,
+                });
+                return true;
+            }
+            if hit.is_some() {
                 return true;
             }
         }
@@ -1046,7 +1219,7 @@ pub fn interact(
         };
         let near = shown
             .iter()
-            .filter_map(|h| Some((h, (input.project)(h.at)?.distance(press))))
+            .filter_map(|h| Some((h, screen(h)?.distance(press))))
             .filter(|(_, d)| *d < 10.0)
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(h, _)| *h);

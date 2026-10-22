@@ -1,5 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::commands::Command;
+use crate::editmode;
 use crate::handles::{self, PaneInput, Ray};
 use crate::hoverpick;
 use crate::icons::{self, Icon};
@@ -763,6 +764,16 @@ impl CreaBimApp {
                 None => self.set_xray(!self.shell.settings.xray),
             }
         }
+        // Enter opens the selected element in Edit mode, and closes it again
+        let enter = ctx.input(|i| i.modifiers.is_none() && i.key_pressed(egui::Key::Enter));
+        if enter
+            && self.plan.tool == Tool::Select
+            && self.plan.modal.is_none()
+            && !self.plan.busy()
+            && self.plan.outline.is_none()
+        {
+            self.toggle_edit_mode();
+        }
         // M: the Move tool
         let m_key = ctx.input(|i| {
             !i.modifiers.command
@@ -1102,6 +1113,37 @@ impl CreaBimApp {
                 };
             }
             Err(e) => self.status = e,
+        }
+    }
+
+    // ---- Edit mode --------------------------------------------------------
+
+    /// Open the selected element in Edit mode, or close it.
+    pub(super) fn toggle_edit_mode(&mut self) {
+        if self.plan.edit.take().is_some() {
+            self.status = "Finished editing.".into();
+            return;
+        }
+        let Some(id) = self.selection.active.filter(|_| self.selection.len() == 1) else {
+            self.status = "Select one element to edit it.".into();
+            return;
+        };
+        if self.plan.tool != Tool::Select {
+            self.plan.tool = Tool::Select;
+        }
+        self.status = editmode::enter(self.doc.model(), id, &mut self.plan.edit);
+    }
+
+    /// Edit mode ends when its element is no longer the one selected, is
+    /// gone, or a drawing tool is picked.
+    fn keep_edit_mode(&mut self) {
+        let Some(id) = self.plan.edit else { return };
+        if self.selection.active != Some(id)
+            || self.selection.len() != 1
+            || self.plan.tool != Tool::Select
+            || self.doc.model().get(id).is_none()
+        {
+            self.plan.edit = None;
         }
     }
 
@@ -1954,6 +1996,7 @@ impl CreaBimApp {
                 body_normal: DVec3::Z,
             };
             let mut status = None;
+            let edit = self.plan.edit.is_some() && self.plan.edit == self.selection.active;
             let busy = self.plan.tool == Tool::Select
                 && handles::interact(
                     &mut self.doc,
@@ -1961,6 +2004,7 @@ impl CreaBimApp {
                     &response,
                     self.selection.active,
                     self.face,
+                    edit,
                     &mut self.handle_drag,
                     &input,
                     &mut status,
@@ -2000,6 +2044,16 @@ impl CreaBimApp {
                 // sketch lines first: they have no surface to hit
                 let near_sketch = self.sketch_near(p, &project);
                 let shift = ui.input(|i| i.modifiers.shift);
+                // a double-click on the selected element opens it in Edit mode
+                if response.double_clicked() && !shift {
+                    if let Some(id) = self.selection.active.filter(|id| {
+                        self.under_3d(p, &project, &ray).contains(id)
+                            || near_sketch == Some(*id)
+                    }) {
+                        self.status = editmode::enter(self.doc.model(), id, &mut self.plan.edit);
+                        return;
+                    }
+                }
                 let pick = |sel: &mut Selection, id: Option<ElementId>| match (id, shift) {
                     (Some(id), true) => sel.toggle(id),
                     (None, true) => {}
@@ -3643,6 +3697,29 @@ impl CreaBimApp {
         let Some(e) = self.doc.model().get(id).cloned() else {
             return;
         };
+        if self.selection.len() == 1 && editmode::editable(self.doc.model(), id) {
+            let editing = self.plan.edit == Some(id);
+            ui.horizontal(|ui| {
+                let text = if editing { "Finish editing" } else { "Edit" };
+                let b = egui::Button::new(text).selected(editing);
+                if ui
+                    .add(b)
+                    .on_hover_text(
+                        "Edit mode (Enter, or double-click it): all its grips in every view, corners to add and take away. Esc finishes.",
+                    )
+                    .clicked()
+                {
+                    self.toggle_edit_mode();
+                }
+                if editing {
+                    ui.label(egui::RichText::new("Editing").strong().color(ui.visuals().selection.bg_fill));
+                }
+            });
+            if editing {
+                ui.label(egui::RichText::new(editmode::panel_hint(&e.kind)).weak());
+            }
+            ui.add_space(4.0);
+        }
 
         let mut edited = e.clone();
         let mut label = "";
@@ -4120,7 +4197,7 @@ impl CreaBimApp {
                 let area = creabim_core::polygon::signed_area2(&s.boundary).abs() / 2.0;
                 ui.label(
                     egui::RichText::new(format!(
-                        "From {} up to {}, {}. It cuts a hole in every slab and roof in between that it lies inside; move it and they follow.",
+                        "From {} up to {}, {}. It cuts a hole in every slab and roof in between that it lies inside; move or reshape it (Edit) and they follow. Pick it in any view it passes through.",
                         crate::units::elevation(z0),
                         crate::units::elevation(z1),
                         crate::units::area(area)
@@ -4732,6 +4809,7 @@ impl eframe::App for CreaBimApp {
         let ctx = ui.ctx().clone();
         crate::units::set(self.doc.model().units());
         self.shortcuts(&ctx);
+        self.keep_edit_mode();
         let dropped: Vec<String> = ctx.input(|i| {
             i.raw
                 .dropped_files

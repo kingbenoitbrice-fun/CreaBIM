@@ -104,6 +104,12 @@ pub fn section_view_with(
     );
     items.extend(image);
     items.extend(lines);
+    items.extend(void_lines(
+        model,
+        &project,
+        frame.depth,
+        Some((0.0, frame.length)),
+    ));
 
     // Cut fill, drawn over the projection; layered elements layer by layer.
     let mut layers = vec![];
@@ -297,9 +303,92 @@ pub fn axonometric_view_with(
         shaded,
         revealed.as_ref(),
     );
+    let voids = if crop.is_empty() {
+        void_lines(model, &project, frame.radius * 2.0, None)
+    } else {
+        // only the shafts' edges inside the crop boxes
+        let keep = |p: DVec3| {
+            crop.iter()
+                .any(|b| p.cmpge(b.min - 1e-6).all() && p.cmple(b.max + 1e-6).all())
+        };
+        void_lines_where(model, &project, frame.radius * 2.0, &keep)
+    };
     PlanView {
-        items: image.into_iter().chain(lines).collect(),
+        items: image.into_iter().chain(lines).chain(voids).collect(),
     }
+}
+
+/// The edges of `model`'s shafts seen through `project`, dashed: they
+/// are empty space, so a section, elevation or 3D view shows where they
+/// run without hiding anything, and they can be clicked there.
+fn void_lines(
+    model: &Model,
+    project: &dyn Fn(DVec3) -> DVec3,
+    depth: f64,
+    crop: Option<(f64, f64)>,
+) -> Vec<PlanItem> {
+    let mut out = Vec::new();
+    for (id, a, b) in shaft_edges(model) {
+        let Some((a, b)) = clip_segment(project(a), project(b), 1e-4, depth) else {
+            continue;
+        };
+        let (a, b) = match crop {
+            Some((x0, x1)) => match crop_along(a, b, x0, x1) {
+                Some(seg) => seg,
+                None => continue,
+            },
+            None => (a, b),
+        };
+        out.push(PlanItem::Line {
+            id,
+            pen: Pen::Hidden,
+            a: a.truncate(),
+            b: b.truncate(),
+        });
+    }
+    out
+}
+
+/// [`void_lines`] of a cropped 3D view: the edges with both ends in `keep`.
+fn void_lines_where(
+    model: &Model,
+    project: &dyn Fn(DVec3) -> DVec3,
+    depth: f64,
+    keep: &dyn Fn(DVec3) -> bool,
+) -> Vec<PlanItem> {
+    shaft_edges(model)
+        .into_iter()
+        .filter(|(_, a, b)| keep(*a) && keep(*b))
+        .filter_map(|(id, a, b)| {
+            let (a, b) = clip_segment(project(a), project(b), 1e-4, depth)?;
+            Some(PlanItem::Line {
+                id,
+                pen: Pen::Hidden,
+                a: a.truncate(),
+                b: b.truncate(),
+            })
+        })
+        .collect()
+}
+
+/// Every edge of every shaft: its outline at its base and its top, and
+/// its corners between them.
+pub fn shaft_edges(model: &Model) -> Vec<(ElementId, DVec3, DVec3)> {
+    let mut out = Vec::new();
+    for e in model.iter() {
+        let ElementKind::Shaft(sh) = &e.kind else {
+            continue;
+        };
+        let (z0, z1) = sh.span(model);
+        let n = sh.boundary.len();
+        for i in 0..n {
+            let (p, q) = (sh.boundary[i], sh.boundary[(i + 1) % n]);
+            out.push((e.id, p.extend(z0), q.extend(z0)));
+            out.push((e.id, p.extend(z1), q.extend(z1)));
+            out.push((e.id, p.extend(z0), p.extend(z1)));
+        }
+    }
+    out
 }
 
 type Faces = Vec<(ElementId, [f32; 3], Vec<[DVec3; 3]>)>;
