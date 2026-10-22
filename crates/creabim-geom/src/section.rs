@@ -270,20 +270,23 @@ impl AxoFrame {
 
 /// A parallel 3D view of the whole model, hidden lines removed, optionally shaded.
 pub fn axonometric_view(model: &Model, azimuth: f64, altitude: f64, shaded: bool) -> Drawing {
-    axonometric_view_with(model, azimuth, altitude, shaded, false)
+    axonometric_view_with(model, azimuth, altitude, shaded, false, &[])
 }
 
 /// [`axonometric_view`], with `reveal` drawing what is hidden inside other
-/// elements dashed.
+/// elements dashed, cropped by `crop` (the view's crop boxes). The view
+/// stays centred on the whole model, so cropping never shifts it on a sheet.
 pub fn axonometric_view_with(
     model: &Model,
     azimuth: f64,
     altitude: f64,
     shaded: bool,
     reveal: bool,
+    crop: &[creabim_core::CropBox],
 ) -> Drawing {
     let frame = AxoFrame::new(model, azimuth, altitude);
-    let scene = crate::scene::drawn_scene(model);
+    let mut scene = crate::scene::drawn_scene(model);
+    crate::cropbox::crop_scene(model, &mut scene, crop);
     let project = |p: DVec3| frame.project(p);
     let revealed = reveal.then(|| revealable(model));
     let (lines, image) = hidden_lines(
@@ -428,7 +431,8 @@ pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
             v.show_hidden,
         ),
         creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
-            axonometric_view_with(model, *azimuth, *altitude, shaded, v.show_hidden)
+            let crop = crate::cropbox::active(model, Some(view));
+            axonometric_view_with(model, *azimuth, *altitude, shaded, v.show_hidden, &crop)
         }
         creabim_core::ViewKind::Schedule { category } => {
             let table = crate::schedule::schedule(model, *category);

@@ -105,6 +105,10 @@ pub enum HandleKind {
     },
     /// How far a section or elevation sees, from its line.
     ViewDepth,
+    /// Face `i` of a crop box (see [`creabim_core::CropBox::face`]).
+    CropFace(usize),
+    /// A crop box as a whole, across the plan.
+    CropMove,
 }
 
 impl HandleKind {
@@ -117,6 +121,7 @@ impl HandleKind {
                 | HandleKind::GridEnd { .. }
                 | HandleKind::Member { free: true, .. }
                 | HandleKind::ViewEnd { .. }
+                | HandleKind::CropMove
         )
     }
 
@@ -130,6 +135,8 @@ impl HandleKind {
             HandleKind::OpeningSill => "Change sill of",
             HandleKind::Face(_) => "Push/pull",
             HandleKind::ViewDepth => "Change depth of",
+            HandleKind::CropFace(_) => "Resize",
+            HandleKind::CropMove => "Move",
             _ => "Stretch",
         }
     }
@@ -262,6 +269,16 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
             }
             _ => vec![],
         },
+        ElementKind::CropBox(c) => {
+            let mut out: Vec<Handle> = (0..6)
+                .map(|i| {
+                    let (at, n) = c.face(i);
+                    line(HandleKind::CropFace(i), at, n)
+                })
+                .collect();
+            out.push(flat(HandleKind::CropMove, c.min));
+            out
+        }
         ElementKind::Grid(g) => vec![
             flat(HandleKind::GridEnd { end: false }, g.start.extend(0.0)),
             flat(HandleKind::GridEnd { end: true }, g.end.extend(0.0)),
@@ -486,6 +503,22 @@ pub fn apply(
             let local = m.to_local(n * dist);
             m.mesh.translate_vertices(&verts, local);
         }
+        (ElementKind::CropBox(c), HandleKind::CropFace(i)) => {
+            let axis = i / 2;
+            let (at, _) = c.face(i);
+            c.set_face(i, round(at[axis] + d[axis], step));
+        }
+        (ElementKind::CropBox(c), HandleKind::CropMove) => {
+            // the grabbed corner lands on a rounded spot
+            let to = DVec3::new(
+                round(c.min.x + d.x, step),
+                round(c.min.y + d.y, step),
+                c.min.z,
+            );
+            let by = to - c.min;
+            c.min += by;
+            c.max += by;
+        }
         (_, HandleKind::Member { i, .. }) => {
             creabim_core::members::drag_grip(model, first, i, grab, now, step)?
         }
@@ -578,6 +611,15 @@ pub fn readout(changed: &[Element]) -> String {
             )
         }
         Some(ElementKind::Railing(r)) => format!("height {}", crate::units::len(r.height)),
+        Some(ElementKind::CropBox(c)) => {
+            let s = c.size();
+            format!(
+                "crop box {} × {} × {}",
+                crate::units::len(s.x),
+                crate::units::len(s.y),
+                crate::units::len(s.z)
+            )
+        }
         _ => String::new(),
     }
 }

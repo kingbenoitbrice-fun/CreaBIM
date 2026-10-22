@@ -10,7 +10,16 @@ use std::collections::HashMap;
 /// The outlines where the plane `z` cuts `mesh`, each a simple polygon
 /// (holes are joined to their outline by a zero-width bridge).
 pub fn slice(mesh: &TriMesh, z: f64) -> Vec<Vec<DVec2>> {
-    let loops = loops(mesh, z);
+    outlines(loops(mesh, z, false))
+}
+
+/// [`slice`], keeping only the outlines that close on themselves: for
+/// meshes that may be open somewhere, where a loose run would fill wrongly.
+pub fn slice_closed(mesh: &TriMesh, z: f64) -> Vec<Vec<DVec2>> {
+    outlines(loops(mesh, z, true))
+}
+
+fn outlines(loops: Vec<Vec<DVec2>>) -> Vec<Vec<DVec2>> {
     let (outer, holes): (Vec<_>, Vec<_>) = loops
         .into_iter()
         .filter(|l| l.len() >= 3)
@@ -27,7 +36,7 @@ pub fn slice(mesh: &TriMesh, z: f64) -> Vec<Vec<DVec2>> {
 
 /// Line pieces where the plane cuts each triangle, oriented so the solid is
 /// on their left, chained into loops.
-fn loops(mesh: &TriMesh, z: f64) -> Vec<Vec<DVec2>> {
+fn loops(mesh: &TriMesh, z: f64, closed_only: bool) -> Vec<Vec<DVec2>> {
     let p = |i: u32| {
         let v = mesh.positions[i as usize];
         // nudge corners off the plane so every crossing is clean
@@ -87,6 +96,9 @@ fn loops(mesh: &TriMesh, z: f64) -> Vec<Vec<DVec2>> {
                 }
                 None => break,
             }
+        }
+        if closed_only && key(segs[cur].1) != key(lp[0]) {
+            continue;
         }
         out.push(simplify(lp));
     }

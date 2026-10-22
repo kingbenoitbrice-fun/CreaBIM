@@ -29,6 +29,7 @@ pub enum Icon {
     Tag,
     Sketch,
     Guide,
+    CropBox,
 }
 
 impl Icon {
@@ -54,6 +55,7 @@ impl Icon {
             "TextStyle" => Icon::Material,
             "Sketch" => Icon::Sketch,
             "Guide" => Icon::Guide,
+            "CropBox" => Icon::CropBox,
             _ => Icon::Mass,
         }
     }
@@ -87,9 +89,12 @@ impl Icon {
             Icon::Column | Icon::Beam => Color32::from_rgb(130, 95, 55),
             Icon::Mass => Color32::from_rgb(60, 130, 200),
             Icon::Material => Color32::from_rgb(200, 140, 40),
-            Icon::Plan | Icon::Section | Icon::Elevation | Icon::View3d | Icon::Schedule => {
-                Color32::from_rgb(40, 140, 110)
-            }
+            Icon::Plan
+            | Icon::Section
+            | Icon::Elevation
+            | Icon::View3d
+            | Icon::Schedule
+            | Icon::CropBox => Color32::from_rgb(40, 140, 110),
             Icon::Sheet | Icon::Viewport => Color32::from_rgb(110, 90, 160),
             Icon::Dimension | Icon::Tag => Color32::from_rgb(30, 60, 140),
             Icon::Sketch => Color32::from_rgb(230, 120, 30),
@@ -304,6 +309,21 @@ impl Icon {
                     2.5,
                     2.0,
                 ));
+            }
+            Icon::CropBox => {
+                // a dashed box with a grip on each side
+                let corners = [p(0.15, 0.15), p(0.85, 0.15), p(0.85, 0.85), p(0.15, 0.85)];
+                for i in 0..4 {
+                    painter.add(egui::Shape::dashed_line(
+                        &[corners[i], corners[(i + 1) % 4]],
+                        thin,
+                        2.0,
+                        1.5,
+                    ));
+                }
+                for (x, y) in [(0.5, 0.15), (0.85, 0.5), (0.5, 0.85), (0.15, 0.5)] {
+                    painter.rect_filled(Rect::from_center_size(p(x, y), vec2(3.0, 3.0)), 0.0, c);
+                }
             }
         }
     }
