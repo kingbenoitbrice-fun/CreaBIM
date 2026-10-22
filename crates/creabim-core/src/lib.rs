@@ -8,6 +8,7 @@ pub mod annotation;
 pub mod assembly;
 pub mod constraint;
 pub mod csg;
+pub mod curtain;
 pub mod document;
 pub mod editmesh;
 pub mod element;
@@ -28,6 +29,7 @@ pub mod sketch;
 pub mod slab;
 pub mod titleblock;
 pub mod transform;
+pub mod types;
 pub mod units;
 pub mod visibility;
 pub mod walls;
@@ -38,6 +40,7 @@ pub use annotation::{
 pub use assembly::{assembly_of, Assembly, AssemblyUse, Layer, LayerFunction};
 pub use constraint::{Constraint, SolveError};
 pub use csg::BoolOp;
+pub use curtain::{CurtainGrid, GridRule, PanelKind};
 pub use document::{Document, Step, StepId};
 pub use editmesh::EditMesh;
 pub use element::{
@@ -54,9 +57,10 @@ pub use model::Model;
 pub use modifiers::{Axis, Modifier, ModifierKind};
 pub use ops::{Op, Transaction};
 pub use sketch::{bulge_through, Circle, Curve, SegmentKind};
-pub use slab::{room_outline, slab_from_sketch};
+pub use slab::{room_outline, slab_from_sketch, Shaft};
 pub use titleblock::SheetTemplate;
 pub use transform::Xform;
+pub use types::{ElementType, TypeCategory, TypeParams, TypeRef};
 pub use units::{LengthUnit, Units};
 pub use visibility::{Category, ViewHidden};
 

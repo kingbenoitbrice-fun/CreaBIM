@@ -69,7 +69,7 @@ impl Category {
             Category::Slabs => "Slabs",
             Category::Doors => "Doors",
             Category::Windows => "Windows",
-            Category::Openings => "Openings (void cutters)",
+            Category::Openings => "Openings, shafts and void cutters",
             Category::FreeMeshes => "Masses and meshes",
             Category::Grids => "Grids",
             Category::Levels => "Levels",
@@ -97,7 +97,9 @@ impl Category {
             ElementKind::Opening(o) => match o.kind {
                 OpeningKind::Door => Category::Doors,
                 OpeningKind::Window => Category::Windows,
+                OpeningKind::Hole => Category::Openings,
             },
+            ElementKind::Shaft(_) => Category::Openings,
             _ if cutters.contains(&e.id) => Category::Openings,
             ElementKind::FreeMesh(_) => Category::FreeMeshes,
             ElementKind::Grid(_) | ElementKind::GridGroup(_) => Category::Grids,

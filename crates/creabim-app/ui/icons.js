@@ -107,5 +107,9 @@ window.ICONS = {
 "snap-guides": "<path d=\"M2 16h20M7 21 19 3\" stroke-dasharray=\"2.5 2\" /> <circle cx=\"13.7\" cy=\"12\" r=\"2.5\" />",
 "anno-styles": "<path d=\"M3 17h12\" /> <path d=\"m3 14 3 6M12 14l3 6\" /> <circle cx=\"18\" cy=\"17\" r=\"2\" /> <path d=\"M5 4h14M12 4v7\" />",
 "sheet-template": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" /> <path d=\"M11 14h10M11 14v6M16 14v6\" />",
-"xray": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\" /> <rect x=\"8\" y=\"9\" width=\"8\" height=\"6\" stroke-dasharray=\"2 2\" />"
+"xray": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\" /> <rect x=\"8\" y=\"9\" width=\"8\" height=\"6\" stroke-dasharray=\"2 2\" />",
+"curtain-wall": "<rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" /> <path d=\"M9 3v18M15 3v18M3 12h18\" />",
+"wall-opening": "<rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\" /> <rect x=\"8\" y=\"8\" width=\"8\" height=\"8\" stroke-dasharray=\"2 2\" />",
+"shaft": "<path d=\"M3 8h18M3 16h18\" /> <rect x=\"9\" y=\"3\" width=\"6\" height=\"18\" stroke-dasharray=\"2 2\" />",
+"element-types": "<rect x=\"3\" y=\"3\" width=\"7\" height=\"7\" /> <rect x=\"14\" y=\"3\" width=\"7\" height=\"7\" /> <rect x=\"3\" y=\"14\" width=\"7\" height=\"7\" /> <path d=\"M14 17.5h7M17.5 14v7\" />"
 };

@@ -429,8 +429,8 @@ pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<D
         creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
             axonometric_view_with(model, *azimuth, *altitude, shaded, reveal)
         }
-        creabim_core::ViewKind::Schedule { category } => {
-            let table = crate::schedule::schedule(model, *category);
+        creabim_core::ViewKind::Schedule { category, by_type } => {
+            let table = crate::schedule::schedule_by(model, *category, *by_type);
             return Some(crate::schedule::schedule_drawing(view, &e.name, &table));
         }
     };

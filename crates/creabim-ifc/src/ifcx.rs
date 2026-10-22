@@ -82,7 +82,10 @@ pub fn export_ifcx(model: &Model) -> String {
             Some(_) => "IfcGridAxis".to_string(),
             None => e.ifc_class().to_string(),
         };
-        let creabim = json!({ "name": e.name, "kind": e.kind });
+        let mut creabim = json!({ "name": e.name, "kind": e.kind });
+        if let Some(t) = &e.of_type {
+            creabim["type"] = json!(t);
+        }
         let (parent, frame_z) = match &e.kind {
             ElementKind::Level(l) => {
                 attrs.insert(XFORM.into(), xform(DVec3::new(0.0, 0.0, l.elevation)));
@@ -162,9 +165,9 @@ pub fn export_ifcx(model: &Model) -> String {
                 nodes.push(node(&path, Names::default(), Map::new(), attrs));
                 continue; // materials are roots, inherited by what is made of them
             }
-            ElementKind::Assembly(_) => {
-                // a root of its own, which the layered elements name in
-                // their CreaBIM parameters
+            ElementKind::Assembly(_) | ElementKind::ElementType(_) | ElementKind::Shaft(_) => {
+                // a root of its own, which the layered (or typed) elements
+                // name in their CreaBIM parameters; a shaft is only a void
                 attrs.insert(CREABIM.into(), creabim);
                 nodes.push(node(&path, Names::default(), Map::new(), attrs));
                 continue;
@@ -763,13 +766,20 @@ pub fn import_ifcx(json: &str) -> Result<ImportResult, ImportError> {
         }
     }
     // assemblies, and the materials of their layers that nothing else uses
-    let mut assemblies = vec![];
+    // (and element types, made of them or of a material, and shafts)
+    let (mut assemblies, mut types, mut shafts) = (vec![], vec![], vec![]);
     for (path, raw) in &r.raw {
-        let Some((name, kind @ ElementKind::Assembly(_))) = creabim_element(&raw.attributes) else {
+        let Some((name, kind)) = creabim_element(&raw.attributes) else {
             continue;
         };
-        if let ElementKind::Assembly(a) = &kind {
-            for m in a.layers.iter().filter_map(|l| l.material) {
+        let materials: Vec<ElementId> = match &kind {
+            ElementKind::Assembly(a) => a.layers.iter().filter_map(|l| l.material).collect(),
+            ElementKind::ElementType(t) => t.material().into_iter().collect(),
+            ElementKind::Shaft(_) => vec![],
+            _ => continue,
+        };
+        {
+            for m in materials {
                 let mp = path_of(m);
                 if b.material_ids.contains_key(&mp) {
                     continue;
@@ -781,11 +791,17 @@ pub fn import_ifcx(json: &str) -> Result<ImportResult, ImportError> {
             }
         }
         let id = b.id(path);
-        assemblies.push(Element {
+        let list = match &kind {
+            ElementKind::Assembly(_) => &mut assemblies,
+            ElementKind::ElementType(_) => &mut types,
+            _ => &mut shafts,
+        };
+        list.push(Element {
             id,
             name,
             kind,
             source: None,
+            of_type: None,
         });
     }
     b.objects(objects);
@@ -793,7 +809,9 @@ pub fn import_ifcx(json: &str) -> Result<ImportResult, ImportError> {
     let elements = [
         b.materials,
         assemblies,
+        types,
         b.levels,
+        shafts,
         b.grids,
         b.main,
         b.openings,
@@ -839,6 +857,7 @@ impl Builder {
                 name,
                 kind,
                 source: None,
+                of_type: None,
             },
             _ => {
                 let name = attrs
@@ -871,6 +890,7 @@ impl Builder {
                         false,
                     )),
                     name,
+                    of_type: None,
                 }
             }
         };
@@ -916,6 +936,7 @@ impl Builder {
                     elevation: z,
                     height,
                 }),
+                of_type: None,
             });
             level_of.insert(i, (id, z));
         }
@@ -973,6 +994,11 @@ impl Builder {
                     name,
                     kind,
                     source: None,
+                    of_type: o
+                        .attributes
+                        .get(CREABIM)
+                        .and_then(|v| v.get("type"))
+                        .and_then(|t| serde_json::from_value(t.clone()).ok()),
                 };
                 match &e.kind {
                     // hosted elements go after their hosts
@@ -981,8 +1007,11 @@ impl Builder {
                     // groups first, so their lines find them
                     ElementKind::GridGroup(_) => self.grids.insert(0, e),
                     ElementKind::Grid(_) => self.grids.push(e),
-                    ElementKind::Level(_) | ElementKind::Material(_) | ElementKind::Assembly(_) => {
-                    }
+                    ElementKind::Level(_)
+                    | ElementKind::Material(_)
+                    | ElementKind::Assembly(_)
+                    | ElementKind::ElementType(_)
+                    | ElementKind::Shaft(_) => {}
                     _ => self.main.push(e),
                 }
                 continue;
@@ -1043,7 +1072,9 @@ impl Builder {
                             top: Default::default(),
                             disallow_join: [false; 2],
                             attach_top: vec![],
+                            curtain: None,
                         }),
+                        of_type: None,
                     });
                     continue;
                 }
@@ -1065,7 +1096,9 @@ impl Builder {
                                 top_offset: 0.0,
                                 bulges: vec![],
                                 assembly: None,
+                                holes: vec![],
                             }),
+                            of_type: None,
                         });
                         continue;
                     }
@@ -1103,6 +1136,7 @@ impl Builder {
                             flip_hand: false,
                             flip_facing: false,
                         }),
+                        of_type: None,
                     });
                     continue;
                 }
@@ -1126,6 +1160,7 @@ impl Builder {
                     material,
                     ..FreeMesh::new(Some(level), DVec3::new(at.x, at.y, at.z - elev), mesh)
                 }),
+                of_type: None,
             });
         }
         if spaces > 0 {

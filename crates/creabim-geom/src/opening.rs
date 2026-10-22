@@ -68,6 +68,10 @@ pub fn opening_boxes(o: &Opening, wall: &Wall) -> Vec<PartBox> {
     let Some(f) = Fitted::of(o, wall) else {
         return vec![];
     };
+    // a bare hole has nothing in it
+    if o.kind == OpeningKind::Hole {
+        return vec![];
+    }
     let (w, h) = (f.width(), f.height());
     let fw = f.frame.width;
     let hd = f.frame.depth / 2.0;
@@ -155,6 +159,7 @@ pub fn opening_boxes(o: &Opening, wall: &Wall) -> Vec<PartBox> {
                 }
             }
         }
+        OpeningKind::Hole => {}
     }
     // built opening to (facing out of) +y, a door hinged at x = 0: turn it
     // round as the opening is set
@@ -223,7 +228,7 @@ pub fn opening_meshes(o: &Opening, wall: &Wall, level_z: f64) -> Vec<(Part, TriM
 
 /// A closed box from `lo` to `hi`, its corners mapped through `at` (a
 /// rigid map, so the faces stay square).
-fn add_box(m: &mut TriMesh, lo: DVec3, hi: DVec3, at: &dyn Fn(DVec3) -> DVec3) {
+pub(crate) fn add_box(m: &mut TriMesh, lo: DVec3, hi: DVec3, at: &dyn Fn(DVec3) -> DVec3) {
     let c = |x: f64, y: f64, z: f64| at(DVec3::new(x, y, z));
     let o = at(DVec3::ZERO);
     let axis = |v: DVec3| at(v) - o;
@@ -305,6 +310,7 @@ mod tests {
             top: Default::default(),
             disallow_join: [false; 2],
             attach_top: vec![],
+            curtain: None,
         }
     }
 

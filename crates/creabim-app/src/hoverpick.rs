@@ -163,6 +163,7 @@ pub fn describe(model: &Model, id: ElementId) -> String {
         ElementKind::Opening(o) => match o.kind {
             creabim_core::OpeningKind::Door => "Door",
             creabim_core::OpeningKind::Window => "Window",
+            creabim_core::OpeningKind::Hole => "Hole",
         },
         ElementKind::FreeMesh(m) => match m.ifc_class.as_str() {
             "IfcBeam" => "Beam",
