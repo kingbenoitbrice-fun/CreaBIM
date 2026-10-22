@@ -5,6 +5,9 @@
 //! Columns, beams, roofs, stairs and railings, and doors and windows in
 //! their walls, take their faces the same way (see [`push_face`]), so the
 //! Move tool's face mode and the Align tool's Stretch work on all of them.
+//! Furniture and fixtures keep the shape of their type: a face of one
+//! moves the whole object, so aligning a sofa's back to a wall puts it
+//! flush.
 
 use crate::members::Profile;
 use crate::{Element, ElementId, ElementKind, Model};
@@ -32,6 +35,7 @@ pub fn can_push(kind: &ElementKind) -> bool {
             | ElementKind::Stair(_)
             | ElementKind::Railing(_)
             | ElementKind::Opening(_)
+            | ElementKind::Object(_)
     )
 }
 
@@ -93,7 +97,10 @@ fn facing(n: DVec3) -> Facing {
 /// - a railing's top changes its height, its ends lengthen its path and
 ///   its sides move it;
 /// - a door's or window's jambs widen it, its head and sill move;
-/// - a mass's face moves its corners.
+/// - a mass's face moves its corners;
+/// - an object (furniture, a fixture) moves whole, its shape being its
+///   type's: a side face slides it across the level, its top or bottom
+///   raises or lowers it.
 pub fn push_face(
     model: &Model,
     elements: &[Element],
@@ -336,6 +343,12 @@ pub fn push_face(
                 return None;
             }
         }
+        ElementKind::Object(o) => match look {
+            Facing::Top => o.offset += s,
+            Facing::Bottom => o.offset -= s,
+            Facing::Side(flat) => o.position += flat * s,
+            Facing::Sloped => return None,
+        },
         _ => return None,
     }
     check(out, first)
@@ -495,6 +508,33 @@ mod tests {
     }
 
     /// `kind` with the face through `point` facing `normal` pushed by `s`.
+    #[test]
+    fn an_object_moves_whole_by_its_faces() {
+        let model = crate::sample::furnished_house();
+        let e = model
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::Object(_)))
+            .unwrap();
+        let ElementKind::Object(o) = &e.kind else {
+            unreachable!()
+        };
+        assert!(can_push(&e.kind));
+        let at = o.position.extend(0.5);
+        let Some(ElementKind::Object(up)) = pushed(&model, e.kind.clone(), at, DVec3::Z, 0.3)
+        else {
+            panic!("its top raises it")
+        };
+        assert!((up.offset - o.offset - 0.3).abs() < 1e-9);
+        assert_eq!(up.position, o.position);
+        let Some(ElementKind::Object(east)) = pushed(&model, e.kind.clone(), at, DVec3::X, 0.25)
+        else {
+            panic!("a side slides it")
+        };
+        assert!((east.position - o.position - DVec2::new(0.25, 0.0)).length() < 1e-9);
+        assert_eq!(east.rotation, o.rotation);
+        assert!(pushed(&model, e.kind.clone(), at, DVec3::new(0.6, 0.0, 0.8), 0.1).is_none());
+    }
+
     fn pushed(
         model: &Model,
         kind: ElementKind,
