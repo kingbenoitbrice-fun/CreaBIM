@@ -175,6 +175,8 @@ pub struct Settings {
     pub hidden_colour_3d: bool,
     /// Guides hidden everywhere (they are kept, and come back when shown).
     pub guides_hidden: bool,
+    /// Width of the Help panel, in points.
+    pub help_width: f32,
 }
 
 impl Default for Settings {
@@ -191,6 +193,7 @@ impl Default for Settings {
             xray: false,
             hidden_colour_3d: false,
             guides_hidden: false,
+            help_width: 400.0,
         }
     }
 }
