@@ -1289,7 +1289,11 @@ pub enum ViewStyle {
 }
 
 impl ViewStyle {
-    pub const ALL: [ViewStyle; 3] = [ViewStyle::HiddenLine, ViewStyle::Shaded, ViewStyle::Wireframe];
+    pub const ALL: [ViewStyle; 3] = [
+        ViewStyle::HiddenLine,
+        ViewStyle::Shaded,
+        ViewStyle::Wireframe,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {

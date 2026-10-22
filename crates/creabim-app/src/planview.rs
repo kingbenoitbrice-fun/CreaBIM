@@ -1513,9 +1513,14 @@ pub fn show(
             (_, Tool::Select) => {
                 let under = picked();
                 // a double-click on the selected element opens it in Edit mode
-                if response.double_clicked() && !shift && under.is_some() && under == selection.active {
+                if response.double_clicked()
+                    && !shift
+                    && under.is_some()
+                    && under == selection.active
+                {
                     if let Some(id) = under {
-                        state.status = Some(crate::editmode::enter(doc.model(), id, &mut state.edit));
+                        state.status =
+                            Some(crate::editmode::enter(doc.model(), id, &mut state.edit));
                     }
                     return None;
                 }

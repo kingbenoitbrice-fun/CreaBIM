@@ -437,7 +437,10 @@ pub(super) fn holes_fields(
     if holes.is_empty() && shafts == 0 {
         ui.label(egui::RichText::new("None. Draw one, or a shaft through several floors.").weak());
     } else if !holes.is_empty() {
-        ui.label(egui::RichText::new("Edit (Enter) shows each hole's corners and edges to reshape it.").weak());
+        ui.label(
+            egui::RichText::new("Edit (Enter) shows each hole's corners and edges to reshape it.")
+                .weak(),
+        );
     }
     if shafts > 0 {
         ui.label(

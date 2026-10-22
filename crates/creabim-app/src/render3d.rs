@@ -64,9 +64,13 @@ impl RenderMode {
     pub fn hint(self) -> &'static str {
         match self {
             RenderMode::Shaded => "Surfaces in their materials' colours",
-            RenderMode::ShadedEdges => "Surfaces in colour with every edge drawn: openings and shafts read clearly",
+            RenderMode::ShadedEdges => {
+                "Surfaces in colour with every edge drawn: openings and shafts read clearly"
+            }
             RenderMode::HiddenLine => "White surfaces and their visible edges, like a drawing",
-            RenderMode::Wireframe => "Edges only, the hidden ones too: see shafts and what is inside walls and slabs",
+            RenderMode::Wireframe => {
+                "Edges only, the hidden ones too: see shafts and what is inside walls and slabs"
+            }
         }
     }
 

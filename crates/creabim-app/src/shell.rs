@@ -710,11 +710,11 @@ impl CreaBimApp {
                   self.shell.settings.xray),
             ],
             "menus": [
-                {"key": "render3d", "icon": self.shell.settings.render_3d.icon(), "label": "",
-                 "hint": format!("How the 3D view draws: {}. Shaded, with edges, hidden line or wireframe", self.shell.settings.render_3d.label())},
                 {"key": "vis3d", "icon": if self.vis3d.is_empty() { "eye" } else { "eye-off" },
                  "label": "Show", "on": !self.vis3d.is_empty(),
                  "hint": "What the 3D view shows: grids, annotation, guides, sketches and every category"},
+                {"key": "render3d", "icon": self.shell.settings.render_3d.icon(), "label": "",
+                 "hint": format!("How the 3D view draws: {}. Shaded, with edges, hidden line or wireframe", self.shell.settings.render_3d.label())},
             ],
             "look": {"key": "look", "hint": "Look from the top, a side or the corner"},
         })
@@ -1317,7 +1317,10 @@ impl CreaBimApp {
 
     /// How the active section, elevation or 3D view can draw.
     fn view_style_items(&self) -> Vec<Item> {
-        let now = self.active_view.and_then(|id| self.view(id)).map(|v| v.style);
+        let now = self
+            .active_view
+            .and_then(|id| self.view(id))
+            .map(|v| v.style);
         ViewStyle::ALL
             .iter()
             .enumerate()

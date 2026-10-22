@@ -72,7 +72,16 @@ pub fn section_view_at(
     shaded: bool,
     scale: f64,
 ) -> Drawing {
-    section_view_with(model, start, end, depth, cut, style_of(shaded), scale, false)
+    section_view_with(
+        model,
+        start,
+        end,
+        depth,
+        cut,
+        style_of(shaded),
+        scale,
+        false,
+    )
 }
 
 fn style_of(shaded: bool) -> ViewStyle {

@@ -146,7 +146,11 @@ fn a_curtain_wall_set_in_a_wall_voids_and_fills_it_through_ifc() {
             .unwrap_or_else(|| panic!("no {needle}"))
             .to_string()
     };
-    let cw_ref = line_of("IFCCURTAINWALL(").split('=').next().unwrap().to_string();
+    let cw_ref = line_of("IFCCURTAINWALL(")
+        .split('=')
+        .next()
+        .unwrap()
+        .to_string();
     let opening_ref = line_of("'Storefront opening'")
         .split('=')
         .next()
@@ -154,7 +158,8 @@ fn a_curtain_wall_set_in_a_wall_voids_and_fills_it_through_ifc() {
         .to_string();
     assert!(ifc
         .lines()
-        .any(|l| l.contains("IFCRELFILLSELEMENT(") && l.contains(&format!("{opening_ref},{cw_ref})"))));
+        .any(|l| l.contains("IFCRELFILLSELEMENT(")
+            && l.contains(&format!("{opening_ref},{cw_ref})"))));
     assert!(ifc
         .lines()
         .any(|l| l.contains("IFCRELVOIDSELEMENT(") && l.ends_with(&format!(",{opening_ref});"))));

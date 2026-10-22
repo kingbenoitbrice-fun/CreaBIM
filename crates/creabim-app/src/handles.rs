@@ -123,13 +123,22 @@ pub enum HandleKind {
     CropMove,
     /// Corner `i` of an outline: a shaft's, or in Edit mode a hole's, a
     /// roof's or a sketch's.
-    Vertex { ring: Ring, i: usize },
+    Vertex {
+        ring: Ring,
+        i: usize,
+    },
     /// In Edit mode, edge `i` of an outline, pushed out or pulled in
     /// square to itself.
-    Edge { ring: Ring, i: usize },
+    Edge {
+        ring: Ring,
+        i: usize,
+    },
     /// In Edit mode, the middle of edge `i`: dragging it pulls a new
     /// corner out of the edge, clicking it adds one there.
-    AddVertex { ring: Ring, i: usize },
+    AddVertex {
+        ring: Ring,
+        i: usize,
+    },
     /// A shaft's base and its top, up and down.
     ShaftBase,
     ShaftTop,
@@ -784,7 +793,10 @@ const ACCENT: Color32 = Color32::from_rgb(230, 120, 30);
 /// the pointer alone, and puts a message for the status bar in `status`.
 /// Add a corner in the middle of a slab edge, or take a corner away.
 pub fn edit_corners(doc: &mut Document, id: ElementId, kind: HandleKind) -> Result<String, String> {
-    if matches!(kind, HandleKind::Vertex { .. } | HandleKind::AddVertex { .. }) {
+    if matches!(
+        kind,
+        HandleKind::Vertex { .. } | HandleKind::AddVertex { .. }
+    ) {
         return crate::editmode::add_or_remove(doc, id, kind);
     }
     let Some(ElementKind::Slab(s)) = doc.model().get(id).map(|e| &e.kind) else {
@@ -842,7 +854,11 @@ fn draw_rings(model: &Model, id: ElementId, painter: &Painter, input: &PaneInput
         return;
     };
     for r in crate::editmode::rings(model, e) {
-        let pts: Vec<Pos2> = r.corners.iter().filter_map(|p| (input.project)(*p)).collect();
+        let pts: Vec<Pos2> = r
+            .corners
+            .iter()
+            .filter_map(|p| (input.project)(*p))
+            .collect();
         if pts.len() != r.corners.len() || pts.len() < 2 {
             continue;
         }

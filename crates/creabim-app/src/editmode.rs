@@ -70,7 +70,11 @@ pub fn rings(model: &Model, e: &Element) -> Vec<RingInfo> {
                 .all(|i| sk.kind(i) == creabim_core::sketch::SegmentKind::Line);
             vec![RingInfo {
                 ring: Ring::Outline,
-                corners: sk.points.iter().map(|p| sk.plane.to_model(*p) + lift).collect(),
+                corners: sk
+                    .points
+                    .iter()
+                    .map(|p| sk.plane.to_model(*p) + lift)
+                    .collect(),
                 closed: sk.closed,
                 normal: sk.plane.normal(),
                 reshapes: straight && sk.constraints.is_empty(),
@@ -180,9 +184,7 @@ pub fn ring_mut(kind: &mut ElementKind, ring: Ring) -> Option<&mut Vec<DVec2>> {
 /// A model point as a corner of `e`'s outlines: in plan, or in a sketch's plane.
 fn local(model: &Model, e: &Element, p: DVec3) -> DVec2 {
     match &e.kind {
-        ElementKind::Sketch(sk) => sk
-            .plane
-            .to_plane(p - DVec3::Z * elevation(model, sk.level)),
+        ElementKind::Sketch(sk) => sk.plane.to_plane(p - DVec3::Z * elevation(model, sk.level)),
         _ => p.truncate(),
     }
 }
@@ -324,7 +326,11 @@ pub fn reshape(
 
 /// A click on an add-corner grip, or a double-click on a corner: add a
 /// corner in the middle of the edge, or take the corner away.
-pub fn add_or_remove(doc: &mut Document, id: ElementId, kind: HandleKind) -> Result<String, String> {
+pub fn add_or_remove(
+    doc: &mut Document,
+    id: ElementId,
+    kind: HandleKind,
+) -> Result<String, String> {
     let e = doc.model().get(id).ok_or("it is gone")?.clone();
     let model = doc.model();
     let (ring, i, add) = match kind {
@@ -365,9 +371,7 @@ pub fn add_or_remove(doc: &mut Document, id: ElementId, kind: HandleKind) -> Res
         ("Add corner", "Added a corner: drag it into place.")
     } else {
         if n <= fewest {
-            return Err(format!(
-                "The {what} needs at least {fewest} corners."
-            ));
+            return Err(format!("The {what} needs at least {fewest} corners."));
         }
         remove(&mut edited, ring, i);
         ("Remove corner", "Removed the corner.")
@@ -471,9 +475,13 @@ mod tests {
         // selected, a shaft has its corners and its base and top
         let plain = crate::handles::handles(doc.model(), id, None);
         assert!(plain.iter().any(|h| h.kind == HandleKind::ShaftTop));
-        assert!(plain
-            .iter()
-            .any(|h| matches!(h.kind, HandleKind::Vertex { ring: Ring::Outline, .. })));
+        assert!(plain.iter().any(|h| matches!(
+            h.kind,
+            HandleKind::Vertex {
+                ring: Ring::Outline,
+                ..
+            }
+        )));
         assert!(!plain
             .iter()
             .any(|h| matches!(h.kind, HandleKind::AddVertex { .. })));
@@ -502,7 +510,13 @@ mod tests {
         let a0 = area(&shaft(doc.model(), id));
         let h = handles_in(doc.model(), id, None, true)
             .into_iter()
-            .find(|h| h.kind == HandleKind::Edge { ring: Ring::Outline, i: 1 })
+            .find(|h| {
+                h.kind
+                    == HandleKind::Edge {
+                        ring: Ring::Outline,
+                        i: 1,
+                    }
+            })
             .unwrap();
         let Constraint::Line { dir, .. } = h.constraint else {
             panic!()
@@ -520,7 +534,13 @@ mod tests {
         // a corner pulled out of an edge, and taken away again
         let mid = handles_in(doc.model(), id, None, true)
             .into_iter()
-            .find(|h| h.kind == HandleKind::AddVertex { ring: Ring::Outline, i: 2 })
+            .find(|h| {
+                h.kind
+                    == HandleKind::AddVertex {
+                        ring: Ring::Outline,
+                        i: 2,
+                    }
+            })
             .unwrap()
             .at;
         drag(
@@ -581,7 +601,13 @@ mod tests {
         // only in Edit mode
         assert!(!crate::handles::handles(doc.model(), id, None)
             .iter()
-            .any(|h| matches!(h.kind, HandleKind::Vertex { ring: Ring::Hole(0), .. })));
+            .any(|h| matches!(
+                h.kind,
+                HandleKind::Vertex {
+                    ring: Ring::Hole(0),
+                    ..
+                }
+            )));
         let c0 = hole(&doc)[0];
         drag(
             &mut doc,
@@ -627,9 +653,11 @@ mod tests {
         // the slab's own outline gets add-corner grips, its edge grips
         // standing off them
         let edit = handles_in(doc.model(), id, None, true);
-        assert!(edit
-            .iter()
-            .any(|h| h.kind == HandleKind::AddVertex { ring: Ring::Outline, i: 0 }));
+        assert!(edit.iter().any(|h| h.kind
+            == HandleKind::AddVertex {
+                ring: Ring::Outline,
+                i: 0
+            }));
         assert!(edit
             .iter()
             .filter(|h| matches!(h.kind, HandleKind::SlabEdge(_)))
@@ -679,7 +707,9 @@ mod tests {
                 .count(),
             2
         );
-        assert!(!edit.iter().any(|h| matches!(h.kind, HandleKind::Edge { .. })));
+        assert!(!edit
+            .iter()
+            .any(|h| matches!(h.kind, HandleKind::Edge { .. })));
         add_or_remove(
             &mut doc,
             sid,
@@ -698,7 +728,13 @@ mod tests {
         let edit = handles_in(doc.model(), roof, None, true);
         assert_eq!(
             edit.iter()
-                .filter(|h| matches!(h.kind, HandleKind::Vertex { ring: Ring::Outline, .. }))
+                .filter(|h| matches!(
+                    h.kind,
+                    HandleKind::Vertex {
+                        ring: Ring::Outline,
+                        ..
+                    }
+                ))
                 .count(),
             n
         );

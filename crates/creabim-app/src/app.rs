@@ -29,6 +29,8 @@ mod assemblies;
 mod cropui;
 #[path = "drafting.rs"]
 mod drafting;
+#[path = "editui.rs"]
+mod editui;
 #[path = "gridvis.rs"]
 mod gridvis;
 #[path = "levelsui.rs"]
@@ -1116,37 +1118,6 @@ impl CreaBimApp {
         }
     }
 
-    // ---- Edit mode --------------------------------------------------------
-
-    /// Open the selected element in Edit mode, or close it.
-    pub(super) fn toggle_edit_mode(&mut self) {
-        if self.plan.edit.take().is_some() {
-            self.status = "Finished editing.".into();
-            return;
-        }
-        let Some(id) = self.selection.active.filter(|_| self.selection.len() == 1) else {
-            self.status = "Select one element to edit it.".into();
-            return;
-        };
-        if self.plan.tool != Tool::Select {
-            self.plan.tool = Tool::Select;
-        }
-        self.status = editmode::enter(self.doc.model(), id, &mut self.plan.edit);
-    }
-
-    /// Edit mode ends when its element is no longer the one selected, is
-    /// gone, or a drawing tool is picked.
-    fn keep_edit_mode(&mut self) {
-        let Some(id) = self.plan.edit else { return };
-        if self.selection.active != Some(id)
-            || self.selection.len() != 1
-            || self.plan.tool != Tool::Select
-            || self.doc.model().get(id).is_none()
-        {
-            self.plan.edit = None;
-        }
-    }
-
     // ---- 3D -------------------------------------------------------------
 
     fn rebuild_geometry(&mut self, rs: &egui_wgpu::RenderState) {
@@ -2074,8 +2045,7 @@ impl CreaBimApp {
                 // a double-click on the selected element opens it in Edit mode
                 if response.double_clicked() && !shift {
                     if let Some(id) = self.selection.active.filter(|id| {
-                        self.under_3d(p, &project, &ray).contains(id)
-                            || near_sketch == Some(*id)
+                        self.under_3d(p, &project, &ray).contains(id) || near_sketch == Some(*id)
                     }) {
                         self.status = editmode::enter(self.doc.model(), id, &mut self.plan.edit);
                         return;
@@ -4075,10 +4045,9 @@ impl CreaBimApp {
                 if matches!(
                     v.kind,
                     ViewKind::Section { .. } | ViewKind::Axonometric { .. }
-                ) {
-                    if view_style_combo(ui, "view_style", &mut v.style) {
-                        label = "View style"
-                    }
+                ) && view_style_combo(ui, "view_style", &mut v.style)
+                {
+                    label = "View style"
                 }
                 if self.active_view != Some(id) && ui.button("Open this view").clicked() {
                     self.active_view = Some(id);
