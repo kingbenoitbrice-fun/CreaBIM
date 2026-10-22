@@ -407,13 +407,13 @@ pub fn hint(model: &Model, e: &Element) -> String {
 pub fn panel_hint(kind: &ElementKind) -> &'static str {
     match kind {
         ElementKind::Slab(_) | ElementKind::Roof(_) => {
-            "Drag corners and edges of the outline and of each hole; ◇ adds a corner, a double-click on a corner takes it away."
+            "Drag corners and edges of the outline and of each hole; a diamond in an edge's middle adds a corner, a double-click on a corner takes it away."
         }
         ElementKind::Shaft(_) => {
-            "Drag its corners and edges in any plan, section or 3D view; ◇ adds a corner, a double-click on a corner takes it away. The grips in its middle move its base and top."
+            "Drag its corners and edges in any plan, section or 3D view; a diamond in an edge's middle adds a corner, a double-click on a corner takes it away. The grips in its middle move its base and top."
         }
         ElementKind::Sketch(_) => {
-            "Drag its corners; ◇ adds one, a double-click on a corner takes it away."
+            "Drag its corners; a diamond in an edge's middle adds one, a double-click on a corner takes it away."
         }
         _ => "Drag its grips in any view.",
     }

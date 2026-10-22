@@ -2225,15 +2225,17 @@ impl CreaBimApp {
         // drawn last frame)
         let nav = self
             .rect_3d
-            .filter(|r| r.width() > NAV_W + 40.0 && r.height() > 120.0)
+            .filter(|r| r.width() > 320.0 && r.height() > 120.0)
             .map(|r| {
+                // as wide as it needs, or as the view when that is narrower
+                let w = NAV_W.min(r.width() - 16.0);
                 // the overlaid 2D view takes the top-right corner
                 let x = if self.placement == PlanPlacement::Overlay {
                     r.left() + 36.0
                 } else {
-                    r.right() - NAV_W - 8.0
+                    r.right() - w - 8.0
                 };
-                egui::Rect::from_min_size(egui::pos2(x, r.top() + 8.0), egui::vec2(NAV_W, NAV_H))
+                egui::Rect::from_min_size(egui::pos2(x, r.top() + 8.0), egui::vec2(w, NAV_H))
             });
         let states = [
             (Pane::Top, top, self.top_state(&ctx)),
