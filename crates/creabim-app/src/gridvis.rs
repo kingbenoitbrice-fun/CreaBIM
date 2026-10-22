@@ -1724,6 +1724,7 @@ mod tests {
             "menu:View",
             "menu:Create",
             "menu:Materials",
+            "menu:Help",
         ] {
             let items = app.menu_items(key);
             // entries on the menu itself, and the submenus they open; check

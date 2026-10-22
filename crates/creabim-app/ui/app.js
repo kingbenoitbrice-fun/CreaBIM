@@ -112,7 +112,8 @@
       `<div class="bar2"><div class="tools">${tools}</div><span class="spacer"></span></div>` +
       // the tool options strip: the tool in use and what it can be set to,
       // then the active view's own settings at the right
-      `<div class="bar3"><div class="toolname">${S.tool.icon ? icon(S.tool.icon) : ""}<b>${esc(S.tool.label)}</b></div>` +
+      `<div class="bar3"><div class="toolname">${S.tool.icon ? icon(S.tool.icon) : ""}<b>${esc(S.tool.label)}</b>` +
+      (S.tool.help ? `<button class="qhelp" data-act="help:${esc(S.tool.help)}" title="Help for the ${esc(S.tool.label)} tool (F1)">${icon("circle-help")}</button>` : "") + `</div>` +
       (S.tool_options.length ? `<div class="options">${S.tool_options.map(control).join("")}</div>` :
         `<div class="tool-hint" title="${esc(S.tool.hint)}">${esc(S.tool.hint || "")}</div>`) +
       `<span class="spacer"></span><div class="options">${S.options.map(control).join("")}</div></div>`;
@@ -389,9 +390,219 @@
     }
   }
 
+  // ---- the Help panel: the guide's pages, written in Markdown ----
+
+  // Every page, from the app: {section, id, title, md}. The shortcuts page
+  // is made by the app from its menus and arrives with the state.
+  function helpPages() {
+    const gen = (S && S.generated) || {};
+    return (window.HELP || []).map((p) => gen[p.id] ? Object.assign({}, p, { md: gen[p.id] }) : p);
+  }
+
+  // A heading's id, as the app's help::slug makes it.
+  function slug(s) {
+    let out = "";
+    for (const c of s.toLowerCase()) {
+      if (/[\p{L}\p{N}]/u.test(c)) out += c;
+      else if (out && !out.endsWith("-")) out += "-";
+    }
+    return out.replace(/-+$/, "");
+  }
+
+  function mdLink(text, href) {
+    if (/^https?:/.test(href)) return `${text} <span class="url">(${href})</span>`;
+    return `<a data-act="help:${href}">${text}</a>`;
+  }
+
+  function mdImage(alt, src) {
+    const url = S && S.images && S.images[src];
+    return url ? `<figure><img src="${url}" alt="${alt}"><figcaption>${alt}</figcaption></figure>` : "";
+  }
+
+  // Inline marks, on text already escaped.
+  function inline(s) {
+    let out = esc(s);
+    out = out.replace(/`([^`]+)`/g, (m, c) => `<kbd>${c}</kbd>`);
+    out = out.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, alt, src) => mdImage(alt, src));
+    out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, t, href) => mdLink(t, href));
+    out = out.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+    out = out.replace(/\*([^*]+)\*/g, "<i>$1</i>");
+    return out;
+  }
+
+  const LI = /^(\s*)([-*]|\d+\.)\s+(.*)$/;
+
+  // A list from line i, nested by indent. Returns [html, next line].
+  function mdList(lines, i) {
+    const first = lines[i].match(LI);
+    const indent = first[1].length;
+    const tag = /\d/.test(first[2]) ? "ol" : "ul";
+    let html = `<${tag}>`;
+    let item = null;
+    const close = () => { if (item) html += `<li>${inline(item.text)}${item.sub}</li>`; item = null; };
+    while (i < lines.length) {
+      const l = lines[i];
+      if (/^\s*$/.test(l)) {
+        const next = lines[i + 1] && lines[i + 1].match(LI);
+        if (next && next[1].length >= indent) { i++; continue; }
+        break;
+      }
+      const m = l.match(LI);
+      if (m) {
+        if (m[1].length < indent) break;
+        if (m[1].length > indent && item) {
+          const [sub, j] = mdList(lines, i);
+          item.sub += sub;
+          i = j;
+          continue;
+        }
+        close();
+        item = { text: m[3], sub: "" };
+        i++;
+        continue;
+      }
+      if (item && /^\s+\S/.test(l)) { item.text += " " + l.trim(); i++; continue; }
+      break;
+    }
+    close();
+    return [html + `</${tag}>`, i];
+  }
+
+  function cells(l) {
+    return l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  }
+
+  function markdown(text) {
+    const lines = text.replace(/\r/g, "").split("\n");
+    let html = "";
+    let para = [];
+    const flush = () => { if (para.length) html += `<p>${inline(para.join(" "))}</p>`; para = []; };
+    let i = 0;
+    while (i < lines.length) {
+      const l = lines[i];
+      let m;
+      if (/^\s*$/.test(l)) { flush(); i++; continue; }
+      if (/^<!--\s*upcoming\b.*-->\s*$/.test(l)) { flush(); html += `<div class="soon"><div class="soon-tag">Coming soon</div>`; i++; continue; }
+      if (/^<!--\s*\/upcoming\s*-->\s*$/.test(l)) { flush(); html += `</div>`; i++; continue; }
+      if (/^<!--.*-->\s*$/.test(l)) { i++; continue; }
+      if ((m = l.match(/^(#{1,4})\s+(.*)$/))) {
+        flush();
+        const n = m[1].length;
+        html += `<h${n} id="h-${slug(m[2])}">${inline(m[2])}</h${n}>`;
+        i++;
+        continue;
+      }
+      if (/^!\[[^\]]*\]\([^)]+\)\s*$/.test(l)) { flush(); html += inline(l.trim()); i++; continue; }
+      if (/^>/.test(l)) {
+        flush();
+        const inner = [];
+        while (i < lines.length && /^>/.test(lines[i])) inner.push(lines[i++].replace(/^>\s?/, ""));
+        html += `<div class="tip">${markdown(inner.join("\n"))}</div>`;
+        continue;
+      }
+      if (LI.test(l)) { flush(); const [h, j] = mdList(lines, i); html += h; i = j; continue; }
+      if (/^\|/.test(l)) {
+        flush();
+        const rows = [];
+        while (i < lines.length && /^\|/.test(lines[i])) rows.push(lines[i++]);
+        const head = rows.length > 1 && /^[\s|:-]+$/.test(rows[1]) ? cells(rows[0]) : null;
+        const body = head ? rows.slice(2) : rows;
+        html += `<table>` + (head ? `<thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead>` : "") +
+          `<tbody>${body.map((r) => `<tr>${cells(r).map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+        continue;
+      }
+      para.push(l.trim());
+      i++;
+    }
+    flush();
+    return html;
+  }
+
+  // A page's words without the marks (or its title), for searching.
+  function plain(md) {
+    return md.replace(/^# .*$/m, " ").replace(/<!--.*?-->/g, " ").replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[#*`>|]/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  function search(q) {
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const out = [];
+    for (const p of helpPages()) {
+      const text = plain(p.md);
+      const low = text.toLowerCase();
+      const title = p.title.toLowerCase();
+      if (!words.every((w) => low.includes(w) || title.includes(w))) continue;
+      let score = 0;
+      for (const w of words) {
+        if (title.includes(w)) score += 10;
+        score += Math.min(5, low.split(w).length - 1);
+      }
+      // a few words round the first hit
+      const at = Math.max(0, low.indexOf(words[0]));
+      const from = Math.max(0, at - 50);
+      let snip = esc((from ? "…" : "") + text.slice(from, at + 110) + "…");
+      for (const w of words) snip = snip.replace(new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), (m) => `<mark>${m}</mark>`);
+      out.push({ p, score, snip });
+    }
+    return out.sort((a, b) => b.score - a.score);
+  }
+
+  function drawHelp() {
+    // a page opened from elsewhere (a menu, F1) ends the search
+    const nav = S.page + "#" + (S.anchor || "");
+    if (local.hnav !== undefined && local.hnav !== nav) local.hq = "";
+    local.hnav = nav;
+    const pages = helpPages();
+    const q = local.hq || "";
+    const page = pages.find((p) => p.id === S.page);
+    let body = "";
+    if (q.trim()) {
+      const found = search(q);
+      local.hfound = found;
+      body = `<div class="hres-n">${found.length ? found.length + (found.length === 1 ? " page" : " pages") : "Nothing found"} for “${esc(q)}”</div>` +
+        found.map((f) => `<button class="hres" data-act="help:${esc(f.p.id)}"><b>${esc(f.p.title)}</b><span class="hsec">${esc(f.p.section)}</span><span class="snip">${f.snip}</span></button>`).join("");
+    } else if (!page) {
+      // the contents: every page by section
+      body = `<article class="hdoc"><h1>Help</h1><p>Pick a page, or search the guide above. <kbd>F1</kbd> opens the page about the tool you are using.</p>`;
+      let section = null;
+      for (const p of pages) {
+        if (p.section !== section) {
+          if (section !== null) body += `</div>`;
+          section = p.section;
+          body += `<h3>${esc(section)}</h3><div class="toc">`;
+        }
+        body += `<a data-act="help:${esc(p.id)}">${esc(p.title)}</a>`;
+      }
+      body += `</div></article>`;
+    } else {
+      const i = pages.indexOf(page);
+      const prev = pages[i - 1], next = pages[i + 1];
+      body = `<div class="crumb"><a data-act="help:contents">Contents</a> › ${esc(page.section)}</div><article class="hdoc">${markdown(page.md)}</article>` +
+        `<div class="pn">${prev ? `<a data-act="help:${esc(prev.id)}">← ${esc(prev.title)}</a>` : "<span></span>"}` +
+        `${next ? `<a data-act="help:${esc(next.id)}">${esc(next.title)} →</a>` : ""}</div>`;
+    }
+    const where = (q.trim() ? "?" : "") + S.page + "#" + (S.anchor || "");
+    const scroller = root.querySelector(".help-body");
+    const keep = scroller && local.hwhere === where ? scroller.scrollTop : null;
+    root.innerHTML = `<div class="help"><div class="help-head">` +
+      `<button class="ibtn" data-act="help.back" title="Back" ${S.back ? "" : "disabled"}>${icon("arrow-left")}</button>` +
+      `<button class="ibtn ${page || q ? "" : "on"}" data-act="help:contents" title="Contents">${icon("book-open")}</button>` +
+      `<label class="search">${icon("search")}<input data-key="helpq" data-live="1" placeholder="Search the guide" value="${esc(q)}"></label>` +
+      `<button class="ibtn" data-act="help.close" title="Close (F1 or Esc)">${icon("x")}</button></div>` +
+      `<div class="help-body">${body}</div></div>`;
+    const b = root.querySelector(".help-body");
+    if (keep !== null) b.scrollTop = keep;
+    else {
+      const h = S.anchor && !q.trim() && root.querySelector(`#h-${CSS.escape(S.anchor)}`);
+      if (h) h.scrollIntoView({ block: "start" });
+      else b.scrollTop = 0;
+    }
+    local.hwhere = where;
+  }
+
   // ---- drawing and events ----
 
-  const draw = { top: drawTop, left: drawLeft, status: drawStatus, popup: drawPopup, nav: drawNav }[pane];
+  const draw = { top: drawTop, left: drawLeft, status: drawStatus, popup: drawPopup, nav: drawNav, help: drawHelp }[pane];
 
   // Keys typed in the views while the palette is open.
   function paletteKey(k) {
@@ -449,7 +660,7 @@
 
   document.addEventListener("click", (e) => {
     if (local.dragged) return;
-    const t = e.target.closest("button, .row, .group");
+    const t = e.target.closest("button, .row, .group, a[data-act]");
     if (!t || t.disabled) return focusViews(e);
     if (t.dataset.popup) {
       const r = t.getBoundingClientRect();
@@ -467,6 +678,11 @@
       root.querySelector(".menu").scrollTop = 0;
       return;
     } else if (t.dataset.act) {
+      // a page picked from the search results ends the search
+      if (pane === "help" && t.dataset.act.startsWith("help:") && local.hq) {
+        local.hq = "";
+        drawHelp();
+      }
       post({ t: "act", id: t.dataset.act, keep: t.dataset.keep === "1" });
     } else if (t.dataset.group) {
       const g = S.groups.find((x) => x.key === t.dataset.group);
@@ -496,6 +712,9 @@
       local.query = t.value;
       local.hot = 0;
       drawPalette();
+    } else if (t.dataset.key === "helpq") {
+      local.hq = t.value;
+      keepFocus(drawHelp);
     }
   });
 
@@ -503,7 +722,7 @@
     const t = e.target;
     if (t.dataset.text === "1") {
       post({ t: "set", key: t.dataset.key, text: t.value });
-    } else if (t.dataset.key && t.dataset.key !== "filter" && t.dataset.key !== "palette") {
+    } else if (t.dataset.key && !["filter", "palette", "helpq"].includes(t.dataset.key)) {
       const v = parseFloat(t.value.replace(",", "."));
       if (!isNaN(v)) setNumber(t, v);
     }
@@ -520,6 +739,23 @@
         paletteKey(e.key);
         post({ t: "focus" });
       }
+      return;
+    }
+    if (t instanceof HTMLInputElement && t.dataset.key === "helpq") {
+      // Esc clears the search (and then closes), Enter opens the best page
+      if (e.key === "Escape") {
+        if (t.value) { local.hq = ""; keepFocus(drawHelp); } else post({ t: "act", id: "help.close" });
+      } else if (e.key === "Enter" && local.hfound && local.hfound.length) {
+        const id = local.hfound[0].p.id;
+        local.hq = "";
+        post({ t: "act", id: "help:" + id });
+      } else if (e.key === "F1") {
+        post({ t: "act", id: "help.close" });
+      }
+      return;
+    }
+    if (pane === "help" && e.key === "Escape") {
+      post({ t: "act", id: "help.close" });
       return;
     }
     if (t instanceof HTMLInputElement) {
@@ -539,7 +775,7 @@
     }
     // Anything else is a shortcut for the views.
     post({ t: "key", key: e.key, code: e.code, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey, alt: e.altKey, repeat: e.repeat });
-    if (e.ctrlKey || e.metaKey || e.key === "F3" || e.key === "Tab") e.preventDefault();
+    if (e.ctrlKey || e.metaKey || e.key === "F1" || e.key === "F3" || e.key === "Tab") e.preventDefault();
   });
 
   // A number field's value: lengths keep theirs (metres) beside the text.

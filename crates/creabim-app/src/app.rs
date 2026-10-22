@@ -33,6 +33,8 @@ mod drafting;
 mod editui;
 #[path = "gridvis.rs"]
 mod gridvis;
+#[path = "helpui.rs"]
+mod helpui;
 #[path = "levelsui.rs"]
 mod levelsui;
 #[path = "materials.rs"]
@@ -733,6 +735,10 @@ impl CreaBimApp {
                 !cmd && i.key_pressed(egui::Key::E),
             )
         });
+        // F1: the guide's page about what you are doing
+        if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+            self.run_action(ctx, "help");
+        }
         if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
             self.plan.snap.on = !self.plan.snap.on;
             self.status = format!(
@@ -4949,6 +4955,7 @@ impl eframe::App for CreaBimApp {
         self.templates_window(&ctx);
         self.units_window(&ctx);
         self.ground_spacing_window(&ctx);
+        self.help_window(&ctx);
         // a plan in its own window keeps egui's menus
         self.plan.web_menus = false;
 
@@ -5284,4 +5291,12 @@ fn view_style_combo(ui: &mut egui::Ui, salt: &str, style: &mut ViewStyle) -> boo
         ui.label("Style");
     });
     changed
+}
+
+/// The app round the sample house, for tests.
+#[cfg(test)]
+pub(crate) fn test_app() -> CreaBimApp {
+    let mut app = CreaBimApp::blank(None);
+    app.load_model(sample_house());
+    app
 }

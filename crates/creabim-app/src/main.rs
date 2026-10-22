@@ -10,6 +10,7 @@ mod commands;
 mod editmode;
 mod files;
 mod handles;
+mod help;
 mod hoverpick;
 mod icons;
 mod memberstool;

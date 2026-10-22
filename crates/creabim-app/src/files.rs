@@ -177,6 +177,8 @@ pub struct Settings {
     pub guides_hidden: bool,
     /// How the 3D view draws: shaded, with edges, hidden line or wireframe.
     pub render_3d: crate::render3d::RenderMode,
+    /// Width of the Help panel, in points.
+    pub help_width: f32,
 }
 
 impl Default for Settings {
@@ -194,6 +196,7 @@ impl Default for Settings {
             hidden_colour_3d: false,
             guides_hidden: false,
             render_3d: Default::default(),
+            help_width: 400.0,
         }
     }
 }

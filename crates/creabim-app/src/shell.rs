@@ -36,6 +36,8 @@ pub(super) struct Shell {
     focus_popup: bool,
     /// The ground grid spacing being typed, while its window is open.
     pub ground_custom: Option<String>,
+    /// The Help panel: open or not, and its page.
+    pub help: super::helpui::HelpState,
 }
 
 impl Default for Shell {
@@ -52,6 +54,7 @@ impl Default for Shell {
             context_3d: false,
             focus_popup: false,
             ground_custom: None,
+            help: Default::default(),
         }
     }
 }
@@ -268,6 +271,7 @@ impl CreaBimApp {
             "menu:Edit" => self.edit_menu(),
             "menu:View" => self.view_menu(),
             "menu:Materials" => self.materials_menu(),
+            "menu:Help" => self.help_menu(),
             "menu:Create" => self.create_menu(),
             "underlay" => self.underlay_items(),
             "render3d" => self.render_items(),
@@ -680,6 +684,14 @@ impl CreaBimApp {
         flatten(self.view_menu(), "View › ", &mut out);
         flatten(self.file_menu(), "File › ", &mut out);
         flatten(self.materials_menu(), "Materials › ", &mut out);
+        flatten(self.help_menu(), "Help › ", &mut out);
+        // every page of the guide, found by its title
+        for (section, id, md) in crate::help::PAGES {
+            let item = Item::new(format!("help:{id}"), crate::help::title(md))
+                .icon("book-open")
+                .hint(*section);
+            flatten(vec![item], "Help › ", &mut out);
+        }
         flatten(self.menu_items("views"), "Open › ", &mut out);
         out
     }
@@ -1176,6 +1188,7 @@ impl CreaBimApp {
             }
             "note.leader" => self.plan.anno.leader = !self.plan.anno.leader,
             _ if self.crop_action(head, arg) => {}
+            _ if self.help_action(head, arg) => {}
             _ if self.wall_action(head, arg) => {}
             _ => {
                 if !self.materials_action(head, arg) && !self.drafting_action(head, arg) {
@@ -1396,7 +1409,7 @@ impl CreaBimApp {
     /// The tool options strip: what the tool in use (or the running Move
     /// or Rotate) can be set to. It has its own row under the tools, so it
     /// never covers a view or its buttons.
-    fn tool_strip(&self, ctx: &egui::Context) -> (Value, Vec<Value>) {
+    pub(super) fn tool_strip(&self, ctx: &egui::Context) -> (Value, Vec<Value>) {
         let seg = |items: Vec<Value>| json!({"kind": "seg", "items": items});
         let opt = |id: String, label: &str, on: bool, hint: &str| json!({"id": id, "label": label, "on": on, "hint": hint});
         let mut options = vec![];
@@ -1507,7 +1520,10 @@ impl CreaBimApp {
         while options.last().is_some_and(|o| o["kind"] == "sep") {
             options.pop();
         }
-        let head = json!({"label": tool.label(), "icon": tool_icon(tool), "hint": tool.hint()});
+        let head = json!({
+            "label": tool.label(), "icon": tool_icon(tool), "hint": tool.hint(),
+            "help": crate::help::tool_page(tool),
+        });
         (head, options)
     }
 
@@ -1637,7 +1653,7 @@ impl CreaBimApp {
         json!({
             "theme": self.theme(),
             "popup": self.popup_key(),
-            "menus": (["File", "Edit", "View", "Create", "Materials"].map(|m| json!({"name": m, "key": format!("menu:{m}")}))),
+            "menus": (["File", "Edit", "View", "Create", "Materials", "Help"].map(|m| json!({"name": m, "key": format!("menu:{m}")}))),
             "quick": quick,
             "doc": {
                 "name": file_label(&self.path),
@@ -1935,6 +1951,9 @@ impl CreaBimApp {
         let t = b["t"].as_str().unwrap_or("");
         match t {
             "ready" => {
+                if msg.pane == Pane::Help {
+                    self.shell.help.resend();
+                }
                 if let Some(web) = &mut self.shell.web {
                     web.resend(msg.pane);
                 }
@@ -2179,6 +2198,28 @@ impl CreaBimApp {
             self.shell.settings.left_width = width;
             self.shell.settings.store();
         }
+        // the guide, at the right of everything while it is open; drag
+        // its left edge to widen it
+        let help = self.shell.help.open.then(|| {
+            let r = egui::Panel::right("web_help")
+                .default_size(self.shell.settings.help_width)
+                .size_range(300.0..=760.0)
+                .resizable(true)
+                .show_separator_line(true)
+                .frame(egui::Frame::NONE.fill(ui.visuals().panel_fill))
+                .show(ui, |ui| ui.allocate_space(ui.available_size()))
+                .response
+                .rect;
+            let width = r.width().round();
+            if (width - self.shell.settings.help_width).abs() >= 1.0
+                && !ctx.input(|i| i.pointer.any_down())
+            {
+                self.shell.settings.help_width = width;
+                self.shell.settings.store();
+            }
+            r.with_min_x(r.min.x + 3.0)
+        });
+        let help_state = help.and_then(|_| self.help_state());
 
         // the 3D view's buttons, over its top-right corner (where it was
         // drawn last frame)
@@ -2240,6 +2281,15 @@ impl CreaBimApp {
                 web.send(Pane::Nav, &nav_state);
             }
             None => web.park(Pane::Nav),
+        }
+        match help {
+            Some(rect) => {
+                web.place(Pane::Help, rect, ppp);
+                if let Some(state) = help_state {
+                    web.send(Pane::Help, &state);
+                }
+            }
+            None => web.park(Pane::Help),
         }
         match popup {
             Some((_, _, true)) => self.close_popup(),
@@ -2352,7 +2402,7 @@ impl CreaBimApp {
     pub(super) fn classic_menu(&mut self, ui: &mut egui::Ui) {
         let mut picked = None;
         egui::MenuBar::new().ui(ui, |ui| {
-            for m in ["File", "Edit", "View", "Materials"] {
+            for m in ["File", "Edit", "View", "Materials", "Help"] {
                 let items = self.menu_items(&format!("menu:{m}"));
                 ui.menu_button(m, |ui| {
                     if let Some(id) = ui_model::show(ui, &items) {
