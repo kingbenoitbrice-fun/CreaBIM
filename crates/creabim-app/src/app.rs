@@ -3788,6 +3788,19 @@ impl CreaBimApp {
                     label = "Curtain wall"
                 }
                 if let Some(c) = &mut w.curtain {
+                    let hosts: Vec<String> = creabim_core::curtain::hosts_of(self.doc.model(), id)
+                        .iter()
+                        .filter_map(|(h, _)| self.doc.model().get(*h).map(|e| e.name.clone()))
+                        .collect();
+                    if !hosts.is_empty() {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Set in {}: it cuts its own opening there, like a door, and the opening moves with it.",
+                                hosts.join(", ")
+                            ))
+                            .weak(),
+                        );
+                    }
                     let l = typesui::curtain_fields(ui, c);
                     if !l.is_empty() {
                         label = l;

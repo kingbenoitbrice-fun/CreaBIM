@@ -844,6 +844,14 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                         items.extend(opening_symbol(oid, o, w, &c, cut_v, &at));
                     }
                 }
+                // a curtain wall set in it leaves its own gap, and draws itself
+                for (_, o) in creabim_core::curtain::voids_in(model, e.id) {
+                    if let Some(c) = Cut::of(&o, w) {
+                        if cut_v > c.v0 && cut_v < c.v1 {
+                            gaps.push((c.u0, c.u1));
+                        }
+                    }
+                }
                 gaps.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
                 // the stretches between crossing walls, less the openings
                 let mut pieces = Vec::new();

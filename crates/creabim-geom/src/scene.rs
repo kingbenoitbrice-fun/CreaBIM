@@ -67,14 +67,9 @@ fn layer_items(
     let parts: Vec<(assembly::Band, TriMesh)> = match &e.kind {
         ElementKind::Wall(w) => {
             let level = model.level(w.level)?;
-            let openings: Vec<&Opening> = model
-                .dependents(e.id)
-                .into_iter()
-                .filter_map(|d| match &model.get(d)?.kind {
-                    ElementKind::Opening(o) => Some(o),
-                    _ => None,
-                })
-                .collect();
+            // its doors and windows, and the curtain walls set in it
+            let owned = creabim_core::curtain::wall_openings(model, e.id);
+            let openings: Vec<&Opening> = owned.iter().collect();
             let ends = joins.get(&e.id).cloned().unwrap_or_default();
             let top = creabim_core::walls::top_profile(model, w);
             assembly::wall_bands(a, w)
@@ -192,14 +187,9 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                 let Some(level) = model.level(w.level) else {
                     continue;
                 };
-                let openings: Vec<&Opening> = model
-                    .dependents(e.id)
-                    .into_iter()
-                    .filter_map(|d| match &model.get(d)?.kind {
-                        ElementKind::Opening(o) => Some(o),
-                        _ => None,
-                    })
-                    .collect();
+                // its doors and windows, and the curtain walls set in it
+                let owned = creabim_core::curtain::wall_openings(model, e.id);
+                let openings: Vec<&Opening> = owned.iter().collect();
                 let ends = joins.get(&e.id).cloned().unwrap_or_default();
                 let top = creabim_core::walls::top_profile(model, w);
                 (

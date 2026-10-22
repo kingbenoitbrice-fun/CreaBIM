@@ -12,8 +12,13 @@
 //! This module lays the grid out in the wall's own coordinates (`u` along
 //! the wall from its start, `v` up from its base); `creabim-geom` turns the
 //! layout into meshes and plans, `creabim-ifc` into IfcMember and IfcPlate.
+//!
+//! A curtain wall drawn in, or moved into, another wall cuts its own
+//! opening there, as a door or window does ([`voids_in`]): the host wall
+//! loses the curtain wall's length and height, wherever the curtain wall
+//! goes. Nothing is stored for it, so the void always follows.
 
-use crate::{Opening, Wall};
+use crate::{ElementId, ElementKind, Model, Opening, OpeningKind, Wall};
 use serde::{Deserialize, Serialize};
 
 /// How a curtain grid divides one direction.
@@ -315,9 +320,170 @@ impl CurtainGrid {
     }
 }
 
+/// How far off a host wall's direction a curtain wall may run and still
+/// sit in it (the sine of about one degree).
+const PARALLEL: f64 = 0.0175;
+
+/// The opening curtain wall `cw` cuts in wall `host`, if it sits in it:
+/// running along it, its centreline within the host's thickness, and
+/// overlapping it along its length and up its height. The opening is
+/// where they overlap, in the host's own coordinates.
+pub fn void_of(model: &Model, host_id: ElementId, host: &Wall, cw: &Wall) -> Option<Opening> {
+    if cw.curtain.is_none() || host.curtain.is_some() || host.length() < 1e-6 {
+        return None;
+    }
+    let d = host.direction();
+    let e = cw.direction();
+    if d.perp_dot(e).abs() > PARALLEL {
+        return None;
+    }
+    let mid = (cw.start + cw.end) / 2.0;
+    let off = (mid - host.start).perp_dot(d).abs();
+    if off > host.thickness / 2.0 + 1e-3 {
+        return None;
+    }
+    let along = |p: glam::DVec2| (p - host.start).dot(d);
+    let (a, b) = (along(cw.start), along(cw.end));
+    let u0 = a.min(b).max(0.0);
+    let u1 = a.max(b).min(host.length());
+    let (h0, c0) = (
+        crate::walls::base_z(model, host),
+        crate::walls::base_z(model, cw),
+    );
+    let v0 = c0.max(h0) - h0;
+    let v1 = (c0 + cw.height).min(h0 + host.height) - h0;
+    if u1 - u0 < 0.05 || v1 - v0 < 0.05 {
+        return None;
+    }
+    Some(Opening {
+        host: host_id,
+        kind: OpeningKind::Hole,
+        offset: u0,
+        sill: v0,
+        width: u1 - u0,
+        height: v1 - v0,
+        material: None,
+        frame: Default::default(),
+        flip_hand: false,
+        flip_facing: false,
+    })
+}
+
+/// The openings the curtain walls sitting in wall `host` cut in it, each
+/// with the curtain wall that fills it.
+pub fn voids_in(model: &Model, host: ElementId) -> Vec<(ElementId, Opening)> {
+    let Some(ElementKind::Wall(h)) = model.get(host).map(|e| &e.kind) else {
+        return vec![];
+    };
+    if h.curtain.is_some() {
+        return vec![];
+    }
+    model
+        .iter()
+        .filter(|e| e.id != host)
+        .filter_map(|e| match &e.kind {
+            ElementKind::Wall(cw) => Some((e.id, void_of(model, host, h, cw)?)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The walls curtain wall `cw` sits in, each with the opening it cuts.
+pub fn hosts_of(model: &Model, cw: ElementId) -> Vec<(ElementId, Opening)> {
+    let Some(ElementKind::Wall(c)) = model.get(cw).map(|e| &e.kind) else {
+        return vec![];
+    };
+    if c.curtain.is_none() {
+        return vec![];
+    }
+    model
+        .iter()
+        .filter(|e| e.id != cw)
+        .filter_map(|e| match &e.kind {
+            ElementKind::Wall(h) => Some((e.id, void_of(model, e.id, h, c)?)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every opening through wall `id` as built: its doors, windows and holes,
+/// then the voids the curtain walls in it cut.
+pub fn wall_openings(model: &Model, id: ElementId) -> Vec<Opening> {
+    let mut out: Vec<Opening> = model
+        .dependents(id)
+        .into_iter()
+        .filter_map(|d| match &model.get(d)?.kind {
+            ElementKind::Opening(o) => Some(o.clone()),
+            _ => None,
+        })
+        .collect();
+    out.extend(voids_in(model, id).into_iter().map(|(_, o)| o));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A level with a 10 m wall along x and a 3 m curtain wall at `at`
+    /// along it, `off` to its side.
+    fn wall_and_curtain(at: f64, off: f64) -> (Model, ElementId, ElementId) {
+        use crate::{Element, Level};
+        use glam::DVec2;
+        let lv = Element::new(
+            "L0",
+            ElementKind::Level(Level {
+                elevation: 0.0,
+                height: 3.0,
+            }),
+        );
+        let host = Element::new(
+            "Wall",
+            ElementKind::Wall(Wall::new(
+                lv.id,
+                DVec2::ZERO,
+                DVec2::new(10.0, 0.0),
+                0.3,
+                3.0,
+            )),
+        );
+        let mut w = Wall::new(
+            lv.id,
+            DVec2::new(at, off),
+            DVec2::new(at + 3.0, off),
+            0.15,
+            2.5,
+        );
+        w.curtain = Some(CurtainGrid::default());
+        let cw = Element::new("Storefront", ElementKind::Wall(w));
+        let (h, c) = (host.id, cw.id);
+        (Model::from_elements([lv, host, cw]).unwrap(), h, c)
+    }
+
+    #[test]
+    fn a_curtain_wall_in_a_wall_cuts_its_own_opening_which_follows_it() {
+        let (m, host, cw) = wall_and_curtain(2.0, 0.05);
+        let v = voids_in(&m, host);
+        assert_eq!(v.len(), 1);
+        let (filler, o) = &v[0];
+        assert_eq!(*filler, cw);
+        assert!((o.offset - 2.0).abs() < 1e-9 && (o.width - 3.0).abs() < 1e-9);
+        assert!(o.sill.abs() < 1e-9 && (o.height - 2.5).abs() < 1e-9);
+        assert_eq!(hosts_of(&m, cw).len(), 1);
+        assert_eq!(wall_openings(&m, host).len(), 1);
+        // moved along, the opening goes with it; past the end it is cut short
+        let (m, host, _) = wall_and_curtain(8.5, 0.0);
+        let o = &voids_in(&m, host)[0].1;
+        assert!((o.offset - 8.5).abs() < 1e-9 && (o.width - 1.5).abs() < 1e-9);
+        // out of the wall, or beside it, it stands on its own
+        let (m, host, cw) = wall_and_curtain(2.0, 0.6);
+        assert!(voids_in(&m, host).is_empty() && hosts_of(&m, cw).is_empty());
+        let (m, host, _) = wall_and_curtain(12.0, 0.0);
+        assert!(voids_in(&m, host).is_empty());
+        // a curtain wall hosts no curtain-wall voids itself
+        let (m, _, cw) = wall_and_curtain(2.0, 0.0);
+        assert!(voids_in(&m, cw).is_empty());
+    }
 
     #[test]
     fn spacing_and_count_place_grid_lines() {
