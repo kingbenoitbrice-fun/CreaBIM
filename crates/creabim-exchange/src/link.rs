@@ -283,6 +283,9 @@ fn update(
             let kind = match o.kind {
                 creabim_core::OpeningKind::Door => Assign::Door,
                 creabim_core::OpeningKind::Window => Assign::Window,
+                creabim_core::OpeningKind::Hole => {
+                    return Err("a bare opening can't be updated from a mesh".into())
+                }
             };
             fit(model, &kind, tri, None, Some(e.id))?
         }

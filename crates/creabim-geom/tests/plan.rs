@@ -28,6 +28,7 @@ fn door_splits_wall_into_two_cut_pieces_with_a_swing() {
             top: Default::default(),
             disallow_join: [false; 2],
             attach_top: vec![],
+            curtain: None,
         }),
     );
     let d = Element::new(
@@ -123,6 +124,7 @@ fn a_box_subtracted_from_a_wall_leaves_a_gap_in_the_plan() {
             top: Default::default(),
             disallow_join: [false; 2],
             attach_top: vec![],
+            curtain: None,
         }),
     );
     // a 1 m box through the wall, 0.5 to 2.5 m up

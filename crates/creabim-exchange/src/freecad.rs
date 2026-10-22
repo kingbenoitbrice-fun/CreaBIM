@@ -107,6 +107,7 @@ pub fn export_fcstd(model: &Model, label: &str) -> Result<Vec<u8>, ExchangeError
             ElementKind::Opening(o) => match o.kind {
                 OpeningKind::Door => ("Doors", "Door".to_string()),
                 OpeningKind::Window => ("Windows", "Window".to_string()),
+                OpeningKind::Hole => ("Other", "Opening".to_string()),
             },
             ElementKind::FreeMesh(f) => {
                 ("Other", f.ifc_class.trim_start_matches("Ifc").to_string())

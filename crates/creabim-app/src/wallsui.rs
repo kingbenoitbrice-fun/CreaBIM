@@ -266,6 +266,9 @@ pub(super) fn opening_fields(ui: &mut egui::Ui, model: &Model, o: &mut Opening) 
                 label = "Flip window"
             }
         }
+        OpeningKind::Hole => {
+            ui.label("A bare opening: a hole through the wall with no door or window in it");
+        }
     }
     label
 }
@@ -524,6 +527,10 @@ impl CreaBimApp {
                     .ok()
                     .and_then(|i| LocationLine::ALL.get(i))
                 {
+                    if self.plan.wall_location != *l {
+                        // a location line of its own: new walls have no type
+                        self.plan.types.remove(&creabim_core::TypeCategory::Wall);
+                    }
                     self.plan.wall_location = *l;
                     self.status =
                         format!("New walls are drawn on their {}.", l.label().to_lowercase());

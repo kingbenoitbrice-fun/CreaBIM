@@ -86,15 +86,27 @@ pub fn roof_from_slab(slab: &Slab, shape: RoofShape, pitch: f64) -> Element {
 }
 
 /// What the Slab tool's modes make: a slab, or with the Roof tool a roof.
-pub fn outline_element(state: &PlanState, slab: Slab) -> (Element, &'static str) {
+pub fn outline_element(
+    model: &creabim_core::Model,
+    state: &PlanState,
+    slab: Slab,
+) -> (Element, &'static str) {
     if state.tool == Tool::Roof {
         let m = &state.members;
         (
-            roof_from_slab(&slab, m.roof_shape, m.roof_pitch),
+            state.typed(model, roof_from_slab(&slab, m.roof_shape, m.roof_pitch)),
             "Draw roof",
         )
+    } else if state.tool == Tool::Shaft {
+        (
+            crate::outline::shaft_from_outline(model, slab.level, slab.outline()),
+            "Draw shaft",
+        )
     } else {
-        (Element::new("Slab", ElementKind::Slab(slab)), "Draw slab")
+        (
+            state.typed(model, Element::new("Slab", ElementKind::Slab(slab))),
+            "Draw slab",
+        )
     }
 }
 
@@ -119,12 +131,8 @@ pub fn click(
                 "Column {} placed. Its height runs to the next level; drag its top handle or set a height in Properties.",
                 set.column.label()
             ));
-            add(
-                doc,
-                selection,
-                Element::new("Column", ElementKind::Column(c)),
-                "Place column",
-            )
+            let e = state.typed(doc.model(), Element::new("Column", ElementKind::Column(c)));
+            add(doc, selection, e, "Place column")
         }
         Tool::Beam => match state.pending {
             None => {
@@ -139,12 +147,8 @@ pub fn click(
                 state.pending = Some(p);
                 state.status =
                     Some("Beam added. Click on to chain another; Esc or right-click ends.".into());
-                add(
-                    doc,
-                    selection,
-                    Element::new("Beam", ElementKind::Beam(b)),
-                    "Draw beam",
-                )
+                let e = state.typed(doc.model(), Element::new("Beam", ElementKind::Beam(b)));
+                add(doc, selection, e, "Draw beam")
             }
             Some(_) => Ok(()),
         },

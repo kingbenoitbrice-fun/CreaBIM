@@ -97,9 +97,13 @@ fn layer_items(
             let level = model.level(s.level)?;
             let top = s.top(level.elevation);
             let outline = s.outline();
+            let holes = creabim_core::slab::holes_of(model, e);
             assembly::depth_bands(a, s.thickness)
                 .into_iter()
-                .map(|b| (b, slab_mesh(&outline, top - b.s0, b.s1 - b.s0)))
+                .map(|b| {
+                    let m = slab_mesh_with_holes(&outline, &holes, top - b.s0, b.s1 - b.s0);
+                    (b, m)
+                })
                 .collect()
         }
         ElementKind::Roof(r) => {
@@ -107,11 +111,12 @@ fn layer_items(
             // layers are square to the slope; upright they are thicker
             let k = r.vertical_thickness() / r.thickness.max(1e-9);
             let tv = r.vertical_thickness();
+            let holes = creabim_core::slab::holes_of(model, e);
             assembly::depth_bands(a, r.thickness)
                 .into_iter()
                 .map(|b| {
                     let m = crate::members::roof_layer_mesh(r, base, tv - b.s1 * k, tv - b.s0 * k);
-                    (b, m)
+                    (b, crate::members::cut_holes(m, &holes))
                 })
                 .collect()
         }
@@ -169,6 +174,15 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             ElementKind::Slab(_) => [0.70, 0.70, 0.72],
             _ => [0.66, 0.34, 0.26],
         };
+        if let ElementKind::Wall(
+            w @ creabim_core::Wall {
+                curtain: Some(_), ..
+            },
+        ) = &e.kind
+        {
+            out.extend(curtain_items(model, e, w));
+            continue;
+        }
         if let Some(layers) = layer_items(model, e, &joins, plain) {
             out.extend(layers);
             continue;
@@ -197,10 +211,25 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                 let Some(level) = model.level(s.level) else {
                     continue;
                 };
+                let holes = creabim_core::slab::holes_of(model, e);
                 (
-                    slab_mesh(&s.outline(), s.top(level.elevation), s.thickness),
+                    slab_mesh_with_holes(&s.outline(), &holes, s.top(level.elevation), s.thickness),
                     [0.70, 0.70, 0.72],
                 )
+            }
+            ElementKind::Shaft(s) => {
+                // a see-through stand-in, to see and pick the shaft by
+                let (z0, z1) = s.span(model);
+                out.push(SceneItem {
+                    id: e.id,
+                    mesh: slab_mesh(&s.boundary, z1, z1 - z0),
+                    color: [0.85, 0.45, 0.25],
+                    surface: PLAIN_SURFACE,
+                    ghost: true,
+                    layer: None,
+                    finish: None,
+                });
+                continue;
             }
             ElementKind::Opening(o) => {
                 let Some(ElementKind::Wall(w)) = model.get(o.host).map(|h| &h.kind) else {
@@ -235,6 +264,7 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             | ElementKind::TextStyle(_)
             | ElementKind::SheetTemplate(_)
             | ElementKind::Units(_)
+            | ElementKind::ElementType(_)
             | ElementKind::Sketch(_)
             | ElementKind::Cut(_)
             | ElementKind::Guide(_)
@@ -425,7 +455,9 @@ fn opening_items(
                 (Part::Glass, ..) => (GLASS_COLOR, GLASS_SURFACE),
                 (Part::Handle, ..) => ([0.72, 0.73, 0.75], [0.3, 1.0, 1.0]),
                 (_, _, Some(m)) => m,
-                (Part::Frame, OpeningKind::Window, None) => ([0.93, 0.93, 0.91], PLAIN_SURFACE),
+                (Part::Frame, OpeningKind::Window | OpeningKind::Hole, None) => {
+                    ([0.93, 0.93, 0.91], PLAIN_SURFACE)
+                }
                 (Part::Frame, OpeningKind::Door, None) => ([0.50, 0.35, 0.22], PLAIN_SURFACE),
                 (Part::Leaf, _, None) => ([0.62, 0.45, 0.30], PLAIN_SURFACE),
             };
@@ -458,6 +490,95 @@ pub fn element_meshes(scene: &[SceneItem]) -> std::collections::HashMap<ElementI
         out.entry(i.id).or_default().append(&i.mesh);
     }
     out
+}
+
+/// A curtain wall's mullions and panels, each kind in its own look: the
+/// mullions and solid panels in the wall's material (or anodised
+/// aluminium and a pale grey), glass see-through.
+fn curtain_items(model: &Model, e: &Element, w: &creabim_core::Wall) -> Vec<SceneItem> {
+    use crate::curtain::CurtainPart;
+    let (Some(level), Some(grid)) = (model.level(w.level), &w.curtain) else {
+        return vec![];
+    };
+    let openings: Vec<&Opening> = model
+        .dependents(e.id)
+        .into_iter()
+        .filter_map(|d| match &model.get(d)?.kind {
+            ElementKind::Opening(o) => Some(o),
+            _ => None,
+        })
+        .collect();
+    let material = creabim_core::material_of(model, e).map(|(_, m)| (m.color, m.surface()));
+    crate::curtain::curtain_meshes(w, grid, &openings, level.elevation)
+        .into_iter()
+        .map(|(part, mesh)| {
+            let (color, surface) = match (part, material) {
+                (CurtainPart::Glass, _) => (GLASS_COLOR, GLASS_SURFACE),
+                (_, Some(m)) => m,
+                (CurtainPart::Mullion, None) => ([0.62, 0.64, 0.67], [0.35, 0.9, 1.0]),
+                (CurtainPart::Panel, None) => ([0.80, 0.80, 0.78], PLAIN_SURFACE),
+            };
+            SceneItem {
+                id: e.id,
+                mesh,
+                color,
+                surface,
+                ghost: false,
+                layer: None,
+                finish: match part {
+                    CurtainPart::Glass => Some("Glass"),
+                    CurtainPart::Mullion => Some("Metal"),
+                    CurtainPart::Panel => None,
+                },
+            }
+        })
+        .collect()
+}
+
+/// An extruded slab with holes through it: top face at `top_z`,
+/// `thickness` downwards, each hole (a polygon inside the outline) cut
+/// straight through.
+pub fn slab_mesh_with_holes(
+    boundary: &[DVec2],
+    holes: &[Vec<DVec2>],
+    top_z: f64,
+    thickness: f64,
+) -> TriMesh {
+    if holes.is_empty() {
+        return slab_mesh(boundary, top_z, thickness);
+    }
+    let face = creabim_core::polygon::bridged(boundary, holes);
+    let mut m = TriMesh::default();
+    let tris = triangulate(&face);
+    let top: Vec<DVec3> = face.iter().map(|p| p.extend(top_z)).collect();
+    let bottom: Vec<DVec3> = face.iter().map(|p| p.extend(top_z - thickness)).collect();
+    m.add_polygon(&top, &tris, DVec3::Z);
+    m.add_polygon(&bottom, &tris, -DVec3::Z);
+    // the outline counter-clockwise and the holes clockwise: material is
+    // on the left of every edge, so the sides face right
+    let mut loops = vec![boundary.to_vec()];
+    loops.extend(holes.iter().cloned());
+    for (k, lp) in loops.iter_mut().enumerate() {
+        let ccw = crate::triangulate::signed_area2(lp) > 0.0;
+        if ccw != (k == 0) {
+            lp.reverse();
+        }
+        let n = lp.len();
+        for i in 0..n {
+            let (a, b) = (lp[i], lp[(i + 1) % n]);
+            let e = (b - a).normalize_or_zero();
+            m.add_quad(
+                [
+                    a.extend(top_z - thickness),
+                    b.extend(top_z - thickness),
+                    b.extend(top_z),
+                    a.extend(top_z),
+                ],
+                DVec3::new(e.y, -e.x, 0.0),
+            );
+        }
+    }
+    m
 }
 
 /// Extruded slab: top face at `top_z`, `thickness` downwards.
@@ -563,6 +684,19 @@ mod tests {
         assert!((hi.x - 5.0).abs() < 1e-4);
         let area = 8.0 + std::f64::consts::PI / 2.0;
         assert!((item.mesh.volume() - area * t).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_slab_with_a_hole_loses_its_volume() {
+        let outer = creabim_core::polygon::rectangle(DVec2::ZERO, DVec2::new(4.0, 4.0));
+        let hole = creabim_core::polygon::rectangle(DVec2::new(1.0, 1.0), DVec2::new(2.0, 3.0));
+        let m = slab_mesh_with_holes(&outer, std::slice::from_ref(&hole), 0.0, 0.25);
+        assert!((m.volume() - 14.0 * 0.25).abs() < 1e-5, "{}", m.volume());
+        // the plan cut at mid-depth has the hole in it
+        let cut = crate::slice::slice(&m, -0.1);
+        assert_eq!(cut.len(), 1);
+        let area = crate::triangulate::signed_area2(&cut[0]) / 2.0;
+        assert!((area - 14.0).abs() < 1e-5, "{area}");
     }
 
     #[test]
