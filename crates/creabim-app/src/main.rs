@@ -1,11 +1,13 @@
 //! CreaBIM desktop app.
 
+mod align3d;
 mod aligntool;
 mod annotate;
 mod app;
 mod boxsel;
 mod browser;
 mod camera;
+mod centres;
 mod commands;
 mod files;
 mod handles;

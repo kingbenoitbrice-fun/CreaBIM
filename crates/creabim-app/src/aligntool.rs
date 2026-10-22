@@ -8,8 +8,9 @@
 //! for moves to the reference and the rest of the element stays: a wall's
 //! end or side, a slab's or roof's edge, a beam's end, a column's top or
 //! bottom, a door's jamb (see `creabim_core::pushpull`). It works in plans,
-//! sections and elevations. The reference stays picked, so several things
-//! can be aligned to it; Esc lets it go. Every alignment is one undo step.
+//! sections and elevations here, and in 3D through `crate::align3d`. The
+//! reference stays picked, so several things can be aligned to it; Esc
+//! lets it go. Every alignment is one undo step.
 
 use crate::modal::Space;
 use crate::paneface;
@@ -59,29 +60,38 @@ impl AlignMode {
     }
 }
 
+/// How far from parallel, in degrees, an edge or face may be from the
+/// reference and still be stretched or moved flush to it: it moves
+/// square to itself until the point picked on it meets the reference.
+pub const PARALLEL_TOL_DEG: f64 = 5.0;
+
 /// The tool's picks.
 #[derive(Clone, Debug, Default)]
 pub struct AlignState {
     /// The reference line: the view it was picked in, two points on it
     /// (that view's drawing), and the element it belongs to.
     pub reference: Option<(ElementId, DVec2, DVec2, Option<ElementId>)>,
+    /// The reference picked in 3D, in the 3D window or a 3D view: it
+    /// holds in every 3D pane.
+    pub reference_3d: Option<crate::align3d::Reference>,
     pub mode: AlignMode,
 }
 
 impl AlignState {
     pub fn clear(&mut self) {
         self.reference = None;
+        self.reference_3d = None;
     }
 
     pub fn has_input(&self) -> bool {
-        self.reference.is_some()
+        self.reference.is_some() || self.reference_3d.is_some()
     }
 }
 
 /// The tool's hint for the status bar.
 pub fn hint(state: &AlignState) -> &'static str {
     match (state.reference.is_some(), state.mode) {
-        (false, _) => "Align: click the reference line: a wall face, slab edge, guide, grid line or a temporary guide.",
+        (false, _) => "Align: click the reference line: a wall face, slab edge, centre line (dashed purple), guide, grid line or a temporary guide.",
         (true, AlignMode::Align) => "Now click the edge to align to it: the element turns parallel and moves flush. Esc lets go of the reference.",
         (true, AlignMode::Extend) => "Now click near the end of a wall, beam or grid line to stretch it to the reference. Esc lets go of the reference.",
         (true, AlignMode::Stretch) => "Now click the edge to stretch to it: a wall end or face, slab or roof edge, beam end, column top or bottom. The rest stays put. Esc lets go of the reference.",
@@ -99,17 +109,41 @@ pub fn hover_edge(
     model: &creabim_core::Model,
     state: &AlignState,
     items: &[PlanItem],
+    centres: &[CentreLine],
     p: DVec2,
     tol: f64,
-) -> Option<(ElementId, DVec2, DVec2)> {
+) -> Option<(ElementId, DVec2, DVec2, bool)> {
     if state.reference.is_some() && state.mode == AlignMode::Stretch {
         let rank = |i: ElementId| {
             let push = model.get(i).is_some_and(|e| pushpull::can_push(&e.kind));
             Some(u8::from(push))
         };
-        return paneface::edge_at(items, p, tol, &rank);
+        return paneface::edge_at(items, p, tol, &rank).map(|(i, a, b)| (i, a, b, false));
     }
-    edge_at(items, p, tol)
+    pick_line(items, centres, p, tol)
+}
+
+/// A centre line as a pane draws it: its element and ends.
+pub type CentreLine = (ElementId, DVec2, DVec2);
+
+/// The line a click at `p` takes: the edge of the drawing under it, or a
+/// centre line nearer it (then true).
+pub fn pick_line(
+    items: &[PlanItem],
+    centres: &[CentreLine],
+    p: DVec2,
+    tol: f64,
+) -> Option<(ElementId, DVec2, DVec2, bool)> {
+    let edge = edge_at(items, p, tol);
+    let centre = crate::centres::line_at(centres, p, tol);
+    match (edge, centre) {
+        (Some((_, a, b)), Some(c)) if c.3 < crate::centres::segment_distance(p, a, b) => {
+            Some((c.0, c.1, c.2, true))
+        }
+        (Some((id, a, b)), _) => Some((id, a, b, false)),
+        (None, Some(c)) => Some((c.0, c.1, c.2, true)),
+        (None, None) => None,
+    }
 }
 
 /// The turn, in degrees, that makes direction `t` parallel to `r` by the
@@ -160,6 +194,7 @@ pub fn click(
     view: ElementId,
     kind: PaneKind,
     items: &[PlanItem],
+    centres: &[CentreLine],
     raw: DVec2,
     snap: Option<snaps::Snap>,
     tol: f64,
@@ -168,11 +203,13 @@ pub fn click(
     selection: &mut Selection,
 ) -> Result<(), ModelError> {
     let _ = (snap, mm);
-    let picked = edge_at(items, raw, tol);
+    let line_picked = pick_line(items, centres, raw, tol);
+    let on_centre = line_picked.is_some_and(|l| l.3);
+    let picked = line_picked.map(|(id, a, b, _)| (id, a, b));
     let reference = state.align.reference.filter(|r| r.0 == view);
     let Some((_, r0, r1, ref_id)) = reference else {
-        // the reference: an edge of the drawing, else the guide line under
-        // the pointer
+        // the reference: an edge of the drawing or a centre line, else the
+        // guide line under the pointer
         let line = picked.map(|(id, a, b)| (a, b, Some(id))).or_else(|| {
             match state.hover_guide.filter(|h| h.0 == view)?.1.shape {
                 snaps::GuideShape::Line { p, d } => Some((p, p + d, None)),
@@ -182,9 +219,16 @@ pub fn click(
         match line {
             Some((a, b, id)) => {
                 state.align.reference = Some((view, a, b, id));
-                state.status = Some(hint(&state.align).into());
+                let what = match (on_centre, id.and_then(|i| doc.model().get(i))) {
+                    (true, Some(e)) => format!("Reference: the centre line of {}. ", e.name),
+                    _ => String::new(),
+                };
+                state.status = Some(format!("{what}{}", hint(&state.align)));
             }
-            None => state.status = Some("Click on a straight edge, guide or grid line.".into()),
+            None => {
+                state.status =
+                    Some("Click on a straight edge, centre line, guide or grid line.".into())
+            }
         }
         return Ok(());
     };
@@ -220,6 +264,13 @@ pub fn click(
         };
         let mut tried = paneface::edges_at(items, raw, tol, &rank);
         if tried.is_empty() {
+            if on_centre {
+                state.status = Some(
+                    "Stretch moves a face: click an edge, or use Align to bring a centre line onto the reference."
+                        .into(),
+                );
+                return Ok(());
+            }
             tried.push((id, t0, t1));
         }
         let mut first_err = None;
@@ -252,9 +303,9 @@ pub fn click(
         return Ok(());
     };
     // what an edge of a hosted door or window belongs to is the opening;
-    // aligning moves its wall
+    // aligning moves its wall (by its centre line it slides along it)
     let e = match &e.kind {
-        ElementKind::Opening(o) => model.get(o.host).cloned().unwrap_or(e),
+        ElementKind::Opening(o) if !on_centre => model.get(o.host).cloned().unwrap_or(e),
         _ => e,
     };
     let (label, after) = match (state.align.mode, kind) {
@@ -274,15 +325,17 @@ pub fn click(
         (AlignMode::Align, PaneKind::Section { start, end }) => {
             // a section only moves things, across or up its plane
             let (t, r) = ((t1 - t0).normalize_or_zero(), (r1 - r0).normalize_or_zero());
-            if turn_to(t, r).abs() > 0.05 {
+            if turn_to(t, r).abs() > PARALLEL_TOL_DEG {
                 state.status = Some(
                     "In a section Align only moves: pick an edge parallel to the reference (turn it in a plan)."
                         .into(),
                 );
                 return Ok(());
             }
+            // the point of the edge nearest the click comes onto the line
+            let q = t0 + t * (raw - t0).dot(t).clamp(0.0, t0.distance(t1));
             let n = r.perp();
-            let d = n * (r0 - t0).dot(n);
+            let d = n * (r0 - q).dot(n);
             let along = (end - start).normalize_or_zero().extend(0.0);
             let shift = along * d.x + DVec3::Z * d.y;
             match transformed(model, &e, &Xform::Move(shift)) {
@@ -371,8 +424,9 @@ fn stretch_to(
         ));
     }
     let (t, r) = ((t1 - t0).normalize_or_zero(), (r1 - r0).normalize_or_zero());
-    if turn_to(t, r).abs() > 0.05 {
-        return Err("Stretch takes an edge parallel to the reference: turn it with Align first, or use Extend for a wall or beam end at an angle.".into());
+    let off = turn_to(t, r).abs();
+    if off > PARALLEL_TOL_DEG {
+        return Err(format!("That edge is {off:.0}° off the reference: Stretch takes edges within {PARALLEL_TOL_DEG:.0}° of parallel. Turn it with Align first, or use Extend for a wall or beam end at an angle."));
     }
     let (space, z) = match kind {
         PaneKind::Plan { level } => (Space::Plan, model.level(level).map_or(0.0, |l| l.elevation)),
@@ -380,11 +434,44 @@ fn stretch_to(
         _ => return Err("Stretch works in plans, sections and elevations.".into()),
     };
     let f = paneface::face_of_edge(items, space, id, t0, t1, at, z, 0.0);
-    let s = (r0 - t0).dot(f.out);
+    // the point of the edge nearest the click moves square to the edge
+    // until it meets the reference (all of it does, when parallel)
+    let q = t0 + t * (at - t0).dot(t).clamp(0.0, t0.distance(t1));
+    let s = along_to_line(q, f.out, r0, r1).ok_or("That edge never meets the reference.")?;
+    stretch_tx(model, id, &f.pick.face, s)
+}
+
+/// How far from `q` along the unit direction `out` the line through `r0`
+/// and `r1` is; none when they run parallel.
+fn along_to_line(q: DVec2, out: DVec2, r0: DVec2, r1: DVec2) -> Option<f64> {
+    let n = (r1 - r0).normalize_or_zero().perp();
+    let c = out.dot(n);
+    (c.abs() > 1e-6).then(|| (r0 - q).dot(n) / c)
+}
+
+/// `face` of `id` pushed out `s` (pulled in when negative) by the
+/// per-kind rules of `creabim_core::pushpull`, as one undo step; walls
+/// joined to a stretched wall end follow it. With it the message for the
+/// status bar; else why it can't.
+pub fn stretch_tx(
+    model: &creabim_core::Model,
+    id: ElementId,
+    face: &pushpull::FaceRef,
+    s: f64,
+) -> Result<(Transaction, String), String> {
+    let Some(e) = model.get(id) else {
+        return Err("Click on what to stretch.".into());
+    };
+    let name = e.name.clone();
+    if !pushpull::can_push(&e.kind) {
+        return Err(format!(
+            "{name} has no faces to stretch; Align moves it instead."
+        ));
+    }
     if s.abs() < 1e-9 {
         return Err("Already there.".into());
     }
-    let mut changed = pushpull::push_face(model, &pushpull::affected(model, id), &f.pick.face, s)
+    let mut changed = pushpull::push_face(model, &pushpull::affected(model, id), face, s)
         .ok_or_else(|| {
             format!("{name} can't stretch that way that far: that face doesn't move, or the shape would turn inside out.")
         })?;
@@ -398,9 +485,12 @@ fn stretch_to(
     for (o, n) in follow {
         tx = tx.replace(o, n);
     }
+    if tx.ops.is_empty() {
+        return Err(format!("{name} can't stretch that face."));
+    }
     let way = if s > 0.0 { "out" } else { "in" };
     Ok((tx, format!(
-        "Stretched {name} {} {way} to the reference. Click more edges to stretch them to it; Esc lets it go.",
+        "Stretched {name} {} {way} to the reference. Click more to stretch them to it; Esc lets it go.",
         crate::units::len(s.abs())
     )))
 }
@@ -412,9 +502,22 @@ pub fn draw_picks(
     xf: &Xf,
     state: &AlignState,
     view: ElementId,
-    hover: Option<(DVec2, DVec2)>,
+    hover: Option<(ElementId, DVec2, DVec2, bool)>,
+    centres: &[CentreLine],
 ) {
     let accent = Color32::from_rgb(230, 120, 30);
+    // the centre lines of what the pointer is over, faintly
+    let centre = crate::align3d::CENTRE;
+    for (id, a, b) in centres {
+        if hover.is_some_and(|h| h.0 == *id) {
+            painter.add(egui::Shape::dashed_line(
+                &[xf.to_screen(*a), xf.to_screen(*b)],
+                Stroke::new(1.0, centre.gamma_multiply(0.6)),
+                10.0,
+                3.0,
+            ));
+        }
+    }
     if let Some((v, a, b, _)) = state.reference {
         if v == view {
             let (sa, sb) = (xf.to_screen(a), xf.to_screen(b));
@@ -435,8 +538,19 @@ pub fn draw_picks(
             }
         }
     }
-    if let Some((a, b)) = hover {
-        painter.line_segment([xf.to_screen(a), xf.to_screen(b)], Stroke::new(3.0, accent));
+    match hover {
+        Some((_, a, b, true)) => {
+            painter.add(egui::Shape::dashed_line(
+                &[xf.to_screen(a), xf.to_screen(b)],
+                Stroke::new(2.5, centre),
+                10.0,
+                3.0,
+            ));
+        }
+        Some((_, a, b, false)) => {
+            painter.line_segment([xf.to_screen(a), xf.to_screen(b)], Stroke::new(3.0, accent));
+        }
+        None => {}
     }
 }
 
@@ -533,6 +647,7 @@ mod tests {
             view,
             kind,
             &items,
+            &[],
             DVec2::new(20.0, 2.8),
             None,
             0.1,
@@ -596,6 +711,7 @@ mod tests {
             view,
             PaneKind::Plan { level: l },
             &items,
+            &[],
             DVec2::new(23.0, north),
             None,
             0.05,
@@ -621,6 +737,7 @@ mod tests {
             view,
             PaneKind::Plan { level: l },
             &items,
+            &[],
             DVec2::new(26.0, after.start.y),
             None,
             0.05,
@@ -634,6 +751,63 @@ mod tests {
         };
         assert!((after.end.x - 28.0).abs() < 1e-9);
         assert!((after.start.x - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stretch_takes_an_edge_nearly_parallel_to_the_reference() {
+        let mut doc = Document::from_model(creabim_core::sample::sample_house());
+        let l = level(&doc);
+        let w = wall(&doc, l, DVec2::new(20.0, 0.0), DVec2::new(26.0, 0.0));
+        let (id, t) = (
+            w.id,
+            match &w.kind {
+                ElementKind::Wall(w) => w.thickness,
+                _ => unreachable!(),
+            },
+        );
+        doc.commit(Transaction::new("Wall").insert(w)).unwrap();
+        let mut state = PlanState::default();
+        let mut sel = Selection::default();
+        state.align.mode = AlignMode::Stretch;
+        let view = ElementId::new();
+        let h = t / 2.0;
+        let items = vec![fill(id, DVec2::new(20.0, -h), DVec2::new(26.0, h))];
+        let stretch = |doc: &mut Document, state: &mut PlanState, sel: &mut Selection| {
+            click(
+                doc,
+                view,
+                PaneKind::Plan { level: l },
+                &items,
+                &[],
+                DVec2::new(26.0, 0.0),
+                None,
+                0.05,
+                0.01,
+                state,
+                sel,
+            )
+            .unwrap();
+        };
+        // a line 3° off upright through (28, 0): the end meets it there
+        let r0 = DVec2::new(28.0, 0.0);
+        let r1 = r0 + DVec2::from_angle(93f64.to_radians());
+        state.align.reference = Some((view, r0, r1, None));
+        stretch(&mut doc, &mut state, &mut sel);
+        let ElementKind::Wall(after) = &doc.model().get(id).unwrap().kind else {
+            unreachable!()
+        };
+        assert!((after.end.x - 28.0).abs() < 1e-9, "{}", after.end);
+        assert!(state.status.as_deref().unwrap().starts_with("Stretched"));
+        // 20° off is too far
+        doc.undo();
+        let r1 = r0 + DVec2::from_angle(110f64.to_radians());
+        state.align.reference = Some((view, r0, r1, None));
+        stretch(&mut doc, &mut state, &mut sel);
+        assert!(state.status.as_deref().unwrap().contains("20°"));
+        let ElementKind::Wall(after) = &doc.model().get(id).unwrap().kind else {
+            unreachable!()
+        };
+        assert_eq!(after.end, DVec2::new(26.0, 0.0));
     }
 
     #[test]
@@ -670,6 +844,7 @@ mod tests {
             view,
             kind,
             &items,
+            &[],
             DVec2::new(5.0, bottom),
             None,
             0.05,
@@ -695,6 +870,7 @@ mod tests {
             view,
             kind,
             &items,
+            &[],
             DVec2::new(10.0, top - 0.1),
             None,
             0.05,
@@ -708,5 +884,80 @@ mod tests {
         };
         let east = after.boundary.iter().map(|p| p.x).fold(f64::MIN, f64::max);
         assert!((east - 12.0).abs() < 1e-9, "{:?}", after.boundary);
+    }
+    #[test]
+    fn a_beams_centre_line_aligns_to_a_columns_in_plan() {
+        let mut doc = Document::from_model(creabim_core::sample::sample_house());
+        let l = level(&doc);
+        let col = Element::new(
+            "Post",
+            ElementKind::Column(creabim_core::members::Column::new(
+                l,
+                DVec2::new(40.0, 5.0),
+                creabim_core::members::Profile::Rectangle {
+                    width: 0.3,
+                    depth: 0.3,
+                },
+            )),
+        );
+        let beam = Element::new(
+            "Beam",
+            ElementKind::Beam(creabim_core::members::Beam::new(
+                l,
+                DVec2::new(41.0, 0.0),
+                DVec2::new(41.0, 8.0),
+            )),
+        );
+        let (cid, bid) = (col.id, beam.id);
+        doc.commit(Transaction::new("Add").insert(col).insert(beam))
+            .unwrap();
+        // the plan's centre lines, as the pane finds them
+        let scene = creabim_geom::build_scene(doc.model());
+        let centres: Vec<CentreLine> = [cid, bid]
+            .iter()
+            .flat_map(|id| crate::centres::of(doc.model(), &scene, *id))
+            .filter_map(|c| {
+                let (a, b) = crate::centres::edge_on(&c, -DVec3::Z, &|p| p.truncate())?;
+                Some((c.id, a, b))
+            })
+            .collect();
+        assert_eq!(centres.len(), 3, "the post's two and the beam's one");
+        let items = vec![
+            fill(cid, DVec2::new(39.85, 4.85), DVec2::new(40.15, 5.15)),
+            fill(bid, DVec2::new(40.9, 0.0), DVec2::new(41.1, 8.0)),
+        ];
+        let mut state = PlanState::default();
+        let mut sel = Selection::default();
+        state.align.mode = AlignMode::Align;
+        let view = ElementId::new();
+        let kind = PaneKind::Plan { level: l };
+        let go = |doc: &mut Document, state: &mut PlanState, sel: &mut Selection, at: DVec2| {
+            click(
+                doc, view, kind, &items, &centres, at, None, 0.05, 0.01, state, sel,
+            )
+            .unwrap();
+        };
+        // the post's centre line along y, then the beam's
+        go(&mut doc, &mut state, &mut sel, DVec2::new(40.0, 5.1));
+        assert!(
+            state
+                .status
+                .as_deref()
+                .unwrap()
+                .contains("centre line of Post"),
+            "{:?}",
+            state.status
+        );
+        go(&mut doc, &mut state, &mut sel, DVec2::new(41.0, 3.0));
+        let ElementKind::Beam(b) = &doc.model().get(bid).unwrap().kind else {
+            unreachable!()
+        };
+        assert!((b.start.x - 40.0).abs() < 1e-9, "{}", b.start);
+        assert!((b.end.x - 40.0).abs() < 1e-9, "{}", b.end);
+        // and near its edge, the edge is still what is taken
+        assert_eq!(
+            pick_line(&items, &centres, DVec2::new(40.88, 3.0), 0.05).map(|l| l.3),
+            Some(false)
+        );
     }
 }
