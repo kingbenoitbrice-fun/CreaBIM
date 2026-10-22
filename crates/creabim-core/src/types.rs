@@ -837,7 +837,13 @@ pub fn duplicate(model: &Model, id: ElementId) -> Option<Element> {
         return None;
     };
     let name = unique_name(model, &format!("{} copy", e.name));
-    Some(Element::new(name, ElementKind::ElementType(t.clone())))
+    let mut t = t.clone();
+    // a copy is no longer the catalogue's object: placing that again
+    // should not find this one
+    if let TypeParams::Object(o) = &mut t.params {
+        o.catalogue = None;
+    }
+    Some(Element::new(name, ElementKind::ElementType(t)))
 }
 
 /// A new type made from an element, and the element made its instance:
