@@ -28,6 +28,8 @@ pub const CATEGORIES: &[(&str, &str)] = &[
     ("roofing", "Roofing"),
     ("membrane", "Membranes"),
     ("plastic", "Plastic"),
+    ("ceramic", "Ceramic"),
+    ("textile", "Textiles"),
     ("earth", "Earth"),
 ];
 
@@ -454,6 +456,22 @@ pub const LIBRARY: &[LibraryEntry] = &[
         "Terrazzo flooring",
     ),
     entry(
+        "Sanitary ceramic",
+        "ceramic",
+        Empty,
+        rgb(244, 244, 240),
+        0.12,
+        "Glazed vitreous china for basins and WCs",
+    ),
+    entry(
+        "Fabric, woven",
+        "textile",
+        Empty,
+        rgb(118, 122, 128),
+        0.95,
+        "Upholstery fabric",
+    ),
+    entry(
         "Vinyl flooring",
         "plastic",
         Empty,
@@ -673,7 +691,12 @@ pub fn materials(model: &Model) -> Vec<(ElementId, &str, &Material)> {
 pub fn users(model: &Model, material: ElementId) -> Vec<ElementId> {
     model
         .iter()
-        .filter(|e| material_slot(e) == Some(Some(material)))
+        .filter(|e| {
+            material_slot(e) == Some(Some(material))
+                || matches!(&e.kind, ElementKind::ElementType(crate::ElementType {
+                    params: crate::TypeParams::Object(t), ..
+                }) if t.parts.iter().any(|p| p.material == Some(material)))
+        })
         .map(|e| e.id)
         .collect()
 }
@@ -749,6 +772,10 @@ pub fn delete(model: &Model, material: ElementId, replacement: Option<ElementId>
     tx.label = "Delete material".into();
     // layers of assemblies made of it too
     for (before, after) in crate::assembly::replace_material(model, material, replacement) {
+        tx = tx.replace(before, after);
+    }
+    // and parts of objects
+    for (before, after) in crate::objects::replace_material(model, material, replacement) {
         tx = tx.replace(before, after);
     }
     tx.remove_cascade(model, material)

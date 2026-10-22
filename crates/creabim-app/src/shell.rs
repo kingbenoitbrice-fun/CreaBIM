@@ -97,6 +97,7 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Railing => "fence",
         Tool::Level => "level",
         Tool::Align => "align-tool",
+        Tool::Object => "sofa",
     }
 }
 
@@ -114,7 +115,8 @@ fn tool_group(t: Tool) -> u8 {
         | Tool::Beam
         | Tool::Roof
         | Tool::Stair
-        | Tool::Railing => 1,
+        | Tool::Railing
+        | Tool::Object => 1,
         Tool::Section | Tool::Elevation => 2,
         Tool::Dimension
         | Tool::Tag
@@ -170,6 +172,7 @@ fn group_title(class: &str) -> String {
         "IfcOpeningElement" => "Openings and shafts".into(),
         "TextStyle" => "Text styles".into(),
         "CropBox" => "Crop boxes".into(),
+        "IfcFurniture" => "Furniture and fixtures".into(),
         c => {
             let c = c.strip_prefix("Ifc").unwrap_or(c);
             if c.ends_with('s') {
@@ -478,6 +481,9 @@ impl CreaBimApp {
             Item::new("new.typed", "New typed sample house")
                 .icon("house")
                 .hint("Walls, doors, windows and slabs of element types, a storefront curtain wall, a wall opening, a stair shaft and a slab hole"),
+            Item::new("new.furnished", "New furnished sample house")
+                .icon("sofa")
+                .hint("The sample house with a kitchen, living room, bedrooms and a bathroom furnished from the starter catalogue"),
             Item::new("new.sheet", "New sheet").icon("file-text"),
             Item::sub("New schedule", schedule_items()).icon("table-2"),
             Item::Separator,
@@ -606,10 +612,15 @@ impl CreaBimApp {
                         .hint("The Wall tool drawing a curtain wall type: mullions and glass on a grid"),
                 );
                 items.push(
+                    Item::new("catalogue", "Catalogue…")
+                        .icon("sofa")
+                        .hint("Furniture and fixtures to place: bathroom, kitchen, living, dining, bedroom and office, and your own from Blender, FreeCAD or glTF"),
+                );
+                items.push(
                     Item::new("types.browser", "Types…")
                         .icon("element-types")
                         .hint(
-                            "Wall, curtain wall, door, window, slab, roof, column and beam types",
+                            "Wall, curtain wall, door, window, slab, roof, column, beam and object types",
                         ),
                 );
                 items.push(
@@ -977,6 +988,12 @@ impl CreaBimApp {
                 self.status =
                     "Loaded the typed sample house: see Materials › Types… for its types.".into();
             }
+            "new.furnished" => {
+                self.load_model(creabim_core::sample::furnished_house());
+                self.status =
+                    "Loaded the furnished sample house: see Create › Catalogue… to place more."
+                        .into();
+            }
             "new.sample" => {
                 self.load_model(sample_house());
                 self.status = "Loaded the sample house.".into();
@@ -1138,6 +1155,11 @@ impl CreaBimApp {
                 self.view_action(head)
             }
             "hidden.colour3d" => self.set_hidden_colour_3d(!self.shell.settings.hidden_colour_3d),
+            "object" => {
+                if crate::objecttool::toggle_option(&mut self.plan, arg) {
+                    self.catalogue.open = true;
+                }
+            }
             "member" => {
                 if arg == "square" || arg == "round" {
                     self.plan.types.remove(&creabim_core::TypeCategory::Column);
@@ -1428,6 +1450,7 @@ impl CreaBimApp {
                 .collect()));
         }
         options.extend(crate::memberstool::tool_options(&self.plan));
+        options.extend(crate::objecttool::tool_options(&self.plan));
         if tool == Tool::Note {
             options.push(json!({
                 "kind": "toggle", "id": "note.leader", "label": "Leader",
@@ -1710,6 +1733,9 @@ impl CreaBimApp {
                     "IfcMaterialLayerSet" => Some(json!([
                         {"id": "asm.browser", "icon": "ellipsis", "hint": "Assemblies: edit layers, add, duplicate, delete, assign"},
                     ])),
+                    "IfcFurniture" => Some(json!([
+                        {"id": "catalogue", "icon": "plus", "hint": "Catalogue: furniture and fixtures to place"},
+                    ])),
                     "ElementType" => Some(json!([
                         {"id": "types.browser", "icon": "ellipsis", "hint": "Types: edit, add, duplicate, delete, assign, select instances"},
                     ])),
@@ -1717,6 +1743,7 @@ impl CreaBimApp {
                 };
                 let icon = match class.as_str() {
                     "ElementType" => "element-types",
+                    "IfcFurniture" => "sofa",
                     c => icon_name(Icon::of_class(c)),
                 };
                 json!({
@@ -1968,6 +1995,9 @@ impl CreaBimApp {
                         // a size of its own: new walls have no type
                         self.plan.types.remove(&creabim_core::TypeCategory::Wall);
                         self.plan.wall_thickness = v.clamp(0.05, 1.0)
+                    }
+                    k if k.starts_with("object.") => {
+                        crate::objecttool::set_option(&mut self.plan, k, v)
                     }
                     k if k.starts_with("member.") => {
                         if k.contains("column") {

@@ -60,6 +60,7 @@ pub fn level_of(kind: &ElementKind) -> Option<ElementId> {
         ElementKind::FreeMesh(m) => m.level,
         ElementKind::Sketch(s) => s.level,
         ElementKind::Guide(g) => g.level,
+        ElementKind::Object(o) => Some(o.level),
         ElementKind::View(View {
             kind: ViewKind::Plan { level, .. },
             ..
@@ -113,6 +114,10 @@ pub fn rehost(e: &Element, to: ElementId, from_elevation: f64, to_elevation: f64
             for p in &mut r.path {
                 p.z += dz;
             }
+        }
+        ElementKind::Object(o) => {
+            o.level = to;
+            o.offset += dz;
         }
         ElementKind::View(View {
             kind: ViewKind::Plan { level, .. },

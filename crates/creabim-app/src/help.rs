@@ -121,6 +121,8 @@ pub const IMAGES: &[(&str, &[u8])] = &[
     img!("grids-3d"),
     img!("xray-2d"),
     img!("tab-pick"),
+    img!("catalogue"),
+    img!("object-against-wall"),
 ];
 
 /// A page's text by id.
@@ -216,6 +218,7 @@ pub fn tool_page(t: Tool) -> &'static str {
         Tool::Stair | Tool::Railing => "stairs-railings",
         Tool::Level => "levels",
         Tool::Align => "align",
+        Tool::Object => "furniture",
     }
 }
 
@@ -240,6 +243,7 @@ pub fn element_page(kind: &ElementKind) -> &'static str {
         ElementKind::ElementType(_) => "types",
         ElementKind::Shaft(_) => "holes#shafts",
         ElementKind::CropBox(_) => "crop-boxes",
+        ElementKind::Object(_) => "furniture",
         ElementKind::Dimension(_) => "dimensions",
         ElementKind::Tag(_) => "tags",
         ElementKind::Note(_) => "notes",
@@ -316,7 +320,7 @@ pub const KEYS: &[Binding] = &[
     key(
         VIEWS,
         "Space",
-        "Flip the selected wall, door, window or section, or the wall being drawn",
+        "Flip the selected wall, door, window or section, or the wall being drawn; with the Object tool, turn the next object a quarter",
     ),
     key(VIEWS, "Shift+Space", "Flip the hand of the selected door"),
     key(VIEWS, "Ctrl+O", "Open a project"),
