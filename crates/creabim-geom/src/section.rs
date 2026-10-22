@@ -434,8 +434,8 @@ pub fn view_drawing(model: &Model, view: ElementId) -> Option<Drawing> {
             let crop = crate::cropbox::active(model, Some(view));
             axonometric_view_with(model, *azimuth, *altitude, shaded, v.show_hidden, &crop)
         }
-        creabim_core::ViewKind::Schedule { category } => {
-            let table = crate::schedule::schedule(model, *category);
+        creabim_core::ViewKind::Schedule { category, by_type } => {
+            let table = crate::schedule::schedule_by(model, *category, *by_type);
             return Some(crate::schedule::schedule_drawing(view, &e.name, &table));
         }
     };

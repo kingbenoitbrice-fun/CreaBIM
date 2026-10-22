@@ -37,6 +37,8 @@ mod levelsui;
 mod materials;
 #[path = "shell.rs"]
 mod shell;
+#[path = "typesui.rs"]
+mod typesui;
 #[path = "wallsui.rs"]
 mod wallsui;
 
@@ -158,6 +160,8 @@ pub struct CreaBimApp {
     mat: materials::MaterialsUi,
     /// The assembly editor.
     asm: assemblies::AssembliesUi,
+    /// The Types window.
+    types: typesui::TypesUi,
     /// The Levels manager and the Project units dialog.
     levels: levelsui::LevelsUi,
     /// The annotation styles and sheet templates windows.
@@ -228,6 +232,7 @@ impl CreaBimApp {
             shell: Default::default(),
             mat: Default::default(),
             asm: Default::default(),
+            types: Default::default(),
             levels: Default::default(),
             drafting: Default::default(),
             orbit_selection: false,
@@ -2202,7 +2207,7 @@ impl CreaBimApp {
             .map_or(String::new(), |e| e.name.clone());
 
         // doors and windows go into the wall under the pointer
-        if matches!(tool, Tool::Door | Tool::Window) {
+        if matches!(tool, Tool::Door | Tool::Window | Tool::Opening) {
             let wall = hit.and_then(|h| match self.doc.model().get(h.id).map(|e| &e.kind) {
                 Some(ElementKind::Wall(w)) => Some((h, w.level)),
                 Some(ElementKind::Opening(op)) => {
@@ -2303,7 +2308,7 @@ impl CreaBimApp {
                         );
                     }
                 }
-                Tool::Slab | Tool::Roof => {
+                Tool::Slab | Tool::Roof | Tool::Shaft => {
                     let (lo, hi) = (a.truncate().min(p), a.truncate().max(p));
                     let pts = [lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y), lo];
                     let scr: Vec<egui::Pos2> =
@@ -2367,7 +2372,9 @@ impl CreaBimApp {
             } else {
                 self.status = match (tool, self.pending_3d) {
                     (Tool::Wall, Some(_)) => format!("Drawing walls on {level_name}. Click the next corner; Esc or right-click ends."),
-                    (Tool::Slab | Tool::Roof, _) => self.plan.status.take().unwrap_or_default(),
+                    (Tool::Slab | Tool::Roof | Tool::Shaft, _) => {
+                        self.plan.status.take().unwrap_or_default()
+                    }
                     (Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing, _) => self
                         .plan
                         .status
@@ -2715,10 +2722,10 @@ impl CreaBimApp {
         let Some(view) = self.active_view else { return };
         let (before, revision) = (self.selection.clone(), self.doc.model().revision());
         let schedule = match self.view(view).map(|v| &v.kind) {
-            Some(ViewKind::Schedule { category }) => Some(*category),
+            Some(ViewKind::Schedule { category, by_type }) => Some((*category, *by_type)),
             _ => None,
         };
-        let result = if let Some(category) = schedule {
+        let result = if let Some((category, by_type)) = schedule {
             let csv = with_extension(
                 &self.path,
                 &format!("{}.csv", category.label().to_lowercase()),
@@ -2728,7 +2735,7 @@ impl CreaBimApp {
                 rect,
                 &mut self.doc,
                 view,
-                category,
+                (category, by_type),
                 &mut self.selection,
                 &csv,
             );
@@ -3349,10 +3356,18 @@ impl CreaBimApp {
             self.report(r, "Renamed.");
         }
         ui.add_space(6.0);
+        if creabim_core::types::TypeCategory::of(&e.kind).is_some() {
+            self.type_picker(ui, id);
+        }
+        // the type picker may have changed it
+        let Some(e) = self.doc.model().get(id).cloned() else {
+            return;
+        };
 
         let mut edited = e.clone();
         let mut label = "";
         let mut extrude_sketch = false;
+        let mut draw_hole = false;
         let num = |ui: &mut egui::Ui, text: &str, v: &mut f64, lo: f64, hi: f64| -> bool {
             ui.horizontal(|ui| {
                 ui.label(text);
@@ -3381,25 +3396,52 @@ impl CreaBimApp {
                 }
             }
             ElementKind::Wall(w) => {
-                if self.assembly_combo(ui, creabim_core::AssemblyUse::Wall, &mut w.assembly) {
-                    label = "Wall assembly"
+                let mut curtain = w.curtain.is_some();
+                if ui
+                    .checkbox(&mut curtain, "Curtain wall")
+                    .on_hover_text("A grid of mullions holding glass or solid panels; doors in it take the place of panels")
+                    .changed()
+                {
+                    w.curtain = curtain.then(|| creabim_core::CurtainGrid {
+                        mullion_depth: w.thickness.clamp(0.05, 0.3),
+                        ..Default::default()
+                    });
+                    if curtain {
+                        w.assembly = None;
+                    }
+                    label = "Curtain wall"
                 }
-                let layered = w.assembly.is_some_and(|a| {
-                    matches!(
-                        self.doc.model().get(a).map(|e| &e.kind),
-                        Some(ElementKind::Assembly(_))
-                    )
-                });
-                if layered {
-                    ui.label(format!(
-                        "Thickness {}, from its layers",
-                        crate::units::len(w.thickness)
-                    ));
-                } else if num(ui, "Thickness", &mut w.thickness, 0.02, 2.0) {
-                    label = "Wall thickness"
-                }
-                if !layered && self.material_combo(ui, &mut w.material) {
-                    label = "Wall material"
+                if let Some(c) = &mut w.curtain {
+                    let l = typesui::curtain_fields(ui, c);
+                    if !l.is_empty() {
+                        label = l;
+                    }
+                    // a curtain wall is as thick as its mullions
+                    w.thickness = c.mullion_depth;
+                    if self.material_combo(ui, &mut w.material) {
+                        label = "Wall material"
+                    }
+                } else {
+                    if self.assembly_combo(ui, creabim_core::AssemblyUse::Wall, &mut w.assembly) {
+                        label = "Wall assembly"
+                    }
+                    let layered = w.assembly.is_some_and(|a| {
+                        matches!(
+                            self.doc.model().get(a).map(|e| &e.kind),
+                            Some(ElementKind::Assembly(_))
+                        )
+                    });
+                    if layered {
+                        ui.label(format!(
+                            "Thickness {}, from its layers",
+                            crate::units::len(w.thickness)
+                        ));
+                    } else if num(ui, "Thickness", &mut w.thickness, 0.02, 2.0) {
+                        label = "Wall thickness"
+                    }
+                    if !layered && self.material_combo(ui, &mut w.material) {
+                        label = "Wall material"
+                    }
                 }
                 let l = wallsui::wall_fields(ui, self.doc.model(), id, w);
                 if !l.is_empty() {
@@ -3477,6 +3519,14 @@ impl CreaBimApp {
                 {
                     redraw = true;
                 }
+                let shafts = creabim_core::slab::holes_of(self.doc.model(), &e)
+                    .len()
+                    .saturating_sub(s.holes.len());
+                let (l, draw) = typesui::holes_fields(ui, &mut s.holes, shafts);
+                if !l.is_empty() {
+                    label = l;
+                }
+                draw_hole |= draw;
             }
             ElementKind::Opening(o) => {
                 if num(ui, "Width", &mut o.width, 0.1, 20.0) {
@@ -3523,7 +3573,7 @@ impl CreaBimApp {
                 }
             }
             ElementKind::View(v) if matches!(v.kind, ViewKind::Schedule { .. }) => {
-                if let ViewKind::Schedule { category } = &mut v.kind {
+                if let ViewKind::Schedule { category, by_type } = &mut v.kind {
                     egui::ComboBox::from_label("Lists")
                         .selected_text(category.label())
                         .show_ui(ui, |ui| {
@@ -3533,6 +3583,15 @@ impl CreaBimApp {
                                 }
                             }
                         });
+                    if ui
+                        .checkbox(by_type, "Group by type")
+                        .on_hover_text(
+                            "List the rows under a heading per element type, with its count.",
+                        )
+                        .changed()
+                    {
+                        label = "Group schedule by type"
+                    }
                 }
                 if self.active_view != Some(id) && ui.button("Open this schedule").clicked() {
                     self.active_view = Some(id);
@@ -3729,6 +3788,65 @@ impl CreaBimApp {
                 if let Some(l) = self.crop_properties(ui, id, c) {
                     label = l
                 }
+            }
+            ElementKind::ElementType(_) => {
+                self.type_properties(ui, id);
+            }
+            ElementKind::Shaft(s) => {
+                let levels: Vec<(ElementId, String)> = self
+                    .doc
+                    .model()
+                    .levels()
+                    .map(|(e, _)| (e.id, e.name.clone()))
+                    .collect();
+                let name = |id: Option<ElementId>| {
+                    id.and_then(|i| levels.iter().find(|l| l.0 == i))
+                        .map_or("One storey up".to_string(), |l| l.1.clone())
+                };
+                egui::ComboBox::from_label("Base level")
+                    .selected_text(name(Some(s.level)))
+                    .show_ui(ui, |ui| {
+                        for (lid, n) in &levels {
+                            if ui.selectable_value(&mut s.level, *lid, n).changed() {
+                                label = "Shaft base"
+                            }
+                        }
+                    });
+                if num(ui, "Base offset", &mut s.base_offset, -100.0, 100.0) {
+                    label = "Shaft base"
+                }
+                egui::ComboBox::from_label("Top level")
+                    .selected_text(name(s.top_level))
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_value(&mut s.top_level, None, "One storey up")
+                            .changed()
+                        {
+                            label = "Shaft top"
+                        }
+                        for (lid, n) in &levels {
+                            if ui
+                                .selectable_value(&mut s.top_level, Some(*lid), n)
+                                .changed()
+                            {
+                                label = "Shaft top"
+                            }
+                        }
+                    });
+                if num(ui, "Top offset", &mut s.top_offset, -100.0, 100.0) {
+                    label = "Shaft top"
+                }
+                let (z0, z1) = s.span(self.doc.model());
+                let area = creabim_core::polygon::signed_area2(&s.boundary).abs() / 2.0;
+                ui.label(
+                    egui::RichText::new(format!(
+                        "From {} up to {}, {}. It cuts a hole in every slab and roof in between that it lies inside; move it and they follow.",
+                        crate::units::elevation(z0),
+                        crate::units::elevation(z1),
+                        crate::units::area(area)
+                    ))
+                    .weak(),
+                );
             }
             ElementKind::Material(m) => {
                 materials::preview(ui, m, 72.0);
@@ -4202,6 +4320,15 @@ impl CreaBimApp {
                 if !l.is_empty() {
                     label = l;
                 }
+                let shafts = creabim_core::slab::holes_of(self.doc.model(), &e).len();
+                if let ElementKind::Roof(r) = k {
+                    let shafts = shafts.saturating_sub(r.holes.len());
+                    let (l, draw) = typesui::holes_fields(ui, &mut r.holes, shafts);
+                    if !l.is_empty() {
+                        label = l;
+                    }
+                    draw_hole |= draw;
+                }
                 if let Some(m) = creabim_core::members::material_mut(k).filter(|_| !layered) {
                     if self.material_combo(ui, m) {
                         label = "Material";
@@ -4272,6 +4399,14 @@ impl CreaBimApp {
             self.plan.cancel();
             self.plan.tool = Tool::Select;
             self.plan.outline = crate::outline::Outline::start(self.doc.model(), id);
+            if let Some(o) = &self.plan.outline {
+                self.status = o.hint();
+            }
+        }
+        if draw_hole {
+            self.plan.cancel();
+            self.plan.tool = Tool::Select;
+            self.plan.outline = crate::outline::Outline::hole(self.doc.model(), id);
             if let Some(o) = &self.plan.outline {
                 self.status = o.hint();
             }
@@ -4441,6 +4576,7 @@ impl eframe::App for CreaBimApp {
         self.open_view_menu();
         self.materials_window(&ctx);
         self.assemblies_window(&ctx);
+        self.types_window(&ctx);
         self.levels_window(&ctx);
         self.styles_window(&ctx);
         self.templates_window(&ctx);
@@ -4668,6 +4804,7 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Opening(o) => match o.kind {
             creabim_core::OpeningKind::Door => "door",
             creabim_core::OpeningKind::Window => "window",
+            creabim_core::OpeningKind::Hole => "wall opening",
         },
         ElementKind::FreeMesh(_) => "mass",
         ElementKind::Sketch(_) => "sketch",
@@ -4690,6 +4827,8 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Stair(_) => "stair",
         ElementKind::Railing(_) => "railing",
         ElementKind::CropBox(_) => "crop box",
+        ElementKind::ElementType(_) => "type",
+        ElementKind::Shaft(_) => "shaft",
     }
 }
 

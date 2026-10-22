@@ -38,18 +38,20 @@ fn paper_visuals() -> egui::Visuals {
 /// A pending change to one element.
 type Edit = (ElementId, Box<dyn FnOnce(&mut creabim_core::Element)>);
 
-/// Show the schedule `view` of `category` in `rect`. Returns a status
+/// Show the schedule `view` of `category` (grouped by type with
+/// `by_type`) in `rect`. Returns a status
 /// message when an edit fails or the schedule is exported.
 pub fn show(
     ui: &mut egui::Ui,
     rect: Rect,
     doc: &mut Document,
     view: ElementId,
-    category: ScheduleCategory,
+    (category, by_type): (ScheduleCategory, bool),
     selection: &mut Selection,
     csv_path: &str,
 ) -> Option<String> {
-    let table = schedule::schedule(doc.model(), category);
+    let table = schedule::schedule_by(doc.model(), category, by_type);
+    let listed = table.rows.iter().filter(|r| !r.group).count();
     let materials: Vec<(ElementId, String)> = doc
         .model()
         .iter()
@@ -70,8 +72,8 @@ pub fn show(
     let noun = category.label().to_lowercase();
     let count = format!(
         "{} {} · read live from the model · edit a cell to change it",
-        table.rows.len(),
-        if table.rows.len() == 1 {
+        listed,
+        if listed == 1 {
             noun.trim_end_matches('s').to_string()
         } else {
             noun.clone()
@@ -194,6 +196,25 @@ pub fn show(
             text_at(ui, c, &col.title.to_uppercase(), col.numeric, INK, true);
         }
         for (n, r) in table.rows.iter().enumerate() {
+            if r.group {
+                // a type's heading: clicking it selects all its instances
+                let rr = row(ui, Some(HEADER));
+                let resp = ui.interact(
+                    rr,
+                    egui::Id::new(("schedule_group", view, n)),
+                    egui::Sense::click(),
+                );
+                let color = if resp.hovered() { ACCENT } else { INK };
+                text_at(ui, rr, &r.cells[0], false, color, true);
+                if r.id != ElementId::NIL
+                    && resp
+                        .on_hover_text("Click to select every instance of this type")
+                        .clicked()
+                {
+                    selection.extend(creabim_core::types::instances(doc.model(), r.id), false);
+                }
+                continue;
+            }
             let Some(e) = doc.model().get(r.id).cloned() else {
                 continue;
             };

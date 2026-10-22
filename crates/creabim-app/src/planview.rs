@@ -28,7 +28,11 @@ pub enum Tool {
     Wall,
     Door,
     Window,
+    /// A bare opening in a wall: a hole with no door or window.
+    Opening,
     Slab,
+    /// A vertical hole through the slabs and roofs between two levels.
+    Shaft,
     Mass,
     Section,
     Elevation,
@@ -52,12 +56,14 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 25] = [
+    pub const ALL: [Tool; 27] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
         Tool::Window,
+        Tool::Opening,
         Tool::Slab,
+        Tool::Shaft,
         Tool::Mass,
         Tool::Column,
         Tool::Beam,
@@ -91,7 +97,9 @@ impl Tool {
             Tool::Wall => "Wall",
             Tool::Door => "Door",
             Tool::Window => "Window",
+            Tool::Opening => "Wall opening",
             Tool::Slab => "Slab",
+            Tool::Shaft => "Shaft",
             Tool::Mass => "Mass",
             Tool::Section => "Section",
             Tool::Elevation => "Elevation",
@@ -121,6 +129,8 @@ impl Tool {
             Tool::Wall => "Click to start, click again to place each wall. Esc or right-click ends the chain. Shift keeps it orthogonal.",
             Tool::Door => "Click on a wall to place a door.",
             Tool::Window => "Click on a wall to place a window.",
+            Tool::Opening => "Click on a wall to cut a bare rectangular opening in it: no door or window, just the hole. Set its size and sill in Properties.",
+            Tool::Shaft => "Draw the shaft's outline like a slab (1–4: Polygon, Rectangle, Fill room, From sketch). It runs from this level to the one above, cutting every slab and roof in between.",
             Tool::Slab => "Click the slab's corners, then the first again or Enter. A draws arcs, L lines; Esc or right-click takes back a point, right-click again leaves. 1–4: Polygon, Rectangle, Fill room, From sketch.",
             Tool::Mass => "Click to place a freeform mass you can then edit like a mesh.",
             Tool::Section => "Click two points for the section line. It looks to the left of the direction you draw.",
@@ -147,7 +157,7 @@ impl Tool {
 
     /// Tools that draw an outline the way the Slab tool does.
     pub fn draws_outline(self) -> bool {
-        matches!(self, Tool::Slab | Tool::Roof)
+        matches!(self, Tool::Slab | Tool::Roof | Tool::Shaft)
     }
 
     /// The hint for this tool in a section or elevation.
@@ -320,6 +330,20 @@ pub struct PlanState {
     dim_lock: Option<creabim_core::DimAxis>,
     /// The Align tool's picks so far.
     pub align: crate::aligntool::AlignState,
+    /// The type each tool draws new elements as.
+    pub types: HashMap<creabim_core::TypeCategory, ElementId>,
+}
+
+impl PlanState {
+    /// `e`, made an instance of the type its tool draws (if there is one
+    /// and it fits).
+    pub fn typed(&self, model: &creabim_core::Model, mut e: Element) -> Element {
+        let t = creabim_core::TypeCategory::of(&e.kind).and_then(|c| self.types.get(&c));
+        if let Some(t) = t {
+            creabim_core::types::stamp(model, &mut e, *t);
+        }
+        e
+    }
 }
 
 impl Default for PlanState {
@@ -370,6 +394,7 @@ impl Default for PlanState {
             dim_axis: None,
             dim_lock: None,
             align: Default::default(),
+            types: HashMap::new(),
         }
     }
 }
@@ -1220,7 +1245,7 @@ pub fn show(
                     accent.color,
                 );
             }
-            Tool::Slab | Tool::Roof => {
+            Tool::Slab | Tool::Roof | Tool::Shaft => {
                 painter.rect_stroke(
                     Rect::from_two_pos(xf.to_screen(a), xf.to_screen(b)),
                     0.0,
@@ -1594,6 +1619,11 @@ pub fn new_wall(
     let height = model.level(level).map_or(3.0, |l| l.height);
     let mut w = Wall::new(level, a, b, state.wall_thickness, height);
     w.location = state.wall_location;
+    // the wall type in use sets its thickness, location line and grid
+    let typed = state.typed(model, Element::new("Wall", ElementKind::Wall(w.clone())));
+    if let ElementKind::Wall(tw) = typed.kind {
+        w = tw;
+    }
     w.flip = state.wall_flip;
     creabim_core::walls::set_location_line(model, &mut w, a, b);
     w
@@ -1656,14 +1686,16 @@ fn plan_click(
             }
             Some(a) if a.distance(p) > 0.05 => {
                 let w = new_wall(doc.model(), level, state, a, p);
-                let e = Element::new("Wall", ElementKind::Wall(w));
+                let e = state.typed(doc.model(), Element::new("Wall", ElementKind::Wall(w)));
                 selection.only(e.id);
                 state.pending = Some(p);
                 doc.commit(Transaction::new("Draw wall").insert(e))
             }
             Some(_) => Ok(()),
         },
-        Tool::Door | Tool::Window => place_opening(doc, level, p, tool, selection),
+        Tool::Door | Tool::Window | Tool::Opening => {
+            place_opening(doc, level, p, tool, state, selection)
+        }
         Tool::Dimension
         | Tool::Tag
         | Tool::Angle
@@ -1672,7 +1704,9 @@ fn plan_click(
         | Tool::ArcLength
         | Tool::Note
         | Tool::Sketch => Ok(()),
-        Tool::Slab | Tool::Roof => crate::slabtool::click(doc, level, p, state, selection),
+        Tool::Slab | Tool::Roof | Tool::Shaft => {
+            crate::slabtool::click(doc, level, p, state, selection)
+        }
         Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing => {
             crate::memberstool::click(doc, level, tool, p, state, selection)
         }
@@ -1868,13 +1902,19 @@ fn section_tool(
                         top: Default::default(),
                         disallow_join: [false; 2],
                         attach_top: vec![],
+                        curtain: None,
                     }),
                 );
+                // its type's thickness, but its drawn height
+                let mut e = state.typed(doc.model(), e);
+                if let ElementKind::Wall(w) = &mut e.kind {
+                    w.height = height;
+                }
                 selection.only(e.id);
                 doc.commit(Transaction::new("Draw wall in section").insert(e))
             }
         },
-        Tool::Door | Tool::Window => {
+        Tool::Door | Tool::Window | Tool::Opening => {
             // the wall under the cursor hosts the opening (or the wall of
             // the door or window under it)
             let Some(mut host) = picked else {
@@ -1896,34 +1936,45 @@ fn section_tool(
             let t = (w.start - o).perp_dot(d) / look.perp_dot(d);
             let u = (o + look * t - w.start).dot(d);
             let base = doc.model().level(w.level).map_or(0.0, |l| l.elevation) + w.base_offset;
-            let (kind, width, height, name) = match tool {
-                Tool::Door => (OpeningKind::Door, 0.9, 2.1, "Door"),
-                _ => (OpeningKind::Window, 1.2, 1.3, "Window"),
+            let (kind, name) = match tool {
+                Tool::Door => (OpeningKind::Door, "Door"),
+                Tool::Opening => (OpeningKind::Hole, "Wall opening"),
+                _ => (OpeningKind::Window, "Window"),
             };
-            if width > w.length() {
+            let mut e = state.typed(
+                doc.model(),
+                Element::new(
+                    name,
+                    ElementKind::Opening(Opening {
+                        host,
+                        kind,
+                        offset: 0.0,
+                        sill: 0.0,
+                        width: if kind == OpeningKind::Door { 0.9 } else { 1.2 },
+                        height: match kind {
+                            OpeningKind::Door => 2.1,
+                            OpeningKind::Window => 1.3,
+                            OpeningKind::Hole => 1.0,
+                        },
+                        material: None,
+                        frame: Default::default(),
+                        flip_hand: false,
+                        flip_facing: false,
+                    }),
+                ),
+            );
+            let ElementKind::Opening(op) = &mut e.kind else {
+                return Ok(());
+            };
+            if op.width > w.length() {
                 return Ok(());
             }
-            let sill = match kind {
-                OpeningKind::Door => 0.0,
-                OpeningKind::Window => {
-                    (p.y - base - height / 2.0).clamp(0.0, (w.height - height).max(0.0))
-                }
-            };
-            let e = Element::new(
-                name,
-                ElementKind::Opening(Opening {
-                    host,
-                    kind,
-                    offset: (u - width / 2.0).clamp(0.0, w.length() - width),
-                    sill,
-                    width,
-                    height,
-                    material: None,
-                    frame: Default::default(),
-                    flip_hand: false,
-                    flip_facing: false,
-                }),
-            );
+            // where it was clicked: along the wall, and up it but for doors
+            op.offset = (u - op.width / 2.0).clamp(0.0, w.length() - op.width);
+            if kind != OpeningKind::Door {
+                op.sill =
+                    (p.y - base - op.height / 2.0).clamp(0.0, (w.height - op.height).max(0.0));
+            }
             selection.only(e.id);
             doc.commit(
                 Transaction::new(format!("Place {} in section", name.to_lowercase())).insert(e),
@@ -1989,8 +2040,15 @@ fn section_tool(
                         top_offset: 0.0,
                         bulges: vec![],
                         assembly: None,
+                        holes: vec![],
                     }),
                 );
+                // the slab type in use, unless its thickness was drawn
+                let e = if dy > 0.05 {
+                    e
+                } else {
+                    state.typed(doc.model(), e)
+                };
                 selection.only(e.id);
                 doc.commit(Transaction::new("Draw slab in section").insert(e))
             }
@@ -3609,6 +3667,7 @@ fn place_opening(
     level: ElementId,
     p: DVec2,
     tool: Tool,
+    state: &PlanState,
     selection: &mut Selection,
 ) -> Result<(), creabim_core::ModelError> {
     let mut best: Option<(f64, ElementId, f64, f64)> = None;
@@ -3630,26 +3689,34 @@ fn place_opening(
     };
     let (kind, width, height, sill, name) = match tool {
         Tool::Door => (OpeningKind::Door, 0.9, 2.1, 0.0, "Door"),
+        Tool::Opening => (OpeningKind::Hole, 1.0, 1.0, 1.0, "Wall opening"),
         _ => (OpeningKind::Window, 1.2, 1.3, 0.9, "Window"),
     };
-    if width > len {
-        return Ok(());
-    }
-    let e = Element::new(
-        name,
-        ElementKind::Opening(Opening {
-            host,
-            kind,
-            offset: (u - width / 2.0).clamp(0.0, len - width),
-            sill,
-            width,
-            height,
-            material: None,
-            frame: Default::default(),
-            flip_hand: false,
-            flip_facing: false,
-        }),
+    let mut e = state.typed(
+        doc.model(),
+        Element::new(
+            name,
+            ElementKind::Opening(Opening {
+                host,
+                kind,
+                offset: 0.0,
+                sill,
+                width,
+                height,
+                material: None,
+                frame: Default::default(),
+                flip_hand: false,
+                flip_facing: false,
+            }),
+        ),
     );
+    // centred on the click, as wide as its type makes it
+    if let ElementKind::Opening(o) = &mut e.kind {
+        if o.width > len {
+            return Ok(());
+        }
+        o.offset = (u - o.width / 2.0).clamp(0.0, len - o.width);
+    }
     selection.only(e.id);
     doc.commit(Transaction::new(format!("Place {}", name.to_lowercase())).insert(e))
 }
@@ -3786,6 +3853,61 @@ fn rest_on(
 mod tests {
     use super::*;
     use creabim_core::{EditMesh, FreeMesh};
+
+    #[test]
+    fn tools_draw_new_elements_as_their_type() {
+        let mut doc = Document::from_model(creabim_core::sample::sample_house());
+        let (tx, ids) = creabim_core::types::add_starters(doc.model());
+        doc.commit(tx).unwrap();
+        let level = doc.model().levels().next().unwrap().0.id;
+        let storefront = ids[5];
+        let window = ids[9];
+        let mut state = PlanState::default();
+        state
+            .types
+            .insert(creabim_core::TypeCategory::Wall, storefront);
+        state
+            .types
+            .insert(creabim_core::TypeCategory::Window, window);
+        let mut sel = Selection::default();
+        let (a, b) = (DVec2::new(0.0, -3.0), DVec2::new(6.0, -3.0));
+        plan_click(&mut doc, level, Tool::Wall, a, &mut state, &mut sel).unwrap();
+        plan_click(&mut doc, level, Tool::Wall, b, &mut state, &mut sel).unwrap();
+        let wall = sel.active.unwrap();
+        let e = doc.model().get(wall).unwrap();
+        assert_eq!(e.of_type.as_ref().map(|r| r.id), Some(storefront));
+        let ElementKind::Wall(w) = &e.kind else {
+            panic!()
+        };
+        assert!(w.curtain.is_some(), "drawn as a curtain wall");
+        // a window clicked into a plain wall takes its type's size
+        let mut sel = Selection::default();
+        plan_click(
+            &mut doc,
+            level,
+            Tool::Window,
+            DVec2::new(5.0, 6.0),
+            &mut state,
+            &mut sel,
+        )
+        .unwrap();
+        let e = doc.model().get(sel.active.unwrap()).unwrap();
+        assert_eq!(e.of_type.as_ref().map(|r| r.id), Some(window));
+        // and the opening tool cuts a bare hole, with no type
+        let mut sel = Selection::default();
+        plan_click(
+            &mut doc,
+            level,
+            Tool::Opening,
+            DVec2::new(10.0, 4.5),
+            &mut state,
+            &mut sel,
+        )
+        .unwrap();
+        let e = doc.model().get(sel.active.unwrap()).unwrap();
+        assert!(matches!(&e.kind, ElementKind::Opening(o) if o.kind == OpeningKind::Hole));
+        assert!(e.of_type.is_none());
+    }
 
     #[test]
     fn a_dimension_attaches_to_a_mass_corner_and_follows_it() {

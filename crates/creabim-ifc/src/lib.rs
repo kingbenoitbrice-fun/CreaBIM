@@ -11,6 +11,7 @@ mod classes;
 mod export;
 mod ifcx;
 mod import;
+mod params;
 mod shape;
 mod step;
 pub mod step_read;

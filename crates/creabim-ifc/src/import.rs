@@ -202,6 +202,13 @@ struct Importer<'a> {
     has_parts: HashSet<u64>,
     materials_of: HashMap<u64, u64>,
     type_of: HashMap<u64, u64>,
+    /// Property sets given to each object.
+    psets: HashMap<u64, Vec<u64>>,
+    /// Imported element types, by the IFC type entity they came from.
+    types: HashMap<u64, ElementId>,
+    type_elems: Vec<Element>,
+    /// Native slabs, by IFC instance: where in `wall_elems` they are.
+    slabs: HashMap<u64, usize>,
     styles: HashMap<u64, Surface>,
     material_colors: HashMap<u64, Surface>,
     /// Imported materials by name.
@@ -245,6 +252,10 @@ impl<'a> Importer<'a> {
             has_parts: HashSet::new(),
             materials_of: HashMap::new(),
             type_of: HashMap::new(),
+            psets: HashMap::new(),
+            types: HashMap::new(),
+            type_elems: vec![],
+            slabs: HashMap::new(),
             styles: HashMap::new(),
             material_colors: HashMap::new(),
             materials: HashMap::new(),
@@ -269,6 +280,10 @@ impl<'a> Importer<'a> {
         self.index_relationships();
         self.read_storeys();
         self.read_grids();
+        self.read_types();
+        for &id in self.ids("IFCCURTAINWALL") {
+            self.import_curtain_wall(id);
+        }
         for class in ["IFCWALL", "IFCWALLSTANDARDCASE", "IFCWALLELEMENTEDCASE"] {
             for &id in self.ids(class) {
                 self.import_wall(id);
@@ -289,6 +304,7 @@ impl<'a> Importer<'a> {
                 self.import_filling(id);
             }
         }
+        self.import_bare_openings();
         let mut rest: Vec<u64> = self
             .f
             .entities
@@ -338,20 +354,10 @@ impl<'a> Importer<'a> {
                 "{spaces} spaces were not imported (CreaBIM has no rooms yet)"
             ));
         }
-        let bare = self
-            .ids("IFCOPENINGELEMENT")
-            .iter()
-            .chain(self.ids("IFCOPENINGSTANDARDCASE"))
-            .filter(|o| !self.filled.contains(*o))
-            .count();
-        if bare > 0 {
-            self.g.warnings.add(format!(
-                "{bare} openings without a door or window were not cut (CreaBIM has no bare openings)"
-            ));
-        }
         self.out = [
             std::mem::take(&mut self.material_elems),
             std::mem::take(&mut self.assembly_elems),
+            std::mem::take(&mut self.type_elems),
             std::mem::take(&mut self.level_elems),
             std::mem::take(&mut self.grid_elems),
             std::mem::take(&mut self.wall_elems),
@@ -359,6 +365,242 @@ impl<'a> Importer<'a> {
             std::mem::take(&mut self.opening_elems),
         ]
         .concat();
+        // instances override what differs from their type
+        let params: HashMap<ElementId, creabim_core::TypeParams> = self
+            .out
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::ElementType(t) => Some((e.id, t.params.clone())),
+                _ => None,
+            })
+            .collect();
+        for e in &mut self.out {
+            if let Some(r) = &mut e.of_type {
+                if let Some(p) = params.get(&r.id) {
+                    // a door's or window's frame is only written on its type
+                    if let (
+                        creabim_core::TypeParams::Door(t) | creabim_core::TypeParams::Window(t),
+                        ElementKind::Opening(o),
+                    ) = (p, &mut e.kind)
+                    {
+                        o.frame = t.frame;
+                    }
+                    r.overrides = creabim_core::types::differences(p, &e.kind);
+                }
+            }
+        }
+    }
+
+    /// The single values of a product's (or a type's) property set `name`.
+    fn props(&self, id: u64, name: &str) -> crate::params::Props {
+        let f = self.f;
+        let mut sets: Vec<u64> = self.psets.get(&id).cloned().unwrap_or_default();
+        if let Some(e) = f.get(id) {
+            if e.class.ends_with("TYPE") || e.class.ends_with("STYLE") {
+                sets.extend(e.arg(5).refs());
+            }
+        }
+        let mut out = crate::params::Props::new();
+        for s in sets.iter().filter_map(|s| f.get(*s)) {
+            if !s.is("IFCPROPERTYSET") || s.arg(2).as_str() != Some(name) {
+                continue;
+            }
+            for p in s.arg(4).refs().filter_map(|p| f.get(p)) {
+                if !p.is("IFCPROPERTYSINGLEVALUE") {
+                    continue;
+                }
+                let Some(key) = p.arg(0).as_str() else {
+                    continue;
+                };
+                let v = p.arg(2);
+                let number = match v {
+                    Value::Typed(t, _) if t.contains("MEASURE") => self.g.length(v),
+                    _ => v.as_f64(),
+                };
+                out.insert(key.to_string(), (number, v.as_str().map(str::to_string)));
+            }
+        }
+        out
+    }
+
+    /// The file's element types (IfcWallType, IfcDoorType...), with the
+    /// parameters CreaBIM wrote on them and their material or layer set.
+    fn read_types(&mut self) {
+        let mut ids: Vec<(u64, creabim_core::TypeCategory, bool)> = vec![];
+        for (id, e) in &self.f.entities {
+            if let Some((c, curtain)) = crate::params::category_of(&e.class) {
+                ids.push((*id, c, curtain));
+            }
+        }
+        ids.sort_unstable_by_key(|i| i.0);
+        for (id, category, curtain) in ids {
+            use creabim_core::types::TypeParams as P;
+            let Some(e) = self.f.get(id) else { continue };
+            let props = self.props(id, crate::params::TYPE_PSET);
+            let mut params = crate::params::type_from(category, curtain, &props);
+            let usage = match category {
+                creabim_core::TypeCategory::Slab => Some(creabim_core::AssemblyUse::Floor),
+                creabim_core::TypeCategory::Roof => Some(creabim_core::AssemblyUse::Roof),
+                creabim_core::TypeCategory::Wall if !curtain => {
+                    Some(creabim_core::AssemblyUse::Wall)
+                }
+                _ => None,
+            };
+            let assembly = usage.and_then(|u| self.assembly_for(id, u)).map(|a| a.0);
+            let material = match assembly {
+                Some(a) => self.core_material(a),
+                None => self.material_for(id),
+            };
+            match &mut params {
+                P::Wall(w) => (w.assembly, w.material) = (assembly, material),
+                P::Slab(s) | P::Roof(s) => (s.assembly, s.material) = (assembly, material),
+                P::Door(o) | P::Window(o) => o.material = material,
+                P::Column(c) => c.material = material,
+                P::Beam(b) => b.material = material,
+            }
+            let mut t = creabim_core::ElementType::new(params);
+            t.description = e.arg(3).as_str().unwrap_or("").trim().to_string();
+            let eid = self.new_id(e);
+            let name = Self::name(e, "Type");
+            self.type_elems.push(Element {
+                id: eid,
+                name,
+                kind: ElementKind::ElementType(t),
+                source: None,
+                of_type: None,
+            });
+            self.types.insert(id, eid);
+        }
+    }
+
+    /// The imported type of a product, if its IFC type was imported.
+    fn type_ref(&self, id: u64) -> Option<creabim_core::TypeRef> {
+        let t = self.type_of.get(&id)?;
+        Some(creabim_core::TypeRef::new(*self.types.get(t)?))
+    }
+
+    /// A curtain wall CreaBIM wrote: its grid from its property set, its
+    /// line from its placement. Its mullions and panels are rebuilt from
+    /// the grid, so they are not imported themselves. Others are left to
+    /// the general import (their parts come in as meshes).
+    fn import_curtain_wall(&mut self, id: u64) {
+        let props = self.props(id, crate::params::CURTAIN_PSET);
+        let (Some(grid), Some(length), Some(height)) = (
+            crate::params::curtain_from(&props),
+            props.get("Length").and_then(|v| v.0),
+            props.get("Height").and_then(|v| v.0),
+        ) else {
+            return;
+        };
+        let Some(e) = self.f.get(id) else { return };
+        let world = self.g.placement(e.arg(5));
+        let start = world.w_axis.truncate().truncate();
+        let d = world.x_axis.truncate().truncate().normalize_or_zero();
+        if d == DVec2::ZERO || !(length > 1e-3 && height > 1e-3) {
+            return;
+        }
+        let z = world.w_axis.z;
+        let (lid, elev) = self.level_for(id, z);
+        self.done.insert(id);
+        let parts: Vec<u64> = self
+            .parent
+            .iter()
+            .filter(|(_, p)| **p == id)
+            .map(|(c, _)| *c)
+            .collect();
+        let material = parts
+            .iter()
+            .find(|p| self.f.get(**p).is_some_and(|e| e.is("IFCMEMBER")))
+            .copied()
+            .and_then(|p| self.material_for(p));
+        self.done.extend(parts);
+        let mut w = Wall::new(lid, start, start + d * length, grid.mullion_depth, height);
+        w.base_offset = z - elev;
+        w.material = material;
+        w.curtain = Some(grid);
+        let eid = self.new_id(e);
+        self.walls.insert(
+            id,
+            HostWall {
+                id: eid,
+                start: w.start,
+                end: w.end,
+                thickness: w.thickness,
+                base_z: z,
+            },
+        );
+        self.wall_elems.push(Element {
+            source: None,
+            of_type: self.type_ref(id),
+            id: eid,
+            name: Self::name(e, "Curtain wall"),
+            kind: ElementKind::Wall(w),
+        });
+    }
+
+    /// Openings with no door or window in them: bare holes in native
+    /// walls, holes in native slabs.
+    fn import_bare_openings(&mut self) {
+        let filled: HashSet<u64> = self.fills.values().copied().collect();
+        let mut ids: Vec<u64> = self
+            .ids("IFCOPENINGELEMENT")
+            .iter()
+            .chain(self.ids("IFCOPENINGSTANDARDCASE"))
+            .copied()
+            .filter(|o| !filled.contains(o))
+            .collect();
+        ids.sort_unstable();
+        let mut skipped = 0;
+        for oid in ids {
+            let Some(host) = self.voids.get(&oid).copied() else {
+                skipped += 1;
+                continue;
+            };
+            let Some(o) = self.f.get(oid) else { continue };
+            let world = self.g.placement(o.arg(5));
+            let mesh = self.g.product_mesh(o, &world);
+            if let Some(wall) = self.walls.get(&host).copied() {
+                let Some((offset, sill, width, height)) = opening_in_wall(&wall, &mesh, None)
+                else {
+                    skipped += 1;
+                    continue;
+                };
+                let eid = self.new_id(o);
+                self.opening_elems.push(Element {
+                    source: None,
+                    of_type: None,
+                    id: eid,
+                    name: Self::name(o, "Opening"),
+                    kind: ElementKind::Opening(Opening {
+                        host: wall.id,
+                        kind: OpeningKind::Hole,
+                        offset: offset.max(0.0),
+                        sill: sill.max(0.0),
+                        width,
+                        height,
+                        material: None,
+                        frame: Default::default(),
+                        flip_hand: false,
+                        flip_facing: false,
+                    }),
+                });
+            } else if let Some(&i) = self.slabs.get(&host) {
+                let Some(p) = prism_of_mesh(mesh) else {
+                    skipped += 1;
+                    continue;
+                };
+                if let ElementKind::Slab(s) = &mut self.wall_elems[i].kind {
+                    s.holes.push(p.footprint);
+                }
+            } else if !self.done.contains(&host) {
+                skipped += 1;
+            }
+        }
+        if skipped > 0 {
+            self.g.warnings.add(format!(
+                "{skipped} openings without a door or window were not cut (their host is not a native wall or slab)"
+            ));
+        }
     }
 
     fn index_relationships(&mut self) {
@@ -399,6 +641,13 @@ impl<'a> Importer<'a> {
             if let Some(m) = r.arg(5).as_ref() {
                 for o in r.arg(4).refs() {
                     self.materials_of.insert(o, m);
+                }
+            }
+        }
+        for r in each("IFCRELDEFINESBYPROPERTIES") {
+            if let Some(p) = r.arg(5).as_ref() {
+                for o in r.arg(4).refs() {
+                    self.psets.entry(o).or_default().push(p);
                 }
             }
         }
@@ -504,6 +753,7 @@ impl<'a> Importer<'a> {
                     elevation: z,
                     height,
                 }),
+                of_type: None,
             });
             self.storeys.insert(
                 id,
@@ -969,6 +1219,7 @@ impl<'a> Importer<'a> {
             );
             self.wall_elems.push(Element {
                 source: None,
+                of_type: self.type_ref(id),
                 id: eid,
                 name: Self::name(e, "Wall"),
                 kind: ElementKind::Wall(Wall {
@@ -1033,6 +1284,7 @@ impl<'a> Importer<'a> {
             top: Default::default(),
             disallow_join: [false; 2],
             attach_top: vec![],
+            curtain: None,
         })
     }
 
@@ -1054,11 +1306,6 @@ impl<'a> Importer<'a> {
             self.import_free_mesh(id);
             return;
         };
-        if self.voided.contains(&id) {
-            self.g
-                .warnings
-                .add("openings in slabs are not cut (CreaBIM slabs have no holes yet)");
-        }
         self.done.insert(id);
         let layered = self.assembly_for(id, creabim_core::AssemblyUse::Floor);
         let material = match layered {
@@ -1066,8 +1313,10 @@ impl<'a> Importer<'a> {
             None => self.material_for(id),
         };
         let eid = self.new_id(e);
+        self.slabs.insert(id, self.wall_elems.len());
         self.wall_elems.push(Element {
             source: None,
+            of_type: self.type_ref(id),
             id: eid,
             name: Self::name(e, "Slab"),
             kind: ElementKind::Slab(Slab {
@@ -1078,6 +1327,7 @@ impl<'a> Importer<'a> {
                 top_offset: 0.0,
                 bulges: vec![],
                 assembly: layered.map(|l| l.0),
+                holes: vec![],
             }),
         });
     }
@@ -1154,6 +1404,7 @@ impl<'a> Importer<'a> {
         };
         self.opening_elems.push(Element {
             source: None,
+            of_type: self.type_ref(id),
             id: eid,
             name: Self::name(e, fallback),
             kind: ElementKind::Opening(Opening {
@@ -1232,6 +1483,7 @@ impl<'a> Importer<'a> {
                     },
                 )
             }),
+            of_type: None,
         });
     }
 }

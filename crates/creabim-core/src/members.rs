@@ -238,6 +238,10 @@ pub struct Roof {
     /// thickness is the assembly's total.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assembly: Option<ElementId>,
+    /// Holes cut upright through it (a roof light, a chimney), each a
+    /// polygon in plan.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holes: Vec<Vec<DVec2>>,
 }
 
 /// One flat piece of a roof's underside: its outline in plan and the plane
@@ -281,6 +285,7 @@ impl Roof {
             edge,
             material: None,
             assembly: None,
+            holes: vec![],
         }
     }
 
@@ -779,7 +784,7 @@ pub fn validate(kind: &ElementKind) -> Result<(), String> {
                     r.pitch
                 ));
             }
-            Ok(())
+            crate::slab::check_holes(&r.holes)
         }
         ElementKind::Stair(s) => {
             positive(s.width, "stair width")?;
@@ -902,7 +907,7 @@ pub fn transform(model: &Model, kind: &mut ElementKind, t: &Xform) -> Option<()>
             }
         }
         ElementKind::Roof(r) => {
-            for p in &mut r.boundary {
+            for p in r.boundary.iter_mut().chain(r.holes.iter_mut().flatten()) {
                 *p = t.point2(*p);
             }
             r.base_offset += dz;

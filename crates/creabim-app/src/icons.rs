@@ -38,13 +38,17 @@ impl Icon {
         match class {
             "IfcBuildingStorey" => Icon::Storey,
             "IfcGrid" => Icon::Grid,
-            "IfcWall" | "IfcWallStandardCase" | "IfcCurtainWall" => Icon::Wall,
-            "IfcSlab" | "IfcCovering" | "IfcPlate" => Icon::Slab,
-            "IfcDoor" => Icon::Door,
-            "IfcWindow" => Icon::Window,
-            "IfcRoof" => Icon::Roof,
-            "IfcColumn" | "IfcPile" => Icon::Column,
-            "IfcBeam" | "IfcMember" => Icon::Beam,
+            "IfcWall"
+            | "IfcWallStandardCase"
+            | "IfcCurtainWall"
+            | "IfcWallType"
+            | "IfcCurtainWallType" => Icon::Wall,
+            "IfcSlab" | "IfcCovering" | "IfcPlate" | "IfcSlabType" => Icon::Slab,
+            "IfcDoor" | "IfcDoorType" => Icon::Door,
+            "IfcWindow" | "IfcWindowType" => Icon::Window,
+            "IfcRoof" | "IfcRoofType" => Icon::Roof,
+            "IfcColumn" | "IfcPile" | "IfcColumnType" => Icon::Column,
+            "IfcBeam" | "IfcMember" | "IfcBeamType" => Icon::Beam,
             "IfcMaterial" => Icon::Material,
             "IfcMaterialLayerSet" => Icon::Slab,
             "View" => Icon::Plan,
@@ -73,6 +77,7 @@ impl Icon {
             ElementKind::Opening(o) => match o.kind {
                 OpeningKind::Door => Icon::Door,
                 OpeningKind::Window => Icon::Window,
+                OpeningKind::Hole => Icon::Mass,
             },
             _ => Icon::of_class(e.ifc_class()),
         }

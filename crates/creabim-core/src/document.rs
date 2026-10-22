@@ -114,12 +114,18 @@ impl Document {
         let kept = crate::walls::lines_kept(&self.model, tx);
         tx.apply(&mut self.model)?;
         let levels = crate::walls::touches_walls(tx);
-        if kept.is_empty() && !levels {
-            return Ok(());
+        if !kept.is_empty() || levels {
+            let extra = crate::walls::settle(&self.model, &kept, levels);
+            if !extra.ops.is_empty() && extra.apply(&mut self.model).is_ok() {
+                tx.ops.extend(extra.ops);
+            }
         }
-        let extra = crate::walls::settle(&self.model, &kept, levels);
-        if !extra.ops.is_empty() && extra.apply(&mut self.model).is_ok() {
-            tx.ops.extend(extra.ops);
+        // instances mark what they now set for themselves (see crate::types)
+        if crate::types::touches_instances(tx) {
+            let extra = crate::types::settle(&self.model, tx);
+            if !extra.ops.is_empty() && extra.apply(&mut self.model).is_ok() {
+                tx.ops.extend(extra.ops);
+            }
         }
         Ok(())
     }

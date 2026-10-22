@@ -175,7 +175,7 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
             if !t.keeps_upright() {
                 return None;
             }
-            for p in &mut s.boundary {
+            for p in s.boundary.iter_mut().chain(s.holes.iter_mut().flatten()) {
                 *p = t.point2(*p);
             }
             // a mirror in plan turns arcs the other way
@@ -287,6 +287,21 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
             g.a = origin(g.a, g.level);
             g.b = origin(g.b, g.level);
         }
+        ElementKind::Shaft(s) => {
+            if !t.keeps_upright() {
+                return None;
+            }
+            for p in &mut s.boundary {
+                *p = t.point2(*p);
+            }
+            if crate::polygon::signed_area2(&s.boundary) < 0.0 {
+                s.boundary.reverse();
+            }
+            if let Xform::Move(d) = t {
+                s.base_offset += d.z;
+                s.top_offset += d.z;
+            }
+        }
         ElementKind::Column(_)
         | ElementKind::Beam(_)
         | ElementKind::Roof(_)
@@ -311,6 +326,7 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
         | ElementKind::SheetTemplate(_)
         | ElementKind::Units(_)
         | ElementKind::Cut(_)
+        | ElementKind::ElementType(_)
         | ElementKind::GridGroup(_) => return None,
     }
     Some(out)
@@ -351,6 +367,7 @@ pub fn pivot(model: &Model, id: ElementId) -> Option<DVec3> {
         },
         ElementKind::Guide(g) => (g.a + g.b) / 2.0 + DVec3::Z * elevation(g.level),
         ElementKind::CropBox(c) => c.center(),
+        ElementKind::Shaft(s) => mean(&s.boundary).extend(s.span(model).0),
         _ => return crate::members::pivot(model, e),
     })
 }
@@ -370,6 +387,7 @@ pub fn duplicate(model: &Model, id: ElementId) -> Vec<Element> {
             | ElementKind::Sketch(_)
             | ElementKind::Grid(_)
             | ElementKind::Guide(_)
+            | ElementKind::Shaft(_)
     ) && !crate::members::is_member(&e.kind)
     {
         return vec![];
