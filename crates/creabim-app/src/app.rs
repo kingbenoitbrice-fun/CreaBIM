@@ -1,6 +1,7 @@
 use crate::camera::OrbitCamera;
 use crate::commands::Command;
 use crate::handles::{self, PaneInput, Ray};
+use crate::hoverpick;
 use crate::icons::{self, Icon};
 use crate::modal::{Outcome, PaneMap, Space};
 use crate::planview::{self, PaneStyle, PlanState, Tool};
@@ -15,9 +16,7 @@ use creabim_core::{
     Sheet, Transaction, Underlay, View, ViewKind, ViewStyle, Workplane,
 };
 use creabim_geom::sheet::{self as sheets, PlacedView, SheetInfo};
-use creabim_geom::{
-    build_scene, pick, plan::Pen, section::view_drawing, section::Drawing, PlanItem, SceneItem,
-};
+use creabim_geom::{build_scene, pick, plan::Pen, section::Drawing, PlanItem, SceneItem};
 use eframe::egui::{self, Color32, Rect, Sense, Vec2};
 use eframe::egui_wgpu;
 use glam::{DVec2, DVec3, Vec2 as GVec2, Vec3 as GVec3};
@@ -108,6 +107,8 @@ pub struct CreaBimApp {
     sheet: SheetState,
     /// Generated drawings by view, with the model revision they were made at.
     drawings: HashMap<ElementId, (u64, Drawing)>,
+    /// The same for views seen in X-ray, which their sheets don't follow.
+    xray_drawings: HashMap<ElementId, (u64, Drawing)>,
     camera: OrbitCamera,
     /// Aspect ratio of the 3D view as last drawn, for framing.
     aspect: f32,
@@ -174,6 +175,10 @@ pub struct CreaBimApp {
     orbit_selection: bool,
     /// Where the 3D view was drawn last frame, for its navigation buttons.
     rect_3d: Option<Rect>,
+    /// Where the 2D pane was drawn last frame, and whether the pointer was
+    /// last over it rather than the 3D view: what Alt+Z turns X-ray on in.
+    rect_2d: Option<Rect>,
+    last_in_2d: bool,
     /// The crop box whose elements clicks in the 3D view are picking.
     crop_pick: Option<ElementId>,
 }
@@ -205,6 +210,7 @@ impl CreaBimApp {
             active_view: None,
             sheet: SheetState::default(),
             drawings: HashMap::new(),
+            xray_drawings: HashMap::new(),
             camera: OrbitCamera::default(),
             aspect: 0.65,
             viewport,
@@ -242,6 +248,8 @@ impl CreaBimApp {
             drafting: Default::default(),
             orbit_selection: false,
             rect_3d: None,
+            rect_2d: None,
+            last_in_2d: false,
             crop_pick: None,
             status: "Loaded the sample house. Orbit with left drag, pan with right drag, zoom with the wheel.".into(),
         }
@@ -257,6 +265,9 @@ impl CreaBimApp {
         self.active_view = None;
         self.sheet = SheetState::default();
         self.drawings.clear();
+        self.xray_drawings.clear();
+        self.plan.xray.clear();
+        self.plan.hover = None;
         self.geometry_key = None;
         self.drop_stale_selection();
         self.frame_all();
@@ -535,13 +546,19 @@ impl CreaBimApp {
     /// The drawing of a view, regenerated only when the model has changed.
     fn drawing(&mut self, id: ElementId) -> Option<Drawing> {
         let revision = self.doc.model().revision();
-        if let Some((r, d)) = self.drawings.get(&id) {
+        let xray = self.plan.xray.contains(&id);
+        let cache = if xray {
+            &mut self.xray_drawings
+        } else {
+            &mut self.drawings
+        };
+        if let Some((r, d)) = cache.get(&id) {
             if *r == revision {
                 return Some(d.clone());
             }
         }
-        let d = view_drawing(self.doc.model(), id)?;
-        self.drawings.insert(id, (revision, d.clone()));
+        let d = creabim_geom::section::view_drawing_with(self.doc.model(), id, xray)?;
+        cache.insert(id, (revision, d.clone()));
         Some(d)
     }
 
@@ -737,8 +754,19 @@ impl CreaBimApp {
         if guides_key && self.plan.modal.is_none() {
             self.set_guides_hidden(!self.shell.settings.guides_hidden);
         }
+        // which pane Alt+Z works in: the one the pointer is (or was last) over
+        if let Some(p) = ctx.pointer_hover_pos() {
+            if self.rect_2d.is_some_and(|r| r.contains(p)) {
+                self.last_in_2d = true;
+            } else if self.rect_3d.is_some_and(|r| r.contains(p)) {
+                self.last_in_2d = false;
+            }
+        }
         if xray_key {
-            self.set_xray(!self.shell.settings.xray);
+            match self.xray_view_target() {
+                Some(view) => self.toggle_view_xray(view),
+                None => self.set_xray(!self.shell.settings.xray),
+            }
         }
         // M: the Move tool
         let m_key = ctx.input(|i| {
@@ -1338,12 +1366,19 @@ impl CreaBimApp {
                         | PlanItem::Text { .. }
                         | PlanItem::Tag { .. }
                         | PlanItem::Annotation { .. }
+                        | PlanItem::Tint { .. }
                         | PlanItem::Image { .. } => {}
                     }
                 }
             }
         }
 
+        // what is inside walls, slabs and roofs, in its colours where they hide it
+        let behind = if self.shell.settings.hidden_colour_3d {
+            self.buried_vertices()
+        } else {
+            vec![]
+        };
         if let Some(vp) = &mut self.viewport {
             vp.set_geometry(
                 &rs.device,
@@ -1353,7 +1388,94 @@ impl CreaBimApp {
                 &lines,
                 &overlay,
             );
+            vp.set_behind(&rs.device, &behind);
         }
+    }
+
+    /// Triangles of the elements inside walls, slabs, roofs or masses (their
+    /// middle within one's bounds), see-through, for drawing where they are
+    /// hidden.
+    fn buried_vertices(&self) -> Vec<Vertex> {
+        let model = self.doc.model();
+        let hosts: Vec<(ElementId, GVec3, GVec3)> = self
+            .scene
+            .iter()
+            .filter(|i| !i.ghost)
+            .filter(|i| {
+                model
+                    .get(i.id)
+                    .is_some_and(|e| planview::is_xray_host(&e.kind))
+            })
+            .filter_map(|i| {
+                let (lo, hi) = i.mesh.bounds()?;
+                Some((i.id, lo, hi))
+            })
+            .collect();
+        let mut out = Vec::new();
+        for item in self.scene.iter().filter(|i| !i.ghost) {
+            let Some(e) = model.get(item.id) else {
+                continue;
+            };
+            if planview::is_xray_host(&e.kind) || matches!(e.kind, ElementKind::Opening(_)) {
+                continue;
+            }
+            let Some((lo, hi)) = item.mesh.bounds() else {
+                continue;
+            };
+            let mid = (lo + hi) / 2.0;
+            let inside = hosts.iter().any(|(id, hlo, hhi)| {
+                *id != item.id && mid.cmpge(*hlo - 0.01).all() && mid.cmple(*hhi + 0.01).all()
+            });
+            if !inside {
+                continue;
+            }
+            let surface = [item.surface[0], item.surface[1], BURIED_OPACITY];
+            for i in &item.mesh.indices {
+                let i = *i as usize;
+                out.push(Vertex {
+                    pos: item.mesh.positions[i],
+                    normal: item.mesh.normals[i],
+                    color: item.color,
+                    surface,
+                });
+            }
+        }
+        out
+    }
+
+    /// The drawing view Alt+Z turns X-ray on in, or none for the 3D view:
+    /// the 2D pane's when the pointer is (or was last) over it.
+    fn xray_view_target(&self) -> Option<ElementId> {
+        let id = self.active_view?;
+        let shown = self.rect_2d.is_some();
+        let drawing = matches!(
+            self.view(id).map(|v| &v.kind),
+            Some(ViewKind::Plan { .. } | ViewKind::Section { .. } | ViewKind::Axonometric { .. })
+        );
+        (shown && drawing && self.last_in_2d).then_some(id)
+    }
+
+    /// Turn X-ray on or off in drawing view `id`, while working: what
+    /// holds others faint, what is inside them drawn solid and picked first.
+    pub(super) fn toggle_view_xray(&mut self, id: ElementId) {
+        let on = !self.plan.xray.contains(&id);
+        if on {
+            self.plan.xray.insert(id);
+        } else {
+            self.plan.xray.remove(&id);
+        }
+        self.plan.hover = None;
+        let name = self
+            .doc
+            .model()
+            .get(id)
+            .map(|e| e.name.clone())
+            .unwrap_or_default();
+        self.status = if on {
+            format!("X-ray in {name}: walls, slabs and roofs see-through, what is inside them drawn and clicked first. Alt+Z turns it off. Sheets still print it as it was.")
+        } else {
+            format!("X-ray off in {name}.")
+        };
     }
 
     fn show_3d(&mut self, ui: &mut egui::Ui, rect: Rect, frame: &eframe::Frame) {
@@ -1438,6 +1560,7 @@ impl CreaBimApp {
         self.draw_sketches(&painter, &project);
         self.draw_grid_bubbles(&painter, &project);
         self.draw_crop_frames(&painter, &project);
+        self.hover_3d(ui, &response, &painter, &project, &ray, modal_here);
 
         // the Move and Rotate tools, or a keyboard move, rotate or scale,
         // running here
@@ -1811,9 +1934,13 @@ impl CreaBimApp {
                 if let Some((_, at)) = grid_hit.filter(|g| g.0 == id) {
                     return Some(at);
                 }
+                // the element itself, even behind or inside another (picked
+                // with Tab or in X-ray)
                 let (o, d) = ray(p);
-                let h = pick::pick(scene, o.as_vec3(), d.as_vec3())?;
-                (h.id == id).then(|| o + d * h.t as f64)
+                let h = pick::pick_all(scene, o.as_vec3(), d.as_vec3())
+                    .into_iter()
+                    .find(|h| h.id == id)?;
+                Some(o + d * h.t as f64)
             };
             let grab_snap = |p: egui::Pos2, id: ElementId| {
                 let only: Vec<SceneItem> = scene.iter().filter(|i| i.id == id).cloned().collect();
@@ -1876,40 +2003,39 @@ impl CreaBimApp {
         if response.clicked() {
             if let Some(p) = response.interact_pointer_pos() {
                 // sketch lines first: they have no surface to hit
-                let near_sketch = creabim_geom::scene::sketch_lines(self.doc.model())
-                    .into_iter()
-                    .filter_map(|(id, a, b)| {
-                        let (a, b) = (project(a)?, project(b)?);
-                        let d = egui::Rect::from_two_pos(a, b)
-                            .expand(6.0)
-                            .contains(p)
-                            .then(|| {
-                                let ab = b - a;
-                                let t =
-                                    ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
-                                (a + ab * t).distance(p)
-                            })?;
-                        (d < 6.0).then_some((id, d))
-                    })
-                    .min_by(|x, y| x.1.total_cmp(&y.1));
+                let near_sketch = self.sketch_near(p, &project);
                 let shift = ui.input(|i| i.modifiers.shift);
                 let pick = |sel: &mut Selection, id: Option<ElementId>| match (id, shift) {
                     (Some(id), true) => sel.toggle(id),
                     (None, true) => {}
                     (id, false) => sel.set(id),
                 };
+                let (o, d) = ray(p);
+                // what Tab moved the pre-selection to, if not the first
+                let chosen = self.plan.hover.as_mut().and_then(|h| {
+                    h.list = false;
+                    h.at(hoverpick::Pane::Window3d, p)
+                });
+                let first = self.under_3d(p, &project, &ray).first().copied();
+                if let Some(id) = chosen.filter(|c| Some(*c) != first) {
+                    pick(&mut self.selection, Some(id));
+                    let hit = pick::pick_all(&self.scene, o.as_vec3(), d.as_vec3())
+                        .into_iter()
+                        .find(|h| h.id == id);
+                    self.face = hit.filter(|_| !shift).and_then(|h| self.face_of_hit(&h));
+                    return;
+                }
                 // grid bubbles are drawn over everything, so they take
                 // clicks first
                 let bubble = self.grid_bubble_near(p, &project);
                 // and so are crop box frames
                 let frame = || self.crop_frame_near(p, &project);
-                if let Some(id) = near_sketch.map(|s| s.0).or(bubble).or_else(frame) {
+                if let Some(id) = near_sketch.or(bubble).or_else(frame) {
                     pick(&mut self.selection, Some(id));
                     self.face = None;
                     return;
                 }
-                let (o, d) = ray(p);
-                let hit = pick::pick(&self.scene, o.as_vec3(), d.as_vec3());
+                let hit = self.first_hit_3d(o, d);
                 // guides and grid lines cross everything, so they only take
                 // clicks that miss
                 if hit.is_none() {
@@ -1928,15 +2054,168 @@ impl CreaBimApp {
                     self.face = None;
                     return;
                 }
-                self.face = hit.and_then(|h| match self.doc.model().get(h.id).map(|e| &e.kind) {
-                    Some(ElementKind::FreeMesh(m)) => {
-                        let ev = m.evaluated();
-                        let f = pick::face_of_triangle(&ev.mesh, h.triangle)?;
-                        ev.source.get(f).copied().flatten()
-                    }
-                    _ => None,
-                });
+                self.face = hit.and_then(|h| self.face_of_hit(&h));
             }
+        }
+    }
+
+    /// The face of a mass a hit lands on.
+    fn face_of_hit(&self, h: &pick::Hit) -> Option<usize> {
+        match self.doc.model().get(h.id).map(|e| &e.kind) {
+            Some(ElementKind::FreeMesh(m)) => {
+                let ev = m.evaluated();
+                let f = pick::face_of_triangle(&ev.mesh, h.triangle)?;
+                ev.source.get(f).copied().flatten()
+            }
+            _ => None,
+        }
+    }
+
+    /// The element a click on the 3D view takes along a ray: the nearest,
+    /// or in X-ray the nearest of what is inside others.
+    fn first_hit_3d(&self, o: DVec3, d: DVec3) -> Option<pick::Hit> {
+        let mut hits = pick::pick_all(&self.scene, o.as_vec3(), d.as_vec3());
+        if self.shell.settings.xray {
+            hits.sort_by_key(|h| !self.is_framing_id(h.id));
+        }
+        hits.first().copied()
+    }
+
+    fn is_framing_id(&self, id: ElementId) -> bool {
+        self.doc
+            .model()
+            .get(id)
+            .is_some_and(|e| is_framing(&e.kind))
+    }
+
+    /// The sketch line within a few pixels of `p`, if any.
+    fn sketch_near(
+        &self,
+        p: egui::Pos2,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+    ) -> Option<ElementId> {
+        creabim_geom::scene::sketch_lines(self.doc.model())
+            .into_iter()
+            .filter_map(|(id, a, b)| {
+                let (a, b) = (project(a)?, project(b)?);
+                let d = egui::Rect::from_two_pos(a, b)
+                    .expand(6.0)
+                    .contains(p)
+                    .then(|| {
+                        let ab = b - a;
+                        let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+                        (a + ab * t).distance(p)
+                    })?;
+                (d < 6.0).then_some((id, d))
+            })
+            .min_by(|x, y| x.1.total_cmp(&y.1))
+            .map(|s| s.0)
+    }
+
+    /// Everything under point `p` of the 3D view, in the order a click
+    /// takes it: sketch lines and grid bubbles, then what the ray passes
+    /// (in X-ray, what is inside others first), else grid lines and guides.
+    fn under_3d(
+        &self,
+        p: egui::Pos2,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        ray: &dyn Fn(egui::Pos2) -> (DVec3, DVec3),
+    ) -> Vec<ElementId> {
+        let mut out: Vec<ElementId> = Vec::new();
+        out.extend(self.sketch_near(p, project));
+        out.extend(self.grid_bubble_near(p, project));
+        // crop box frames are drawn over everything too, and take clicks
+        // the same way
+        out.extend(
+            self.crop_frame_near(p, project)
+                .filter(|f| !out.contains(f)),
+        );
+        // the scene is cropped, so what a box crops away is not under it
+        let (o, d) = ray(p);
+        let mut hits = pick::pick_all(&self.scene, o.as_vec3(), d.as_vec3());
+        if self.shell.settings.xray {
+            hits.sort_by_key(|h| !self.is_framing_id(h.id));
+        }
+        if hits.is_empty() {
+            let near = self
+                .grid_line_near(p, project)
+                .map(|g| g.0)
+                .or_else(|| self.guide_near(p, project));
+            out.extend(near);
+        }
+        for h in hits {
+            if !out.contains(&h.id) {
+                out.push(h.id);
+            }
+        }
+        out
+    }
+
+    /// The 3D view's pre-selection: read what is under the pointer, trace
+    /// the element a click would take (or that another view is reading),
+    /// and show the badge when several are under it.
+    fn hover_3d(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        painter: &egui::Painter,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        ray: &dyn Fn(egui::Pos2) -> (DVec3, DVec3),
+        modal_here: bool,
+    ) {
+        let pane = hoverpick::Pane::Window3d;
+        if !response.dragged() {
+            let reading = self.plan.tool == Tool::Select
+                && !modal_here
+                && self.plan.modal.is_none()
+                && self.plane_pick.is_none()
+                && self.box_3d.is_none()
+                && !self.box_armed;
+            let pointer = response.hover_pos().filter(|_| reading);
+            let rev = self.doc.model().revision();
+            let mut slot = self.plan.hover.take();
+            let said = hoverpick::track(
+                ui.ctx(),
+                &mut slot,
+                pane,
+                pointer,
+                rev,
+                self.doc.model(),
+                |p| self.under_3d(p, project, ray),
+            );
+            self.plan.hover = slot;
+            if let Some(s) = said {
+                self.status = s;
+            }
+        }
+        let lit = hoverpick::highlighted(&self.plan.hover)
+            .filter(|id| !self.selection.contains(*id) && !response.dragged());
+        if let Some(id) = lit {
+            let stroke = egui::Stroke::new(2.0, hoverpick::HOVER.gamma_multiply(0.85));
+            let seg = |a: DVec3, b: DVec3| {
+                if let (Some(a), Some(b)) = (project(a), project(b)) {
+                    painter.line_segment([a, b], stroke);
+                }
+            };
+            for item in self.scene.iter().filter(|i| i.id == id) {
+                for (a, b) in snaps::feature_edges(&item.mesh) {
+                    seg(a, b);
+                }
+            }
+            for (sid, a, b) in creabim_geom::scene::sketch_lines(self.doc.model()) {
+                if sid == id {
+                    seg(a, b);
+                }
+            }
+        }
+        if let Some(id) = hoverpick::badge(ui.ctx(), &mut self.plan.hover, pane, self.doc.model()) {
+            if ui.input(|i| i.modifiers.shift) {
+                self.selection.toggle(id);
+            } else {
+                self.selection.set(Some(id));
+            }
+            self.face = None;
+            self.status = format!("{} selected.", hoverpick::describe(self.doc.model(), id));
         }
     }
 
@@ -2741,6 +3020,7 @@ impl CreaBimApp {
 
     fn show_plan(&mut self, ui: &mut egui::Ui, rect: Rect, background: Color32) {
         let Some(view) = self.active_view else { return };
+        self.rect_2d = Some(rect);
         let (before, revision) = (self.selection.clone(), self.doc.model().revision());
         let schedule = match self.view(view).map(|v| &v.kind) {
             Some(ViewKind::Schedule { category, by_type }) => Some((*category, *by_type)),
@@ -4494,6 +4774,7 @@ impl eframe::App for CreaBimApp {
 
         let web = self.web_panels(ui, frame);
         self.rect_3d = None;
+        self.rect_2d = None;
         self.plan.web_menus = web;
         crate::slabtool::set_options_in_top_bar(&ctx, web);
         self.shell.menu_3d = false;
@@ -4751,6 +5032,10 @@ fn is_framing(k: &ElementKind) -> bool {
 
 /// How opaque walls, slabs, roofs and masses are in X-ray.
 const XRAY_OPACITY: f32 = 0.18;
+
+/// How strongly what is inside walls and slabs shows through them, in its
+/// colours.
+const BURIED_OPACITY: f32 = 0.5;
 /// The colour of their edges then.
 const XRAY_EDGE: [f32; 3] = [0.30, 0.34, 0.42];
 

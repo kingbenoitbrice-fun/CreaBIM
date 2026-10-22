@@ -9,6 +9,7 @@ mod camera;
 mod commands;
 mod files;
 mod handles;
+mod hoverpick;
 mod icons;
 mod memberstool;
 mod modal;

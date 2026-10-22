@@ -118,12 +118,15 @@ pub struct Viewport3d {
     glass: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
     overlay_lines: wgpu::RenderPipeline,
+    /// See-through surfaces drawn only where something nearer hides them.
+    behind: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     triangles: Option<Mesh>,
     glass_mesh: Option<Mesh>,
     line_mesh: Option<Mesh>,
     overlay_mesh: Option<Mesh>,
+    behind_mesh: Option<Mesh>,
     targets: Option<Targets>,
     texture_id: Option<egui::TextureId>,
 }
@@ -234,12 +237,19 @@ impl Viewport3d {
                 wgpu::CompareFunction::Always,
                 false,
             ),
+            behind: pipeline(
+                wgpu::PrimitiveTopology::TriangleList,
+                "fs_shaded",
+                wgpu::CompareFunction::Greater,
+                true,
+            ),
             uniforms,
             bind_group,
             triangles: None,
             glass_mesh: None,
             line_mesh: None,
             overlay_mesh: None,
+            behind_mesh: None,
             targets: None,
             texture_id: None,
         }
@@ -285,6 +295,20 @@ impl Viewport3d {
         };
         self.line_mesh = line_mesh(lines);
         self.overlay_mesh = line_mesh(overlay);
+    }
+
+    /// Replace the triangles (three vertices each) drawn see-through where
+    /// what is in front hides them: elements inside walls and slabs.
+    pub fn set_behind(&mut self, device: &wgpu::Device, vertices: &[Vertex]) {
+        self.behind_mesh = (!vertices.is_empty()).then(|| Mesh {
+            vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            indices: None,
+            count: vertices.len() as u32,
+        });
     }
 
     fn ensure_targets(&mut self, rs: &egui_wgpu::RenderState, size: [u32; 2]) {
@@ -400,6 +424,7 @@ impl Viewport3d {
             for (pipeline, mesh) in [
                 (&self.shaded, &self.triangles),
                 (&self.glass, &self.glass_mesh),
+                (&self.behind, &self.behind_mesh),
                 (&self.lines, &self.line_mesh),
                 (&self.overlay_lines, &self.overlay_mesh),
             ] {

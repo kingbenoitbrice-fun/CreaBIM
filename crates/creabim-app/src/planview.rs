@@ -5,6 +5,7 @@
 use crate::boxsel;
 use crate::commands::Command;
 use crate::handles::{self, PaneInput};
+use crate::hoverpick::{self, Pane};
 use crate::modal::{self, Flow, Modal, Mode, Outcome, PaneMap, Space, Stage};
 use crate::outline::Next;
 use crate::selection::Selection;
@@ -17,10 +18,12 @@ use creabim_core::{
 };
 use creabim_geom::annotate::{self, dimension_geometry, tag_geometry};
 use creabim_geom::annotation::TextLook;
+use creabim_geom::SceneItem;
 use creabim_geom::{paper, plan::Pen, section::Drawing, triangulate::triangulate, PlanItem};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use glam::{DVec2, DVec3};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
@@ -340,6 +343,14 @@ pub struct PlanState {
     dim_lock: Option<creabim_core::DimAxis>,
     /// The Align tool's picks so far.
     pub align: crate::aligntool::AlignState,
+    /// What the pointer is over before a click, and what else is under it.
+    pub hover: Option<crate::hoverpick::HoverPick>,
+    /// The drawing views seen in X-ray while working: what holds others
+    /// see-through, what is inside them drawn and picked first.
+    pub xray: HashSet<ElementId>,
+    /// Each view's model as its view rays pick from, with the revision it
+    /// was built at.
+    pick_scenes: HashMap<ElementId, (u64, Arc<Vec<SceneItem>>)>,
     /// The type each tool draws new elements as.
     pub types: HashMap<creabim_core::TypeCategory, ElementId>,
 }
@@ -406,6 +417,9 @@ impl Default for PlanState {
             dim_axis: None,
             dim_lock: None,
             align: Default::default(),
+            hover: None,
+            xray: HashSet::new(),
+            pick_scenes: HashMap::new(),
             types: HashMap::new(),
         }
     }
@@ -592,18 +606,28 @@ pub fn show(
         PaneKind::Plan { level } => level_slabs(doc.model(), level, plan),
         _ => vec![],
     };
-    let hovered_slab = response
-        .hover_pos()
-        .filter(|_| tool == Tool::Select || tool == Tool::Tag)
-        .filter(|_| state.modal.is_none() && !response.dragged())
-        .and_then(|p| {
-            let w = xf.to_world(p);
-            let on = hit_test(&plan.items, w, 6.0 / xf.scale as f64, mm);
-            match on {
-                Some(id) => slabs.iter().any(|(s, _)| *s == id).then_some(id),
-                None => slab_at(&slabs, w),
-            }
+    // pre-selection: what a click here would take, and what else is
+    // under the pointer (Tab cycles them)
+    let pane = Pane::View(view);
+    if !response.dragged() {
+        let reading = matches!(tool, Tool::Select | Tool::Tag)
+            && state.modal.is_none()
+            && state.boxsel.is_none();
+        let pointer = response.hover_pos().filter(|_| reading);
+        let tol = 6.0 / xf.scale as f64;
+        let rev = doc.model().revision();
+        let mut hover = state.hover.take();
+        let said = hoverpick::track(ui.ctx(), &mut hover, pane, pointer, rev, doc.model(), |p| {
+            under_pointer(state, doc, view, kind, plan, xf.to_world(p), tol, mm)
         });
+        state.hover = hover;
+        if said.is_some() {
+            state.status = said;
+        }
+    }
+    let hovered = hoverpick::highlighted(&state.hover)
+        .filter(|id| !selection.contains(*id) && !response.dragged());
+    let hovered_slab = hovered.filter(|id| slabs.iter().any(|(s, _)| s == id));
     for (id, points) in &slabs {
         let fill = if selection.contains(*id) {
             SLAB_SELECTED
@@ -614,8 +638,28 @@ pub fn show(
         };
         fill_polygon(&painter, &xf, points, fill);
     }
+    let xray = state.xray.contains(&view);
     for item in &plan.items {
-        draw_item(&painter, &xf, item, selection.contains(item.id()), mm);
+        let selected = selection.contains(item.id());
+        if xray {
+            draw_item_xray(&painter, &xf, item, selected, mm, doc.model());
+        } else {
+            draw_item(&painter, &xf, item, selected, mm);
+        }
+    }
+    if let Some(id) = hovered {
+        draw_hover(&painter, &xf, &plan.items, id);
+    }
+    if let Some(id) = hoverpick::badge(ui.ctx(), &mut state.hover, pane, doc.model()) {
+        if ui.input(|i| i.modifiers.shift) {
+            selection.toggle(id);
+        } else {
+            selection.set(Some(id));
+        }
+        state.status = Some(format!(
+            "{} selected.",
+            hoverpick::describe(doc.model(), id)
+        ));
     }
     if let Some((_, points)) = slabs.iter().find(|(id, _)| Some(*id) == hovered_slab) {
         // its edge over the walls that sit on it
@@ -940,7 +984,13 @@ pub fn show(
             snap: &snap_fn,
             pick_face: Some(&pick_face),
         };
-        let pick = |p: Pos2| hit_test(&plan.items, xf.to_world(p), 6.0 / xf.scale as f64, mm);
+        let hover_now = state.hover.clone();
+        let pick = |p: Pos2| {
+            hover_now
+                .as_ref()
+                .and_then(|h| h.at(pane, p))
+                .or_else(|| hit_test(&plan.items, xf.to_world(p), 6.0 / xf.scale as f64, mm))
+        };
         let edits = keyboard_edits(
             ui, doc, view, space, &painter, &response, state, selection, &map, &pick,
         );
@@ -999,10 +1049,14 @@ pub fn show(
                 let p = pane_to_model(space, s.p.truncate(), z);
                 Some((p, snaps::Snap { p, ..s }))
             };
+            // what is under others (picked with Tab, or in X-ray) can be
+            // dragged by its body too
+            let hover_now = state.hover.clone();
             let grab_body = |pos: Pos2, id: ElementId| {
                 let w = xf.to_world(pos);
-                (hit_test(&plan.items, w, 6.0 / xf.scale as f64, mm) == Some(id))
-                    .then(|| pane_to_model(space, w, level_z))
+                let on = hit_all(&plan.items, w, 6.0 / xf.scale as f64, mm).contains(&id)
+                    || hover_now.as_ref().and_then(|h| h.at(pane, pos)) == Some(id);
+                on.then(|| pane_to_model(space, w, level_z))
             };
             let grab_snap = |pos: Pos2, id: ElementId| {
                 let only: Vec<PlanItem> = plan
@@ -1418,7 +1472,11 @@ pub fn show(
         // right-click on something not yet selected selects it first
         if let Some(p) = response.interact_pointer_pos() {
             let raw = xf.to_world(p);
-            let hit = hit_test(&plan.items, raw, 6.0 / scale as f64, mm)
+            let hit = state
+                .hover
+                .as_ref()
+                .and_then(|h| h.at(pane, p))
+                .or_else(|| hit_test(&plan.items, raw, 6.0 / scale as f64, mm))
                 .or_else(|| ray_pick(doc, view, kind, raw));
             if let Some(id) = hit.filter(|id| !selection.contains(*id)) {
                 selection.only(id);
@@ -1456,10 +1514,17 @@ pub fn show(
     let mut error = None;
     if response.clicked() {
         let p = hover_world?;
-        let raw = xf.to_world(response.interact_pointer_pos().unwrap_or_default());
-        // linework first (edges, symbols); then whatever the view ray hits
+        let at = response.interact_pointer_pos().unwrap_or_default();
+        let raw = xf.to_world(at);
+        // what is pre-selected there (Tab may have moved past the first);
+        // else linework first (edges, symbols), then what the view ray hits
+        let hover_pick = state.hover.as_mut().and_then(|h| {
+            h.list = false;
+            h.at(pane, at)
+        });
         let picked = || {
-            hit_test(&plan.items, raw, 6.0 / scale as f64, mm)
+            hover_pick
+                .or_else(|| hit_test(&plan.items, raw, 6.0 / scale as f64, mm))
                 .or_else(|| ray_pick(doc, view, kind, raw))
         };
         let result = match (kind, tool) {
@@ -1838,16 +1903,66 @@ fn plan_click(
 /// The element a section or 3D view shows at drawing point `p`, found by
 /// casting the viewing ray through the model.
 fn ray_pick(doc: &Document, view: ElementId, kind: PaneKind, p: DVec2) -> Option<ElementId> {
+    let scene = pick_scene(doc, view);
+    ray_pick_all(doc.model(), &scene, view, kind, p, None)
+        .first()
+        .copied()
+}
+
+/// The model view `view` picks from: what it leaves out is not in it.
+fn pick_scene(doc: &Document, view: ElementId) -> Vec<SceneItem> {
     // what the view leaves out can't be clicked in it, and isn't in the
     // model its drawing was made from
-    let hidden = match doc.model().get(view).map(|e| &e.kind) {
-        Some(ElementKind::View(v)) => v.hidden.hidden_set(doc.model()),
+    let (hidden, axo) = match doc.model().get(view).map(|e| &e.kind) {
+        Some(ElementKind::View(v)) => (
+            v.hidden.hidden_set(doc.model()),
+            matches!(v.kind, creabim_core::ViewKind::Axonometric { .. }),
+        ),
         _ => Default::default(),
     };
     let model = creabim_core::visibility::without(doc.model(), &hidden);
+    let mut scene = creabim_geom::build_scene(&model);
+    scene.retain(|s| !hidden.contains(&s.id));
+    // a 3D view's crop boxes cut its drawing, and what they cut away
+    // can't be clicked either
+    if axo {
+        let boxes = creabim_geom::cropbox::active(doc.model(), Some(view));
+        creabim_geom::cropbox::crop_scene(doc.model(), &mut scene, &boxes);
+    }
+    scene
+}
+
+/// [`pick_scene`], kept until the model changes.
+fn cached_pick_scene(
+    state: &mut PlanState,
+    doc: &Document,
+    view: ElementId,
+) -> Arc<Vec<SceneItem>> {
+    let rev = doc.model().revision();
+    match state.pick_scenes.get(&view) {
+        Some((r, s)) if *r == rev => s.clone(),
+        _ => {
+            let s = Arc::new(pick_scene(doc, view));
+            state.pick_scenes.insert(view, (rev, s.clone()));
+            s
+        }
+    }
+}
+
+/// Every element the viewing ray through drawing point `p` passes, nearest
+/// first. In a plan the ray looks down through the level, and only what
+/// the plan draws (`drawn`) counts.
+fn ray_pick_all(
+    model: &creabim_core::Model,
+    scene: &[SceneItem],
+    view: ElementId,
+    kind: PaneKind,
+    p: DVec2,
+    drawn: Option<&HashSet<ElementId>>,
+) -> Vec<ElementId> {
     let (o, d) = match kind {
-        // in a plan, a click inside a floor picks its slab
         PaneKind::Plan { level } => {
+            // a click inside a floor picks its slab
             let slabs: Vec<(ElementId, Vec<DVec2>)> = model
                 .iter()
                 .filter_map(|e| match &e.kind {
@@ -1855,9 +1970,24 @@ fn ray_pick(doc: &Document, view: ElementId, kind: PaneKind, p: DVec2) -> Option
                     _ => None,
                 })
                 .collect();
-            return slab_at(&slabs, p);
+            let slab = slab_at(&slabs, p);
+            let Some(drawn) = drawn else {
+                return slab.into_iter().collect();
+            };
+            let z = model.level(level).map_or(0.0, |l| l.elevation);
+            let o = DVec3::new(p.x, p.y, z + 100.0);
+            let mut out: Vec<ElementId> =
+                creabim_geom::pick::pick_all(scene, o.as_vec3(), -glam::Vec3::Z)
+                    .into_iter()
+                    .filter(|h| drawn.contains(&h.id) && o.z - h.t as f64 > z - 1.0)
+                    .map(|h| h.id)
+                    .collect();
+            if let Some(s) = slab.filter(|s| !out.contains(s)) {
+                out.push(s);
+            }
+            return out;
         }
-        PaneKind::Schedule => return None,
+        PaneKind::Schedule => return vec![],
         PaneKind::Section { start, end } => {
             let look = (end - start).normalize_or_zero().perp();
             let xy = PaneKind::section_point(start, end, p);
@@ -1869,14 +1999,66 @@ fn ray_pick(doc: &Document, view: ElementId, kind: PaneKind, p: DVec2) -> Option
                 ..
             })) = model.get(view).map(|e| &e.kind)
             else {
-                return None;
+                return vec![];
             };
-            creabim_geom::section::AxoFrame::new(&model, *azimuth, *altitude).ray(p)
+            creabim_geom::section::AxoFrame::new(model, *azimuth, *altitude).ray(p)
         }
     };
-    let mut scene = creabim_geom::build_scene(&model);
-    scene.retain(|s| !hidden.contains(&s.id));
-    creabim_geom::pick::pick(&scene, o.as_vec3(), d.as_vec3()).map(|h| h.id)
+    creabim_geom::pick::pick_all(scene, o.as_vec3(), d.as_vec3())
+        .into_iter()
+        .map(|h| h.id)
+        .collect()
+}
+
+/// What holds others and turns see-through in X-ray: walls, slabs,
+/// roofs and masses.
+pub fn is_xray_host(kind: &ElementKind) -> bool {
+    match kind {
+        ElementKind::Wall(_) | ElementKind::Slab(_) | ElementKind::Roof(_) => true,
+        ElementKind::FreeMesh(m) => !matches!(
+            m.ifc_class.as_str(),
+            "IfcBeam" | "IfcColumn" | "IfcMember" | "IfcStair" | "IfcRailing"
+        ),
+        _ => false,
+    }
+}
+
+/// With X-ray on, what is inside comes before what holds it: the beam in
+/// the wall is what a click takes first.
+pub fn xray_order(model: &creabim_core::Model, under: &mut [ElementId]) {
+    under.sort_by_key(|id| model.get(*id).is_some_and(|e| is_xray_host(&e.kind)));
+}
+
+/// Everything under drawing point `p` of a view, in the order a click
+/// takes it: its linework first, then what the view ray passes.
+#[allow(clippy::too_many_arguments)]
+fn under_pointer(
+    state: &mut PlanState,
+    doc: &Document,
+    view: ElementId,
+    kind: PaneKind,
+    plan: &Drawing,
+    p: DVec2,
+    tol: f64,
+    mm: f64,
+) -> Vec<ElementId> {
+    let mut under = hit_all(&plan.items, p, tol, mm);
+    let scene = cached_pick_scene(state, doc, view);
+    let drawn: HashSet<ElementId> = match kind {
+        PaneKind::Plan { .. } => plan.items.iter().map(|i| i.id()).collect(),
+        _ => HashSet::new(),
+    };
+    for id in ray_pick_all(doc.model(), &scene, view, kind, p, Some(&drawn)) {
+        if !under.contains(&id) {
+            under.push(id);
+        }
+    }
+    // underlays and guides drawn from elsewhere are not picked here
+    under.retain(|id| doc.model().get(*id).is_some());
+    if state.xray.contains(&view) {
+        xray_order(doc.model(), &mut under);
+    }
+    under
 }
 
 /// A click with a drawing tool in a section or elevation. `p` is the
@@ -3016,6 +3198,12 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
                 look,
             );
         }
+        PlanItem::Tint { points, rgb, .. } => {
+            let c = if selected { [0.98, 0.70, 0.45] } else { *rgb };
+            let a = (paper::TINT_ALPHA * 255.0) as u8;
+            let fill = crate::annotate::color32(c).gamma_multiply_u8(a);
+            fill_polygon(painter, xf, points, fill);
+        }
         PlanItem::Image {
             raster,
             lo,
@@ -3026,6 +3214,118 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
             let rect = Rect::from_two_pos(xf.to_screen(*lo), xf.to_screen(*hi));
             let clip = clip.map(|(a, b)| Rect::from_two_pos(xf.to_screen(a), xf.to_screen(b)));
             crate::textures::paint(painter, rect, clip, raster);
+        }
+    }
+}
+
+/// An item drawn in X-ray: what holds others (walls, slabs, roofs,
+/// masses) faint and see-through, and what is hidden inside them drawn
+/// solid instead of dashed, as if nothing were in front.
+fn draw_item_xray(
+    painter: &egui::Painter,
+    xf: &Xf,
+    item: &PlanItem,
+    selected: bool,
+    mm: f64,
+    model: &creabim_core::Model,
+) {
+    let host = || model.get(item.id()).is_some_and(|e| is_xray_host(&e.kind));
+    match item {
+        PlanItem::Fill { points, .. } if !selected && host() => {
+            fill_polygon(
+                painter,
+                xf,
+                points,
+                Color32::from_gray(150).gamma_multiply(0.18),
+            );
+        }
+        PlanItem::Polygon {
+            pen: Pen::Cut,
+            points,
+            ..
+        } if !selected && host() => {
+            let pts: Vec<Pos2> = points.iter().map(|p| xf.to_screen(*p)).collect();
+            painter.add(egui::Shape::convex_polygon(
+                pts,
+                Color32::from_gray(150).gamma_multiply(0.18),
+                Stroke::new(1.2, Color32::from_gray(90)),
+            ));
+        }
+        PlanItem::Line {
+            pen: Pen::Cut,
+            a,
+            b,
+            ..
+        } if !selected && host() => {
+            painter.line_segment(
+                [xf.to_screen(*a), xf.to_screen(*b)],
+                Stroke::new(1.2, Color32::from_gray(90)),
+            );
+        }
+        PlanItem::Line {
+            pen: Pen::Hidden,
+            a,
+            b,
+            ..
+        } => {
+            let c = if selected {
+                Color32::from_rgb(230, 120, 30)
+            } else {
+                Color32::from_gray(25)
+            };
+            painter.line_segment([xf.to_screen(*a), xf.to_screen(*b)], Stroke::new(1.5, c));
+        }
+        _ => draw_item(painter, xf, item, selected, mm),
+    }
+}
+
+/// The pre-selection highlight of element `id`: its linework traced and
+/// its fills washed in the hover colour, over the drawing.
+pub fn draw_hover(painter: &egui::Painter, xf: &Xf, items: &[PlanItem], id: ElementId) {
+    let line = Stroke::new(2.5, hoverpick::HOVER.gamma_multiply(0.75));
+    let wash = hoverpick::HOVER.gamma_multiply(0.16);
+    for it in items.iter().filter(|it| it.id() == id) {
+        match it {
+            PlanItem::Fill { points, .. } | PlanItem::Tint { points, .. } => {
+                fill_polygon(painter, xf, points, wash);
+            }
+            PlanItem::Polygon { points, .. } => {
+                let pts: Vec<Pos2> = points.iter().map(|p| xf.to_screen(*p)).collect();
+                painter.add(egui::Shape::closed_line(pts, line));
+            }
+            PlanItem::Line { pen, a, b, .. } => {
+                let (a, b) = (xf.to_screen(*a), xf.to_screen(*b));
+                // guides and grid lines run far: just the part in view
+                if let Some((a, b)) = match pen {
+                    Pen::Guide | Pen::Grid => clip_to_rect(a, b, painter.clip_rect()),
+                    _ => Some((a, b)),
+                } {
+                    painter.line_segment([a, b], line);
+                }
+            }
+            PlanItem::Arc {
+                center,
+                radius,
+                start,
+                end,
+                ..
+            } => {
+                let pts: Vec<Pos2> = (0..=24)
+                    .map(|i| {
+                        let t = start + (end - start) * i as f64 / 24.0;
+                        xf.to_screen(*center + DVec2::from_angle(t) * *radius)
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(pts, line));
+            }
+            PlanItem::Image { .. } => {}
+            // labels, text and annotation: a soft box round them
+            other => {
+                if let Some((lo, hi)) = other.bounds() {
+                    let r = Rect::from_two_pos(xf.to_screen(lo), xf.to_screen(hi)).expand(3.0);
+                    painter.rect(r, 3.0, wash, line, egui::StrokeKind::Outside);
+                }
+            }
         }
     }
 }
@@ -3622,22 +3922,34 @@ pub fn box_selectable(doc: &Document, id: ElementId) -> bool {
 }
 
 pub fn hit_test(items: &[PlanItem], p: DVec2, tol: f64, mm: f64) -> Option<ElementId> {
+    hit_all(items, p, tol, mm).first().copied()
+}
+
+/// Every element whose linework is at `p`, in the order a click takes
+/// them: annotations, then symbols (doors and windows over the walls they
+/// sit in), then fills (a tinted element over the wall it is inside),
+/// then lines; each once.
+pub fn hit_all(items: &[PlanItem], p: DVec2, tol: f64, mm: f64) -> Vec<ElementId> {
+    let mut out: Vec<ElementId> = Vec::new();
+    let mut found = |id: ElementId| {
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    };
     // symbols (doors, windows) win over the walls they sit in
     let near_line = |a: DVec2, b: DVec2| segment_distance(p, a, b) < tol;
     // annotations sit on top of everything
     for it in items.iter().rev() {
         match it {
-            PlanItem::Tag { id, at, .. } if p.distance(*at) < (3.0 * mm).max(tol) => {
-                return Some(*id)
-            }
-            PlanItem::Annotation { id, item } if item.hit(p, tol, mm) => return Some(*id),
+            PlanItem::Tag { id, at, .. } if p.distance(*at) < (3.0 * mm).max(tol) => found(*id),
+            PlanItem::Annotation { id, item } if item.hit(p, tol, mm) => found(*id),
             PlanItem::Dimension {
                 id, a, b, offset, ..
             } => {
                 let n = (*b - *a).normalize_or_zero().perp() * *offset;
                 let text = (*a + *b) / 2.0 + n;
                 if near_line(*a + n, *b + n) || p.distance(text) < (3.0 * mm).max(tol) {
-                    return Some(*id);
+                    found(*id);
                 }
             }
             PlanItem::Text {
@@ -3655,7 +3967,7 @@ pub fn hit_test(items: &[PlanItem], p: DVec2, tol: f64, mm: f64) -> Option<Eleme
                     paper::Anchor::End => at.x - w,
                 };
                 if (p.y - at.y).abs() < size * mm && p.x >= x0 - tol && p.x <= x0 + w + tol {
-                    return Some(*id);
+                    found(*id);
                 }
             }
             _ => {}
@@ -3668,51 +3980,53 @@ pub fn hit_test(items: &[PlanItem], p: DVec2, tol: f64, mm: f64) -> Option<Eleme
                 pen: Pen::Symbol,
                 a,
                 b,
-            } if near_line(*a, *b) => return Some(*id),
+            } if near_line(*a, *b) => found(*id),
             PlanItem::Arc {
                 id,
                 center,
                 radius,
                 pen,
                 ..
-            } if *pen != Pen::Underlay && (p.distance(*center) - radius).abs() < tol => {
-                return Some(*id)
-            }
+            } if *pen != Pen::Underlay && (p.distance(*center) - radius).abs() < tol => found(*id),
             // view marks and grid ends: their arrow or their bubble
             PlanItem::Polygon {
                 id,
                 pen: Pen::Symbol,
                 points,
-            } if point_in_polygon(p, points) => return Some(*id),
+            } if point_in_polygon(p, points) => found(*id),
             PlanItem::Label { id, at, text }
                 if text.chars().count() <= 3 && p.distance(*at) < tol * 1.2 =>
             {
-                return Some(*id)
+                found(*id)
             }
             _ => {}
         }
     }
     for it in items.iter().rev() {
         match it {
-            PlanItem::Fill { id, points, .. } if point_in_polygon(p, points) => return Some(*id),
+            PlanItem::Fill { id, points, .. } | PlanItem::Tint { id, points, .. }
+                if point_in_polygon(p, points) =>
+            {
+                found(*id)
+            }
             _ => {}
         }
     }
     for it in items.iter().rev() {
         match it {
             PlanItem::Line { id, a, b, pen } if *pen != Pen::Underlay && near_line(*a, *b) => {
-                return Some(*id)
+                found(*id)
             }
             PlanItem::Polygon { id, points, .. } => {
                 let n = points.len();
                 if (0..n).any(|i| near_line(points[i], points[(i + 1) % n])) {
-                    return Some(*id);
+                    found(*id);
                 }
             }
             _ => {}
         }
     }
-    None
+    out
 }
 
 fn segment_distance(p: DVec2, a: DVec2, b: DVec2) -> f64 {
@@ -4033,5 +4347,109 @@ mod tests {
         let off = cfg.live(true);
         let (hp, ..) = dim_snap(&doc, &v, pane_kind(&v), Some(&snapper), &off, &xf, cursor);
         assert_eq!(hp.host, None);
+    }
+
+    #[test]
+    fn the_beam_inside_a_wall_is_under_the_pointer_in_a_section_and_first_in_x_ray() {
+        let (model, beam) = creabim_core::sample::sample_with_buried_beam();
+        let doc = Document::from_model(model);
+        let sec = doc
+            .model()
+            .iter()
+            .find(|e| e.name == "Section A")
+            .unwrap()
+            .id;
+        let wall = doc
+            .model()
+            .iter()
+            .find(|e| e.name == "GF Wall 1")
+            .unwrap()
+            .id;
+        let Some(ElementKind::View(v)) = doc.model().get(sec).map(|e| &e.kind) else {
+            panic!("Section A is a view")
+        };
+        let kind = pane_kind(v);
+        let drawing = creabim_geom::section::view_drawing(doc.model(), sec).unwrap();
+        let mut state = PlanState::default();
+        // Section A runs north from y = -5: the wall is 5 m along it; the
+        // beam sits 2.3 to 2.6 m up inside it
+        let p = DVec2::new(5.0, 2.45);
+        let under = under_pointer(&mut state, &doc, sec, kind, &drawing, p, 0.02, 0.1);
+        assert_eq!(under.first(), Some(&wall), "a plain click takes the wall");
+        assert!(
+            under.contains(&beam),
+            "the beam is found under it: {under:?}"
+        );
+        // what a click takes without Tab is what it always took
+        assert_eq!(
+            hit_test(&drawing.items, p, 0.02, 0.1).or_else(|| ray_pick(&doc, sec, kind, p)),
+            Some(wall)
+        );
+        state.xray.insert(sec);
+        let xray = creabim_geom::section::view_drawing_with(doc.model(), sec, true).unwrap();
+        let under = under_pointer(&mut state, &doc, sec, kind, &xray, p, 0.02, 0.1);
+        assert_eq!(under.first(), Some(&beam), "in X-ray the beam comes first");
+        assert!(under.contains(&wall));
+    }
+
+    #[test]
+    fn what_a_3d_views_crop_box_cuts_away_cannot_be_picked_in_it() {
+        let mut doc = Document::from_model(creabim_core::sample::sample_house());
+        let wall = doc
+            .model()
+            .iter()
+            .find(|e| e.name == "GF Wall 1")
+            .unwrap()
+            .id;
+        let axo = Element::new(
+            "Axo",
+            ElementKind::View(creabim_core::View::axonometric(45.0, 30.0)),
+        );
+        let view = axo.id;
+        doc.commit(Transaction::new("view").insert(axo)).unwrap();
+        assert!(pick_scene(&doc, view).iter().any(|s| s.id == wall));
+        // a box over the north half of the house: the south wall (y = 0)
+        // is cut away
+        let b = creabim_core::CropBox::new(
+            Some(view),
+            DVec3::new(-1.0, 3.0, -1.0),
+            DVec3::new(11.0, 7.0, 7.0),
+        );
+        doc.commit(Transaction::new("crop").insert(Element::new("Box", ElementKind::CropBox(b))))
+            .unwrap();
+        let scene = pick_scene(&doc, view);
+        assert!(
+            !scene.iter().any(|s| s.id == wall),
+            "cut away, not pickable"
+        );
+        assert!(!scene.is_empty(), "what is inside the box still is");
+    }
+
+    #[test]
+    fn in_an_elevation_the_slab_behind_a_wall_is_under_the_pointer_too() {
+        let doc = Document::from_model(creabim_core::sample::sample_house());
+        let named = |n: &str| doc.model().iter().find(|e| e.name == n).unwrap().id;
+        let (elev, wall, slab) = (
+            named("South Elevation S"),
+            named("GF Wall 1"),
+            named("FF Slab"),
+        );
+        let Some(ElementKind::View(v)) = doc.model().get(elev).map(|e| &e.kind) else {
+            panic!("the elevation is a view")
+        };
+        let kind = pane_kind(v);
+        let drawing = creabim_geom::section::view_drawing(doc.model(), elev).unwrap();
+        let mut state = PlanState::default();
+        // the elevation runs east from x = -2: 7 m along is the middle of
+        // the south wall; the first floor slab is 2.75 to 3 m up behind it
+        let p = DVec2::new(7.0, 2.9);
+        let under = under_pointer(&mut state, &doc, elev, kind, &drawing, p, 0.02, 0.1);
+        assert_eq!(under.first(), Some(&wall), "a plain click takes the wall");
+        assert!(under.contains(&slab), "Tab reaches the slab: {under:?}");
+        // and in X-ray the slab, though it holds others too, is still there
+        state.xray.insert(elev);
+        let xray = creabim_geom::section::view_drawing_with(doc.model(), elev, true).unwrap();
+        let under = under_pointer(&mut state, &doc, elev, kind, &xray, p, 0.02, 0.1);
+        assert!(under.contains(&slab) && under.contains(&wall));
     }
 }

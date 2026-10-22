@@ -2,6 +2,7 @@
 //! Drag a view to move it on the sheet; double-click it to work on the model
 //! through it, with the same tools as the view itself.
 
+use crate::hoverpick::{self, Pane};
 use crate::planview::{self, PaneStyle, PlanState};
 use crate::selection::Selection;
 use creabim_core::{Document, ElementId, ElementKind};
@@ -272,6 +273,50 @@ pub fn show(
     }
     sheet::draw_sheet_notes(&mut canvas, doc.model(), sheet_id);
 
+    // pre-selection: the view under the pointer, and the others under it
+    // where views overlap
+    let pane = Pane::Sheet(sheet_id);
+    if state.active.is_none() && !response.dragged() {
+        let pointer = response
+            .hover_pos()
+            .filter(|_| plan.tool == planview::Tool::Select && plan.modal.is_none());
+        let said = hoverpick::track(
+            ui.ctx(),
+            &mut plan.hover,
+            pane,
+            pointer,
+            doc.model().revision(),
+            doc.model(),
+            |p| {
+                let p = xf.to_paper(p);
+                views
+                    .iter()
+                    .rev()
+                    .filter(|v| contains(v, p))
+                    .map(|v| v.viewport)
+                    .collect()
+            },
+        );
+        if said.is_some() {
+            plan.status = said;
+        }
+    }
+    let lit = hoverpick::highlighted(&plan.hover).filter(|id| !selection.contains(*id));
+    if let Some(v) = views.iter().find(|v| Some(v.viewport) == lit) {
+        let (lo, hi) = v.bounds;
+        painter.rect_stroke(
+            xf.rect_of(lo, hi).expand(4.0),
+            2.0,
+            egui::Stroke::new(1.5, hoverpick::HOVER.gamma_multiply(0.7)),
+            egui::StrokeKind::Outside,
+        );
+    }
+    if state.active.is_none() {
+        if let Some(id) = hoverpick::badge(ui.ctx(), &mut plan.hover, pane, doc.model()) {
+            selection.set(Some(id));
+        }
+    }
+
     // crop handles on the selected viewport: drag an edge to crop the view
     let mut error = None;
     let pointer = response.interact_pointer_pos().or(response.hover_pos());
@@ -382,7 +427,8 @@ pub fn show(
             selection.clear();
         }
     } else if response.clicked() {
-        selection.set(hit.map(|v| v.viewport));
+        let chosen = pointer.and_then(|p| plan.hover.as_ref()?.at(pane, p));
+        selection.set(chosen.or(hit.map(|v| v.viewport)));
         state.active = None;
     }
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !plan.busy() {

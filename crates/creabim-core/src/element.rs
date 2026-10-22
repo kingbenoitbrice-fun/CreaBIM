@@ -1242,6 +1242,11 @@ pub struct View {
     /// wall in a cavity) with dashed hidden lines.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub show_hidden: bool,
+    /// Draw those hidden elements in their own material colours, washed
+    /// over what hides them, as well as dashed: for detailing what is
+    /// inside a wall or a slab.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden_in_colour: bool,
 }
 
 /// What a plan shows faintly under its own level (Revit's underlay).
@@ -1363,6 +1368,7 @@ impl View {
             underlay: Underlay::None,
             browser_order: None,
             show_hidden: false,
+            hidden_in_colour: false,
         }
     }
 
@@ -1380,6 +1386,7 @@ impl View {
             underlay: Underlay::None,
             browser_order: None,
             show_hidden: false,
+            hidden_in_colour: false,
         }
     }
 }
@@ -1394,6 +1401,7 @@ impl View {
             underlay: Underlay::None,
             browser_order: None,
             show_hidden: false,
+            hidden_in_colour: false,
         }
     }
 
@@ -1409,6 +1417,7 @@ impl View {
             underlay: Underlay::None,
             browser_order: None,
             show_hidden: false,
+            hidden_in_colour: false,
         }
     }
 

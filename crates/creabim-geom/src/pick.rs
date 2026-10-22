@@ -38,6 +38,37 @@ pub fn pick(scene: &[SceneItem], origin: Vec3, dir: Vec3) -> Option<Hit> {
     best
 }
 
+/// Every element a ray passes through, nearest first, each once with its
+/// nearest hit: what is behind or inside the closest one, to cycle to.
+pub fn pick_all(scene: &[SceneItem], origin: Vec3, dir: Vec3) -> Vec<Hit> {
+    let mut best: Vec<Hit> = Vec::new();
+    for item in scene {
+        let p = &item.mesh.positions;
+        for (tri, idx) in item.mesh.indices.chunks(3).enumerate() {
+            let (a, b, c) = (
+                Vec3::from(p[idx[0] as usize]),
+                Vec3::from(p[idx[1] as usize]),
+                Vec3::from(p[idx[2] as usize]),
+            );
+            let Some(t) = ray_triangle(origin, dir, a, b, c) else {
+                continue;
+            };
+            let hit = Hit {
+                id: item.id,
+                t,
+                triangle: tri,
+            };
+            match best.iter_mut().find(|h| h.id == item.id) {
+                Some(h) if t < h.t => *h = hit,
+                Some(_) => {}
+                None => best.push(hit),
+            }
+        }
+    }
+    best.sort_by(|a, b| a.t.total_cmp(&b.t));
+    best
+}
+
 fn ray_triangle(o: Vec3, d: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     let (e1, e2) = (b - a, c - a);
     let p = d.cross(e2);
@@ -147,6 +178,27 @@ mod tests {
         let hit = pick(&scene, Vec3::new(8.0, 20.0, 1.0), -Vec3::Y).unwrap();
         let name = &model.get(hit.id).unwrap().name;
         assert_eq!(name, "GF Window 3.1", "hit {name}");
+    }
+
+    #[test]
+    fn a_ray_lists_everything_it_passes_nearest_first() {
+        let model = sample_house();
+        let scene = crate::build_scene(&model);
+        let o = Vec3::new(5.0, 3.0, 50.0);
+        let all = pick_all(&scene, o, -Vec3::Z);
+        assert_eq!(
+            all.first().map(|h| h.id),
+            pick(&scene, o, -Vec3::Z).map(|h| h.id)
+        );
+        let names: Vec<&str> = all
+            .iter()
+            .map(|h| model.get(h.id).unwrap().name.as_str())
+            .collect();
+        assert!(names.contains(&"FF Slab") && names.len() >= 2, "{names:?}");
+        assert!(all.windows(2).all(|w| w[0].t <= w[1].t));
+        let mut ids: Vec<_> = all.iter().map(|h| h.id).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), all.len(), "each element once");
     }
 
     #[test]
