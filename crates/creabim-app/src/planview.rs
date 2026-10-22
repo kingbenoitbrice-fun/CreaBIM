@@ -1885,13 +1885,22 @@ fn ray_pick(doc: &Document, view: ElementId, kind: PaneKind, p: DVec2) -> Option
 fn pick_scene(doc: &Document, view: ElementId) -> Vec<SceneItem> {
     // what the view leaves out can't be clicked in it, and isn't in the
     // model its drawing was made from
-    let hidden = match doc.model().get(view).map(|e| &e.kind) {
-        Some(ElementKind::View(v)) => v.hidden.hidden_set(doc.model()),
+    let (hidden, axo) = match doc.model().get(view).map(|e| &e.kind) {
+        Some(ElementKind::View(v)) => (
+            v.hidden.hidden_set(doc.model()),
+            matches!(v.kind, creabim_core::ViewKind::Axonometric { .. }),
+        ),
         _ => Default::default(),
     };
     let model = creabim_core::visibility::without(doc.model(), &hidden);
     let mut scene = creabim_geom::build_scene(&model);
     scene.retain(|s| !hidden.contains(&s.id));
+    // a 3D view's crop boxes cut its drawing, and what they cut away
+    // can't be clicked either
+    if axo {
+        let boxes = creabim_geom::cropbox::active(doc.model(), Some(view));
+        creabim_geom::cropbox::crop_scene(doc.model(), &mut scene, &boxes);
+    }
     scene
 }
 
@@ -4353,6 +4362,39 @@ mod tests {
         let under = under_pointer(&mut state, &doc, sec, kind, &xray, p, 0.02, 0.1);
         assert_eq!(under.first(), Some(&beam), "in X-ray the beam comes first");
         assert!(under.contains(&wall));
+    }
+
+    #[test]
+    fn what_a_3d_views_crop_box_cuts_away_cannot_be_picked_in_it() {
+        let mut doc = Document::from_model(creabim_core::sample::sample_house());
+        let wall = doc
+            .model()
+            .iter()
+            .find(|e| e.name == "GF Wall 1")
+            .unwrap()
+            .id;
+        let axo = Element::new(
+            "Axo",
+            ElementKind::View(creabim_core::View::axonometric(45.0, 30.0)),
+        );
+        let view = axo.id;
+        doc.commit(Transaction::new("view").insert(axo)).unwrap();
+        assert!(pick_scene(&doc, view).iter().any(|s| s.id == wall));
+        // a box over the north half of the house: the south wall (y = 0)
+        // is cut away
+        let b = creabim_core::CropBox::new(
+            Some(view),
+            DVec3::new(-1.0, 3.0, -1.0),
+            DVec3::new(11.0, 7.0, 7.0),
+        );
+        doc.commit(Transaction::new("crop").insert(Element::new("Box", ElementKind::CropBox(b))))
+            .unwrap();
+        let scene = pick_scene(&doc, view);
+        assert!(
+            !scene.iter().any(|s| s.id == wall),
+            "cut away, not pickable"
+        );
+        assert!(!scene.is_empty(), "what is inside the box still is");
     }
 
     #[test]

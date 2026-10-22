@@ -270,20 +270,23 @@ impl AxoFrame {
 
 /// A parallel 3D view of the whole model, hidden lines removed, optionally shaded.
 pub fn axonometric_view(model: &Model, azimuth: f64, altitude: f64, shaded: bool) -> Drawing {
-    axonometric_view_with(model, azimuth, altitude, shaded, false)
+    axonometric_view_with(model, azimuth, altitude, shaded, false, &[])
 }
 
 /// [`axonometric_view`], with `reveal` drawing what is hidden inside other
-/// elements dashed.
+/// elements dashed, cropped by `crop` (the view's crop boxes). The view
+/// stays centred on the whole model, so cropping never shifts it on a sheet.
 pub fn axonometric_view_with(
     model: &Model,
     azimuth: f64,
     altitude: f64,
     shaded: bool,
     reveal: bool,
+    crop: &[creabim_core::CropBox],
 ) -> Drawing {
     let frame = AxoFrame::new(model, azimuth, altitude);
-    let scene = crate::scene::drawn_scene(model);
+    let mut scene = crate::scene::drawn_scene(model);
+    crate::cropbox::crop_scene(model, &mut scene, crop);
     let project = |p: DVec3| frame.project(p);
     let revealed = reveal.then(|| revealable(model));
     let (lines, image) = hidden_lines(
@@ -427,7 +430,8 @@ pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<D
             cut,
         } => section_view_with(model, *start, *end, *depth, *cut, shaded, v.scale, reveal),
         creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
-            axonometric_view_with(model, *azimuth, *altitude, shaded, reveal)
+            let crop = crate::cropbox::active(model, Some(view));
+            axonometric_view_with(model, *azimuth, *altitude, shaded, reveal, &crop)
         }
         creabim_core::ViewKind::Schedule { category, by_type } => {
             let table = crate::schedule::schedule_by(model, *category, *by_type);
@@ -435,7 +439,7 @@ pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<D
         }
     };
     if reveal && v.hidden_in_colour {
-        tint_hidden(model, &v.kind, &mut d.items);
+        tint_hidden(model, view, &v.kind, &mut d.items);
     }
     // tag the image with its view, so viewers can keep one texture per view
     for it in &mut d.items {
@@ -457,7 +461,12 @@ pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<D
 /// dashed lines in `items`) in their material colours, over what hides
 /// them and under their dashed lines: each piece as the outline of what
 /// of it the view sees.
-fn tint_hidden(model: &Model, kind: &creabim_core::ViewKind, items: &mut Vec<PlanItem>) {
+fn tint_hidden(
+    model: &Model,
+    view: ElementId,
+    kind: &creabim_core::ViewKind,
+    items: &mut Vec<PlanItem>,
+) {
     let revealable = revealable(model);
     let hidden: HashSet<ElementId> = items
         .iter()
@@ -498,6 +507,9 @@ fn tint_hidden(model: &Model, kind: &creabim_core::ViewKind, items: &mut Vec<Pla
             outlines(&scene, &project, frame.depth, Some((0.0, frame.length)))
         }
         creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
+            // tinted as cropped, like the rest of the drawing
+            let crop = crate::cropbox::active(model, Some(view));
+            crate::cropbox::crop_scene(model, &mut scene, &crop);
             let frame = AxoFrame::new(model, *azimuth, *altitude);
             let project = |p: DVec3| frame.project(p);
             outlines(&scene, &project, frame.radius * 2.0, None)

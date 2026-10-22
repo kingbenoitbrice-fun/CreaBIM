@@ -268,6 +268,7 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             | ElementKind::Sketch(_)
             | ElementKind::Cut(_)
             | ElementKind::Guide(_)
+            | ElementKind::CropBox(_)
             | ElementKind::GridGroup(_) => continue,
             ElementKind::Column(_)
             | ElementKind::Beam(_)

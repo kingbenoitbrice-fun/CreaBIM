@@ -307,6 +307,14 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
         | ElementKind::Roof(_)
         | ElementKind::Stair(_)
         | ElementKind::Railing(_) => crate::members::transform(model, &mut out.kind, t)?,
+        // a crop box stays square to the axes: it only moves
+        ElementKind::CropBox(c) => match t {
+            Xform::Move(d) => {
+                c.min += *d;
+                c.max += *d;
+            }
+            _ => return None,
+        },
         ElementKind::Sheet(_)
         | ElementKind::Viewport(_)
         | ElementKind::Material(_)
@@ -358,6 +366,7 @@ pub fn pivot(model: &Model, id: ElementId) -> Option<DVec3> {
             _ => return None,
         },
         ElementKind::Guide(g) => (g.a + g.b) / 2.0 + DVec3::Z * elevation(g.level),
+        ElementKind::CropBox(c) => c.center(),
         ElementKind::Shaft(s) => mean(&s.boundary).extend(s.span(model).0),
         _ => return crate::members::pivot(model, e),
     })

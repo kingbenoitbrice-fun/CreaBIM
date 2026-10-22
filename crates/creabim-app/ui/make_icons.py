@@ -37,6 +37,8 @@ CUSTOM={
  "stair": '<path d="M3 21h4v-4h4v-4h4V9h4V5h2v16z" /> <path d="M3 14 12 5" />',
  # X-ray and hidden elements: a solid with what is inside it, dashed
  "xray": '<rect x="3" y="4" width="18" height="16" rx="2" /> <rect x="8" y="9" width="8" height="6" stroke-dasharray="2 2" />',
+ # crop boxes (section boxes) of 3D views: a dashed box with grips
+ "crop-box": '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z" stroke-dasharray="2.5 2" /> <path d="M4 7.5 12 12l8-4.5M12 12v9" /> <rect x="10.5" y="1.5" width="3" height="3" /> <rect x="10.5" y="19.5" width="3" height="3" />',
  # element types, curtain walls, wall openings and shafts
  "curtain-wall": '<rect x="3" y="3" width="18" height="18" /> <path d="M9 3v18M15 3v18M3 12h18" />',
  "wall-opening": '<rect x="3" y="3" width="18" height="18" rx="2" /> <rect x="8" y="8" width="8" height="8" stroke-dasharray="2 2" />',
