@@ -532,6 +532,7 @@ pub fn fresh_copies(model: &Model, elements: &[Element]) -> (Vec<Element>, usize
                 ElementKind::FreeMesh(m) => m.level.iter_mut().for_each(fix),
                 ElementKind::Sketch(s) => s.level.iter_mut().for_each(fix),
                 ElementKind::Guide(g) => g.level.iter_mut().for_each(fix),
+                ElementKind::Object(o) => fix(&mut o.level),
                 k => {
                     if let Some(l) = crate::members::level_mut(k) {
                         fix(l);

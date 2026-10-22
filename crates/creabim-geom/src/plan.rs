@@ -916,6 +916,9 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                     }
                 }
             }
+            ElementKind::Object(o) if o.level == level => {
+                items.extend(crate::objects::object_plan(model, e, cut_height));
+            }
             k if on_level && creabim_core::members::is_member(k) => {
                 items.extend(crate::members::member_plan(model, e, cut_height));
             }

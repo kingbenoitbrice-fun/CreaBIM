@@ -168,6 +168,21 @@ pub(crate) fn type_props(t: &ElementType) -> Vec<(&'static str, Prop)> {
             out.push(("Width", Prop::Length(b.width)));
             out.push(("Depth", Prop::Length(b.depth)));
         }
+        TypeParams::Object(o) => {
+            let s = o.size();
+            out.push(("Width", Prop::Length(s.x)));
+            out.push(("Depth", Prop::Length(s.y)));
+            out.push(("Height", Prop::Length(s.z)));
+            out.push(("Category", Prop::Label(o.category.label().into())));
+            let mount = match o.mount {
+                creabim_core::objects::Mount::Wall => "Wall",
+                creabim_core::objects::Mount::Floor => "Floor",
+            };
+            out.push(("Mount", Prop::Label(mount.into())));
+            if let Some(k) = &o.catalogue {
+                out.push(("CatalogueKey", Prop::Label(k.clone())));
+            }
+        }
     }
     out
 }
@@ -269,6 +284,20 @@ pub(crate) fn type_from(category: TypeCategory, curtain: bool, p: &Props) -> Typ
             width: l("Width", 0.2),
             depth: l("Depth", 0.4),
             material: None,
+        }),
+        // the shape comes from the type's representation maps
+        TypeCategory::Object => TypeParams::Object(creabim_core::ObjectType {
+            category: label(p, "Category")
+                .map(creabim_core::ObjectCategory::from_label)
+                .unwrap_or_default(),
+            ifc: Default::default(),
+            mount: match label(p, "Mount") {
+                Some("Floor") => creabim_core::objects::Mount::Floor,
+                _ => creabim_core::objects::Mount::Wall,
+            },
+            parts: vec![],
+            symbol: vec![],
+            catalogue: label(p, "CatalogueKey").map(str::to_string),
         }),
     }
 }

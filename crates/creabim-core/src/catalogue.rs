@@ -542,6 +542,8 @@ fn sink_unit() -> CatalogueObject {
         "Sink",
         stainless(),
         stack(&[
+            (rrect(bowl, 0.5, 0.4, 0.05, k), 0.72),
+            (rrect(bowl, 0.52, 0.42, 0.05, k), 0.905),
             (rrect(v2(0.0, -0.31), x1 - x0, y1 - y0, 0.02, k), 0.905),
             (rrect(v2(0.0, -0.31), x1 - x0, y1 - y0, 0.02, k), 0.915),
             (rrect(bowl, 0.5, 0.4, 0.05, k), 0.915),

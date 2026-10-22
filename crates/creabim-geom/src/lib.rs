@@ -11,6 +11,7 @@ pub mod crop;
 pub mod curtain;
 pub mod members;
 pub mod mesh;
+pub mod objects;
 pub mod opening;
 pub mod paper;
 pub mod pick;

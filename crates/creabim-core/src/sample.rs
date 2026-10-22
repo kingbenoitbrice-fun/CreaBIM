@@ -645,3 +645,62 @@ pub fn typed_house() -> Model {
     doc.commit(tx).expect("the typed house is valid");
     doc.model().clone()
 }
+
+/// The sample house furnished from the starter catalogue: a living room
+/// and a kitchen downstairs, a bedroom and a bathroom upstairs.
+pub fn furnished_house() -> Model {
+    let mut doc = Document::from_model(sample_house());
+    let level = |name: &str| {
+        doc.model()
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.id)
+            .expect("the sample has its levels")
+    };
+    let (g, f) = (level("Ground Floor"), level("First Floor"));
+    // (object, level, a point near where it goes, turn when free-standing)
+    let plan: &[(&str, ElementId, DVec2, Option<f64>)] = &[
+        // living room, west of the partition
+        ("sofa-3", g, DVec2::new(0.4, 3.0), None),
+        ("coffee-table", g, DVec2::new(1.55, 3.0), Some(90.0)),
+        ("armchair", g, DVec2::new(3.6, 3.0), Some(270.0)),
+        ("desk", g, DVec2::new(4.5, 5.6), None),
+        ("chair", g, DVec2::new(4.5, 4.75), Some(180.0)),
+        // kitchen along the east wall, the sink under its window
+        ("fridge-freezer", g, DVec2::new(9.6, 0.5), None),
+        ("base-cabinet-600", g, DVec2::new(9.6, 1.1), None),
+        ("cooker-600", g, DVec2::new(9.6, 1.7), None),
+        ("base-cabinet-600", g, DVec2::new(9.6, 2.3), None),
+        ("sink-unit-1000", g, DVec2::new(9.6, 3.1), None),
+        ("base-cabinet-600", g, DVec2::new(9.6, 3.9), None),
+        ("wall-cabinet-600", g, DVec2::new(9.6, 1.1), None),
+        ("wall-cabinet-600", g, DVec2::new(9.6, 3.9), None),
+        ("dining-table", g, DVec2::new(7.4, 3.4), Some(90.0)),
+        ("chair", g, DVec2::new(6.95, 2.95), Some(90.0)),
+        ("chair", g, DVec2::new(6.95, 3.85), Some(90.0)),
+        ("chair", g, DVec2::new(8.75, 2.95), Some(270.0)),
+        ("chair", g, DVec2::new(8.75, 3.85), Some(270.0)),
+        // bedroom upstairs, west
+        ("double-bed", f, DVec2::new(2.5, 5.6), None),
+        ("bedside-table", f, DVec2::new(1.4, 5.6), None),
+        ("bedside-table", f, DVec2::new(3.6, 5.6), None),
+        ("wardrobe", f, DVec2::new(0.4, 1.1), None),
+        ("single-bed", f, DVec2::new(5.2, 5.6), None),
+        // bathroom upstairs, east
+        ("bathtub", f, DVec2::new(9.6, 1.25), None),
+        ("wc", f, DVec2::new(8.3, 0.4), None),
+        ("washbasin", f, DVec2::new(7.1, 0.4), None),
+        ("shower", f, DVec2::new(9.4, 5.6), None),
+    ];
+    for (key, lvl, at, turn) in plan {
+        let c = crate::catalogue::starter(&format!("starter/{key}")).expect("a starter");
+        let (p, r) = match turn {
+            Some(r) => (*at, *r),
+            None => crate::objects::against_wall(doc.model(), *lvl, *at, 0.8)
+                .expect("a wall near the point"),
+        };
+        let (tx, _) = crate::objects::place(doc.model(), &c, *lvl, p, r);
+        doc.commit(tx).expect("starter objects are valid");
+    }
+    doc.model().clone()
+}

@@ -30,6 +30,8 @@ pub(crate) const HATCH_PREFIX: &str = "CreaBIM hatch: ";
 struct Ctx {
     w: StepWriter,
     body: Ref,
+    /// Plan symbols of furniture and fixtures.
+    footprint: Ref,
     axis: Ref,
     z_axis: Ref,
     x_axis: Ref,
@@ -184,9 +186,14 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         "IFCGEOMETRICREPRESENTATIONSUBCONTEXT",
         format!("'Axis','Model',*,*,*,*,{model_ctx},$,.GRAPH_VIEW.,$"),
     );
+    let footprint = w.add(
+        "IFCGEOMETRICREPRESENTATIONSUBCONTEXT",
+        format!("'FootPrint','Model',*,*,*,*,{model_ctx},$,.PLAN_VIEW.,$"),
+    );
     let mut c = Ctx {
         w,
         body,
+        footprint,
         axis,
         z_axis,
         x_axis,
@@ -715,6 +722,8 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
     // Materials, each associated with the elements made of it. Unused ones
     // are written too, so the project's material library goes along.
     let mut material_refs: HashMap<ElementId, Ref> = HashMap::new();
+    // each material's surface style, for styling the parts of objects
+    let mut material_styles: HashMap<ElementId, Ref> = HashMap::new();
     for e in model.iter() {
         let users = by_material.get(&e.id);
         let ElementKind::Material(mat) = &e.kind else {
@@ -756,6 +765,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             "IFCSURFACESTYLE",
             format!("{},.BOTH.,({rendering})", string(&e.name)),
         );
+        material_styles.insert(e.id, style);
         let styled = c.w.add("IFCSTYLEDITEM", format!("$,({style}),$"));
         let styled_rep = c.w.add(
             "IFCSTYLEDREPRESENTATION",
@@ -847,6 +857,16 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         let ElementKind::ElementType(t) = &e.kind else {
             continue;
         };
+        if let creabim_core::TypeParams::Object(o) = &t.params {
+            let looks = Looks {
+                materials: &material_refs,
+                styles: &material_styles,
+            };
+            for (level, r) in object_type(&mut c, model, e, t, o, &looks, &storeys) {
+                contained.entry(Some(level)).or_default().push(r);
+            }
+            continue;
+        }
         let set = c.pset(TYPE_PSET, &type_props(t));
         let description = match t.description.trim() {
             "" => "$".to_string(),
@@ -867,6 +887,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             P::Roof(_) => ("IFCROOFTYPE", ",.NOTDEFINED."),
             P::Column(_) => ("IFCCOLUMNTYPE", ",.COLUMN."),
             P::Beam(_) => ("IFCBEAMTYPE", ",.BEAM."),
+            P::Object(_) => unreachable!("object types are written above"),
         };
         let tr = c.w.add(class, format!("{head}{tail}"));
         let relating = t
@@ -927,6 +948,192 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         string("CreaBIM"),
     );
     c.w.finish(&header)
+}
+
+/// The materials written, and their surface styles.
+struct Looks<'a> {
+    materials: &'a HashMap<ElementId, Ref>,
+    styles: &'a HashMap<ElementId, Ref>,
+}
+
+/// An object type: its parts as one representation map, each part's face
+/// set styled with its material's look, its plan symbol as another, its
+/// materials as a constituent set; then every object of the type, each
+/// mapping both maps where it stands. Returns the objects written, with
+/// their levels.
+fn object_type(
+    c: &mut Ctx,
+    model: &Model,
+    e: &Element,
+    t: &creabim_core::ElementType,
+    o: &creabim_core::ObjectType,
+    looks: &Looks,
+    storeys: &HashMap<ElementId, (Ref, Ref)>,
+) -> Vec<(ElementId, Ref)> {
+    let kind = o.ifc.normalized();
+    // the parts, in the type's own axes
+    let mut items = vec![];
+    for p in &o.parts {
+        let coords: Vec<String> = p
+            .mesh
+            .vertices
+            .iter()
+            .map(|v| point3(v.x, v.y, v.z))
+            .collect();
+        let pts =
+            c.w.add("IFCCARTESIANPOINTLIST3D", format!("({})", coords.join(",")));
+        let mut tris = vec![];
+        for f in 0..p.mesh.faces.len() {
+            for [a, b, d] in p.mesh.face_triangles(f) {
+                tris.push(format!("({},{},{})", a + 1, b + 1, d + 1));
+            }
+        }
+        let fs = c.w.add(
+            "IFCTRIANGULATEDFACESET",
+            format!("{pts},$,.T.,({}),$", tris.join(",")),
+        );
+        if let Some(style) = p.material.and_then(|m| looks.styles.get(&m)) {
+            c.w.add("IFCSTYLEDITEM", format!("{fs},({style}),$"));
+        }
+        items.push(fs);
+    }
+    let body_rep = c.body_rep("Tessellation", &items);
+    let origin = c.placement3d(DVec3::ZERO, None, None);
+    let body_map = c.w.add("IFCREPRESENTATIONMAP", format!("{origin},{body_rep}"));
+    // the plan symbol, as polylines on the floor
+    let mut curves = vec![];
+    for s in o.plan_symbol() {
+        let pts: Vec<DVec2> = match s {
+            creabim_core::objects::SymbolItem::Loop(mut p) => {
+                if let Some(first) = p.first().copied() {
+                    p.push(first);
+                }
+                p
+            }
+            creabim_core::objects::SymbolItem::Line(a, b) => vec![a, b],
+        };
+        if pts.len() < 2 {
+            continue;
+        }
+        let refs: Vec<Ref> = pts
+            .iter()
+            .map(|p| c.w.add("IFCCARTESIANPOINT", point3(p.x, p.y, 0.0)))
+            .collect();
+        curves.push(c.w.add("IFCPOLYLINE", list(&refs)));
+    }
+    let foot_map = (!curves.is_empty()).then(|| {
+        let set = c.w.add("IFCGEOMETRICCURVESET", list(&curves));
+        let rep = c.w.add(
+            "IFCSHAPEREPRESENTATION",
+            format!("{},'FootPrint','GeometricCurveSet',({set})", c.footprint),
+        );
+        let origin = c.placement3d(DVec3::ZERO, None, None);
+        c.w.add("IFCREPRESENTATIONMAP", format!("{origin},{rep}"))
+    });
+    let maps: Vec<Ref> = std::iter::once(body_map).chain(foot_map).collect();
+    let set = c.pset(TYPE_PSET, &type_props(t));
+    let description = match t.description.trim() {
+        "" => "$".to_string(),
+        d => string(d),
+    };
+    let type_class = kind.type_class().to_ascii_uppercase();
+    // AssemblyPlace comes before PredefinedType on furniture types
+    let place = if type_class == "IFCFURNITURETYPE" {
+        ".NOTDEFINED.,"
+    } else {
+        ""
+    };
+    let tr = c.w.add(
+        &type_class,
+        format!(
+            "{},$,{},{description},$,({set}),{},$,{},{place}.{}.",
+            string(&e.id.ifc_guid()),
+            string(&e.name),
+            list(&maps),
+            string(&e.name),
+            kind.predefined
+        ),
+    );
+    // the materials of the parts
+    let mut constituents = vec![];
+    for p in &o.parts {
+        let Some(m) = p.material.and_then(|m| looks.materials.get(&m)) else {
+            continue;
+        };
+        let name = if p.name.is_empty() {
+            "$".to_string()
+        } else {
+            string(&p.name)
+        };
+        constituents.push(c.w.add("IFCMATERIALCONSTITUENT", format!("{name},$,{m},$,$")));
+    }
+    if !constituents.is_empty() {
+        let cs = c.w.add(
+            "IFCMATERIALCONSTITUENTSET",
+            format!("{},$,{}", string(&e.name), list(&constituents)),
+        );
+        let g = c.guid();
+        c.w.add("IFCRELASSOCIATESMATERIAL", format!("{g},$,$,$,({tr}),{cs}"));
+    }
+    // the objects of the type
+    let mut out = vec![];
+    for id in creabim_core::types::instances(model, e.id) {
+        let Some(oe) = model.get(id) else { continue };
+        let ElementKind::Object(ob) = &oe.kind else {
+            continue;
+        };
+        let Some(&(_, spl)) = storeys.get(&ob.level) else {
+            continue;
+        };
+        let (s, co) = ob.rotation.to_radians().sin_cos();
+        let pl = c.local_placement(
+            Some(spl),
+            ob.position.extend(ob.offset),
+            Some(DVec3::new(co, s, 0.0)),
+        );
+        let mut reps = vec![];
+        for (i, map) in maps.iter().enumerate() {
+            let at = c.w.add("IFCCARTESIANPOINT", "(0.,0.,0.)");
+            let op =
+                c.w.add("IFCCARTESIANTRANSFORMATIONOPERATOR3D", format!("$,$,{at},$,$"));
+            let item = c.w.add("IFCMAPPEDITEM", format!("{map},{op}"));
+            let (ctx, ident) = if i == 0 {
+                (c.body, "Body")
+            } else {
+                (c.footprint, "FootPrint")
+            };
+            reps.push(c.w.add(
+                "IFCSHAPEREPRESENTATION",
+                format!("{ctx},'{ident}','MappedRepresentation',({item})"),
+            ));
+        }
+        let shape =
+            c.w.add("IFCPRODUCTDEFINITIONSHAPE", format!("$,$,{}", list(&reps)));
+        let object_type = if kind.predefined == "USERDEFINED" {
+            string(&e.name)
+        } else {
+            "$".into()
+        };
+        let r = c.w.add(
+            &kind.class.to_ascii_uppercase(),
+            format!(
+                "{},$,{},$,{object_type},{pl},{shape},$,.{}.",
+                string(&oe.id.ifc_guid()),
+                string(&oe.name),
+                kind.predefined
+            ),
+        );
+        out.push((ob.level, r));
+    }
+    if !out.is_empty() {
+        let g = c.guid();
+        let users: Vec<Ref> = out.iter().map(|o| o.1).collect();
+        c.w.add(
+            "IFCRELDEFINESBYTYPE",
+            format!("{g},$,$,$,{},{tr}", list(&users)),
+        );
+    }
+    out
 }
 
 /// How a layered element takes its assembly's layer set.
