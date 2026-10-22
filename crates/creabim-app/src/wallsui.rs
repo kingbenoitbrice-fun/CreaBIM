@@ -284,6 +284,12 @@ impl CreaBimApp {
             let Some(before) = model.get(id) else {
                 continue;
             };
+            // a section or elevation looks the other way, its notes mirrored
+            if let (false, Some(flip)) = (hand, creabim_core::transform::flip_view(model, id)) {
+                tx.ops.extend(flip.ops);
+                n += 1;
+                continue;
+            }
             let mut after = before.clone();
             let changed = match &mut after.kind {
                 ElementKind::Wall(w) if !hand => {
@@ -312,7 +318,7 @@ impl CreaBimApp {
             self.status = if hand {
                 "Select a door to flip its hand.".into()
             } else {
-                "Select a wall, door or window to flip it.".into()
+                "Select a wall, door, window, section or elevation to flip it.".into()
             };
             return;
         }
@@ -441,6 +447,17 @@ impl CreaBimApp {
                 (true, false) => "Flip window inside/outside",
             };
             items.push(Item::new("wall.flip", what).key("Space").icon("brick-wall"));
+        }
+        let views = sel.iter().any(|e| {
+            matches!(&e.kind, ElementKind::View(v) if matches!(v.kind, ViewKind::Section { .. }))
+        });
+        if views && walls.is_empty() && !openings {
+            items.push(
+                Item::new("wall.flip", "Flip view direction")
+                    .key("Space")
+                    .icon("flip-horizontal-2")
+                    .hint("Look the other way along the same line"),
+            );
         }
         if doors {
             items.push(

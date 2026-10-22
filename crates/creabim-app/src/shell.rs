@@ -90,7 +90,7 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Column => "rectangle-vertical",
         Tool::Beam => "rectangle-horizontal",
         Tool::Roof => "tent",
-        Tool::Stair => "chart-no-axes-column-increasing",
+        Tool::Stair => "stair",
         Tool::Railing => "fence",
         Tool::Level => "level",
         Tool::Align => "align-tool",
@@ -148,6 +148,7 @@ fn icon_name(i: Icon) -> &'static str {
         Icon::Tag => "tag",
         Icon::Sketch => "pen-tool",
         Icon::Guide => "slash",
+        Icon::CropBox => "crop-box",
     }
 }
 
@@ -165,6 +166,7 @@ fn group_title(class: &str) -> String {
         "ElementType" => "Types".into(),
         "IfcOpeningElement" => "Openings and shafts".into(),
         "TextStyle" => "Text styles".into(),
+        "CropBox" => "Crop boxes".into(),
         c => {
             let c = c.strip_prefix("Ifc").unwrap_or(c);
             if c.ends_with('s') {
@@ -804,6 +806,7 @@ impl CreaBimApp {
                 .checked(self.shell.settings.xray)
                 .icon("xray")
                 .hint("Walls, slabs, roofs and masses see-through, so beams, columns and what is inside them show"),
+            Item::sub("Crop boxes", self.crop_menu()).icon("crop-box"),
             Item::sub("Camera", camera).icon("axis-3d"),
             Item::sub("Ground grid", ground).icon("grid-3x3"),
             Item::Separator,
@@ -1131,6 +1134,7 @@ impl CreaBimApp {
                 }
             }
             "note.leader" => self.plan.anno.leader = !self.plan.anno.leader,
+            _ if self.crop_action(head, arg) => {}
             _ if self.wall_action(head, arg) => {}
             _ => {
                 if !self.materials_action(head, arg) && !self.drafting_action(head, arg) {
@@ -1642,12 +1646,26 @@ impl CreaBimApp {
                     let z = |e: &Element| model.level(e.id).map_or(0.0, |l| l.elevation);
                     items.sort_by(|a, b| z(b).total_cmp(&z(a)));
                 }
-                let rows: Vec<Value> = items.iter().map(|e| row(e, opens)).collect();
+                let mut rows: Vec<Value> = items.iter().map(|e| row(e, opens)).collect();
+                // a 3D view's crop boxes say whose they are
+                for (r, e) in rows.iter_mut().zip(&items) {
+                    if let ElementKind::CropBox(c) = &e.kind {
+                        let owner = c.view.and_then(|v| model.get(v));
+                        let off = if c.enabled { "" } else { " (off)" };
+                        r["name"] = json!(match owner {
+                            Some(v) => format!("{} · {}{off}", e.name, v.name),
+                            None => format!("{}{off}", e.name),
+                        });
+                    }
+                }
                 // levels and assemblies are managed from their groups
                 let act = match class.as_str() {
                     "IfcBuildingStorey" => Some(json!([
                         {"id": "level.add", "icon": "plus", "hint": "Add a level above the top one, with its floor plan"},
                         {"id": "levels", "icon": "ellipsis", "hint": "Levels window: add, duplicate, rename, move and delete levels, and make their plans"},
+                    ])),
+                    "CropBox" => Some(json!([
+                        {"id": "crop.add", "icon": "plus", "hint": "Add a crop box to the 3D view: it crops everything outside it"},
                     ])),
                     "IfcMaterialLayerSet" => Some(json!([
                         {"id": "asm.browser", "icon": "ellipsis", "hint": "Assemblies: edit layers, add, duplicate, delete, assign"},

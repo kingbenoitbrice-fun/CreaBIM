@@ -25,6 +25,8 @@ use std::collections::HashMap;
 
 #[path = "assemblies.rs"]
 mod assemblies;
+#[path = "cropui.rs"]
+mod cropui;
 #[path = "drafting.rs"]
 mod drafting;
 #[path = "gridvis.rs"]
@@ -168,6 +170,8 @@ pub struct CreaBimApp {
     orbit_selection: bool,
     /// Where the 3D view was drawn last frame, for its navigation buttons.
     rect_3d: Option<Rect>,
+    /// The crop box whose elements clicks in the 3D view are picking.
+    crop_pick: Option<ElementId>,
 }
 
 impl CreaBimApp {
@@ -233,6 +237,7 @@ impl CreaBimApp {
             drafting: Default::default(),
             orbit_selection: false,
             rect_3d: None,
+            crop_pick: None,
             status: "Loaded the sample house. Orbit with left drag, pan with right drag, zoom with the wheel.".into(),
         }
     }
@@ -243,6 +248,7 @@ impl CreaBimApp {
         self.hidden.clear();
         self.hidden_rev += 1;
         self.face = None;
+        self.crop_pick = None;
         self.active_view = None;
         self.sheet = SheetState::default();
         self.drawings.clear();
@@ -908,6 +914,7 @@ impl CreaBimApp {
                             | ElementKind::Material(_)
                             | ElementKind::Units(_)
                             | ElementKind::SheetTemplate(_)
+                            | ElementKind::CropBox(_)
                     )
             })
             .map(|e| e.id)
@@ -1088,6 +1095,7 @@ impl CreaBimApp {
         let left_out = self.hidden_in_3d();
         self.scene
             .retain(|i| !self.hidden.contains(&i.id) && !left_out.contains(&i.id));
+        let cut_edges = self.crop_scene_3d();
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
@@ -1209,6 +1217,11 @@ impl CreaBimApp {
             out
         };
         let mut lines = Vec::new();
+        // where crop boxes cut, the outlines of the cuts
+        for (a, b) in &cut_edges {
+            lines.push(line_vertex(a.as_vec3().to_array(), [0.18, 0.16, 0.15]));
+            lines.push(line_vertex(b.as_vec3().to_array(), [0.18, 0.16, 0.15]));
+        }
         for (a, b, c) in &ghost_lines {
             lines.push(line_vertex(a.as_vec3().to_array(), *c));
             lines.push(line_vertex(b.as_vec3().to_array(), *c));
@@ -1419,6 +1432,7 @@ impl CreaBimApp {
         let hover = response.hover_pos();
         self.draw_sketches(&painter, &project);
         self.draw_grid_bubbles(&painter, &project);
+        self.draw_crop_frames(&painter, &project);
 
         // the Move and Rotate tools, or a keyboard move, rotate or scale,
         // running here
@@ -1618,6 +1632,9 @@ impl CreaBimApp {
         }
 
         if self.pick_plane_3d(ui, &response, &painter, &project, &ray) {
+            return;
+        }
+        if self.crop_pick_3d(ui, &response, &ray) {
             return;
         }
 
@@ -1879,7 +1896,9 @@ impl CreaBimApp {
                 // grid bubbles are drawn over everything, so they take
                 // clicks first
                 let bubble = self.grid_bubble_near(p, &project);
-                if let Some(id) = near_sketch.map(|s| s.0).or(bubble) {
+                // and so are crop box frames
+                let frame = || self.crop_frame_near(p, &project);
+                if let Some(id) = near_sketch.map(|s| s.0).or(bubble).or_else(frame) {
                     pick(&mut self.selection, Some(id));
                     self.face = None;
                     return;
@@ -3265,6 +3284,9 @@ impl CreaBimApp {
                 .color(ui.visuals().weak_text_color()),
         );
         ui.add_space(4.0);
+        if self.crop_pick.is_some() {
+            self.crop_pick_banner(ui);
+        }
         let Some(id) = self.selection.active else {
             ui.label(
                 "Nothing selected. Click an element in the plan, the 3D view or the model list.",
@@ -3283,6 +3305,8 @@ impl CreaBimApp {
             ui.add_space(8.0);
             ui.label(egui::RichText::new("3D view").strong());
             self.visibility_panel(ui, gridvis::VisTarget::Window3d);
+            ui.add_space(8.0);
+            self.crop_list(ui, self.crop_owner());
             return;
         };
         let Some(e) = self.doc.model().get(id).cloned() else {
@@ -3676,6 +3700,10 @@ impl CreaBimApp {
                 if self.active_view != Some(id) && ui.button("Open this view").clicked() {
                     self.active_view = Some(id);
                 }
+                if matches!(v.kind, ViewKind::Axonometric { .. }) {
+                    ui.add_space(6.0);
+                    self.crop_list(ui, Some(id));
+                }
                 show_visibility = true;
             }
             ElementKind::Sheet(sh) => {
@@ -3755,6 +3783,11 @@ impl CreaBimApp {
             }
             ElementKind::Assembly(_) => {
                 self.assembly_properties(ui, id);
+            }
+            ElementKind::CropBox(c) => {
+                if let Some(l) = self.crop_properties(ui, id, c) {
+                    label = l
+                }
             }
             ElementKind::ElementType(_) => {
                 self.type_properties(ui, id);
@@ -4793,6 +4826,7 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Roof(_) => "roof",
         ElementKind::Stair(_) => "stair",
         ElementKind::Railing(_) => "railing",
+        ElementKind::CropBox(_) => "crop box",
         ElementKind::ElementType(_) => "type",
         ElementKind::Shaft(_) => "shaft",
     }

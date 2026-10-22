@@ -87,6 +87,8 @@ impl Element {
                 | ViewKind::Schedule { .. } => vec![],
             },
             ElementKind::Sheet(_) => vec![],
+            // a 3D view's crop boxes go with it; the elements they crop are soft
+            ElementKind::CropBox(c) => c.view.into_iter().collect(),
             ElementKind::Viewport(v) => vec![v.sheet, v.view],
             ElementKind::Dimension(d) => std::iter::once(d.view)
                 .chain(d.a.host)
@@ -150,6 +152,7 @@ impl Element {
             ElementKind::TextStyle(_) => "TextStyle",
             ElementKind::SheetTemplate(_) => "SheetTemplate",
             ElementKind::Units(_) => "ProjectUnits",
+            ElementKind::CropBox(_) => "CropBox",
             ElementKind::Sketch(_) => "Sketch",
             ElementKind::Cut(_) => "Cut",
             ElementKind::Guide(_) => "Guide",
@@ -300,6 +303,7 @@ impl Element {
             ElementKind::TextStyle(s) => s.validate(),
             ElementKind::SheetTemplate(t) => t.validate(),
             ElementKind::Units(_) => Ok(()),
+            ElementKind::CropBox(c) => c.validate(),
             ElementKind::Assembly(a) => a.validate(),
             ElementKind::ElementType(t) => t.validate(),
             ElementKind::Shaft(s) => s.validate(),
@@ -359,6 +363,8 @@ pub enum ElementKind {
     Assembly(crate::assembly::Assembly),
     /// The project's units: one per project, read through [`crate::Model::units`].
     Units(crate::units::Units),
+    /// A box that crops a 3D view (Revit's section box).
+    CropBox(crate::cropbox::CropBox),
     /// A named set of shared parameters (a wall type, a door type...) that
     /// elements are instances of: editing it changes all of them.
     ElementType(crate::types::ElementType),
@@ -399,6 +405,7 @@ impl ElementKind {
             ElementKind::GridGroup(_) => "GridGroup",
             ElementKind::Assembly(_) => "Assembly",
             ElementKind::Units(_) => "Units",
+            ElementKind::CropBox(_) => "CropBox",
             ElementKind::ElementType(_) => "ElementType",
             ElementKind::Shaft(_) => "Shaft",
             ElementKind::Object(_) => "Object",

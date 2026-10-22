@@ -8,6 +8,7 @@ pub mod annotation;
 pub mod assembly;
 pub mod catalogue;
 pub mod constraint;
+pub mod cropbox;
 pub mod csg;
 pub mod curtain;
 pub mod document;
@@ -41,6 +42,7 @@ pub use annotation::{
 };
 pub use assembly::{assembly_of, Assembly, AssemblyUse, Layer, LayerFunction};
 pub use constraint::{Constraint, SolveError};
+pub use cropbox::{CropBox, CropScope};
 pub use csg::BoolOp;
 pub use curtain::{CurtainGrid, GridRule, PanelKind};
 pub use document::{Document, Step, StepId};
