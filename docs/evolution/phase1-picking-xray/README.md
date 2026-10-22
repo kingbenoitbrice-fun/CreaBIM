@@ -4,7 +4,7 @@ Reference screenshots, taken from *File > New sample with a beam in a wall*: the
 
 **Hover pre-highlight.** In plans, sections, elevations, the 3D window and sheets, the element under the pointer is drawn in a quiet blue before it is clicked, so you can see what a click will take. The orange selection colour is unchanged. The highlight shows in every open view, not only the one under the pointer.
 
-**Overlap awareness.** When more than one element is under the pointer (a beam inside a wall, a column behind a slab edge), a small badge by the pointer counts them ("1/3 · Tab"). **Tab** and **Shift+Tab** cycle which one is highlighted, the status bar names it, and a click selects it. Clicking the badge opens a short list of the elements to pick from directly. A plain click with no Tab still takes what it took before. Moving the pointer over the same stack keeps the Tab choice.
+**Overlap awareness.** When more than one element is under the pointer (a beam inside a wall, a column behind a slab edge), a small badge by the pointer counts them ("1/3 · Tab"). **Tab** and **Shift+Tab** cycle which one is highlighted, the status bar names it, and a click selects it. Clicking the badge opens a short list of the elements to pick from directly. A plain click with no Tab still takes what it took before. Moving the pointer over the same stack keeps the Tab choice. In elevations this also reaches what is behind the face you see: in the South Elevation, pointing at the south wall where the first floor slab sits behind it, the badge counts the slab as well and Tab takes it.
 
 **2D X-ray (Alt+Z).** Alt+Z puts the view under the pointer (or the active one) into X-ray. Walls, slabs and roofs fade to faint fills, the elements they hide are drawn with solid lines, and those elements come first under the pointer. You can then select and drag them like anything else. X-ray is a working mode for this session: it is not saved, not undoable and never shows on sheets. In the 3D window, Alt+Z uses the existing 3D X-ray, and clicks now take framing (beams, columns, members) before the walls around it.
 
@@ -45,6 +45,6 @@ Reference screenshots, taken from *File > New sample with a beam in a wall*: the
 - The coloured fill of a hidden element is the convex hull of its projected shape, so it is accurate for beams, columns and members but rough for L-shaped or hollow elements.
 - In 3D, "buried" (for *Hidden elements in colour*) is decided by bounding box: elements whose centre lies inside the bounds of a wall, slab or roof.
 - Grid lines get no blue wash when hovered in 3D. Their bubbles still pick as before.
-- Elevations use the same code as sections but are not shown in the screenshots.
+- Elevations use the same code as sections. The slab-behind-a-wall case is covered by a test, but no elevation is shown in the screenshots.
 - In plans, the downward pick ray only finds elements the plan draws.
 - Tab is taken back from egui focus over a drawing. Keyboard focus left in a web panel after clicking it is not covered.

@@ -4354,4 +4354,32 @@ mod tests {
         assert_eq!(under.first(), Some(&beam), "in X-ray the beam comes first");
         assert!(under.contains(&wall));
     }
+
+    #[test]
+    fn in_an_elevation_the_slab_behind_a_wall_is_under_the_pointer_too() {
+        let doc = Document::from_model(creabim_core::sample::sample_house());
+        let named = |n: &str| doc.model().iter().find(|e| e.name == n).unwrap().id;
+        let (elev, wall, slab) = (
+            named("South Elevation S"),
+            named("GF Wall 1"),
+            named("FF Slab"),
+        );
+        let Some(ElementKind::View(v)) = doc.model().get(elev).map(|e| &e.kind) else {
+            panic!("the elevation is a view")
+        };
+        let kind = pane_kind(v);
+        let drawing = creabim_geom::section::view_drawing(doc.model(), elev).unwrap();
+        let mut state = PlanState::default();
+        // the elevation runs east from x = -2: 7 m along is the middle of
+        // the south wall; the first floor slab is 2.75 to 3 m up behind it
+        let p = DVec2::new(7.0, 2.9);
+        let under = under_pointer(&mut state, &doc, elev, kind, &drawing, p, 0.02, 0.1);
+        assert_eq!(under.first(), Some(&wall), "a plain click takes the wall");
+        assert!(under.contains(&slab), "Tab reaches the slab: {under:?}");
+        // and in X-ray the slab, though it holds others too, is still there
+        state.xray.insert(elev);
+        let xray = creabim_geom::section::view_drawing_with(doc.model(), elev, true).unwrap();
+        let under = under_pointer(&mut state, &doc, elev, kind, &xray, p, 0.02, 0.1);
+        assert!(under.contains(&slab) && under.contains(&wall));
+    }
 }
