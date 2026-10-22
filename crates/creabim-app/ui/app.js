@@ -453,7 +453,7 @@
     if (t.dataset.popup) {
       const r = t.getBoundingClientRect();
       if (S.popup === t.dataset.popup) post({ t: "close" });
-      else post({ t: "popup", key: t.dataset.popup, x: r.left, y: r.bottom + 4, w: r.width, up: pane === "status" ? r.top - 4 : null });
+      else post({ t: "popup", key: t.dataset.popup, x: r.left, y: r.bottom + 4, w: r.width, up: pane === "status" ? r.top - 4 : null, top: r.top - 4 });
     } else if (t.dataset.back) {
       local.stack.pop();
       local.hot = -1;

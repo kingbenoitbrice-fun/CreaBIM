@@ -4713,6 +4713,19 @@ impl eframe::App for CreaBimApp {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         raw_input.events.append(&mut self.shell.keys);
         self.palette_keys(raw_input);
+        // the web bars cover the top and bottom of the window: egui's own
+        // drop-downs and windows keep out from under them, opening upwards
+        // when there is no room below
+        let bands = if self.shell.web.is_some() {
+            egui::epaint::MarginF32 {
+                top: shell::TOP_H,
+                bottom: shell::STATUS_H,
+                ..Default::default()
+            }
+        } else {
+            egui::epaint::MarginF32::default()
+        };
+        raw_input.safe_area_insets = Some(egui::SafeAreaInsets(bands));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {

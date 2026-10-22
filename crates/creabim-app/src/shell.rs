@@ -10,8 +10,8 @@ use serde_json::{json, Value};
 
 /// Height of the top bar (menus, tools and the tool options strip) and the
 /// status bar, in points.
-const TOP_H: f32 = 113.0;
-const STATUS_H: f32 = 30.0;
+pub(super) const TOP_H: f32 = 113.0;
+pub(super) const STATUS_H: f32 = 30.0;
 /// Size of the 3D view's navigation buttons.
 const NAV_W: f32 = 372.0;
 const NAV_H: f32 = 34.0;
@@ -56,12 +56,16 @@ impl Default for Shell {
     }
 }
 
+#[derive(Clone)]
 struct Popup {
     key: String,
     /// Top-left corner, in points.
     at: egui::Pos2,
     /// When the popup opens upwards, where its bottom goes.
     up: Option<f32>,
+    /// The top of the button it opened from: a menu with no room below it
+    /// opens upwards from there instead.
+    above: Option<f32>,
     size: egui::Vec2,
 }
 
@@ -1836,12 +1840,13 @@ impl CreaBimApp {
 
     /// The command palette: every action, found by typing.
     pub(super) fn open_palette(&mut self, ctx: &egui::Context) {
-        let screen = ctx.content_rect();
+        let screen = ctx.viewport_rect();
         let w = 560.0f32.min(screen.width() - 32.0);
         self.shell.popup = Some(Popup {
             key: "palette".into(),
             at: egui::pos2(screen.center().x - w / 2.0, screen.top() + 90.0),
             up: None,
+            above: None,
             size: egui::vec2(w, 380.0),
         });
         self.shell.focus_popup = true;
@@ -1909,12 +1914,14 @@ impl CreaBimApp {
                 let y = b["y"].as_f64().unwrap_or(0.0) as f32;
                 let w = b["w"].as_f64().unwrap_or(0.0) as f32;
                 let up = b["up"].as_f64().map(|u| origin.y + u as f32);
+                let above = b["top"].as_f64().map(|u| origin.y + u as f32);
                 let key = b["key"].as_str().unwrap_or("").to_string();
                 let n = self.menu_items(&key).len() as f32;
                 self.shell.popup = Some(Popup {
                     key,
                     at: origin + egui::vec2(x, y),
                     up,
+                    above,
                     size: egui::vec2(w.max(220.0), 12.0 + 29.0 * n),
                 });
             }
@@ -2122,11 +2129,13 @@ impl CreaBimApp {
             (Pane::Status, status, self.status_state()),
         ];
         let nav_state = self.nav_state();
-        let screen = ctx.content_rect();
+        // web menus float over the whole window, the web bands included
+        let screen = ctx.viewport_rect();
         let popup = self.shell.popup.as_ref().map(|p| {
-            let size = popup_size(p, screen);
+            let up = p.up.or_else(|| opens_up(p, screen));
+            let size = popup_size(&Popup { up, ..p.clone() }, screen);
             let mut at = p.at;
-            if let Some(bottom) = p.up {
+            if let Some(bottom) = up {
                 at.y = bottom - size.y;
             }
             at.x =
@@ -2225,6 +2234,7 @@ impl CreaBimApp {
                     key: "views".into(),
                     at: r.rect.left_bottom() + egui::vec2(0.0, 4.0),
                     up: None,
+                    above: Some(r.rect.top() - 4.0),
                     size: egui::vec2(260.0, 300.0),
                 });
             }
@@ -2262,6 +2272,7 @@ impl CreaBimApp {
             key: "context".into(),
             at: pos + egui::vec2(2.0, 2.0),
             up: None,
+            above: Some(pos.y - 2.0),
             size: egui::vec2(230.0, 12.0 + 28.0 * n),
         });
     }
@@ -2292,6 +2303,15 @@ impl CreaBimApp {
 /// How big a popup is shown: as its page asks, but never past the window.
 /// A menu opening down keeps to the room below where it opens (or the
 /// whole window height when that is too little); the page scrolls the rest.
+/// Where the bottom of a menu goes that has no room below its button but
+/// more above it: it opens upwards from the button's top.
+fn opens_up(p: &Popup, screen: egui::Rect) -> Option<f32> {
+    let top = p.above?;
+    let below = screen.bottom() - p.at.y - 6.0;
+    let above = top - screen.top() - 6.0;
+    (below < p.size.y && above > below).then_some(top)
+}
+
 fn popup_size(p: &Popup, screen: egui::Rect) -> egui::Vec2 {
     let margin = 6.0;
     let room = match p.up {
