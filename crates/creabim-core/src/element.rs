@@ -106,6 +106,11 @@ impl Element {
             // a shaft's top level is soft: without it the shaft stops at
             // its own level's height
             ElementKind::Shaft(s) => vec![s.level],
+            // an object's shape is its type's: without it there is nothing
+            // to show, so deleting a type deletes its objects
+            ElementKind::Object(o) => std::iter::once(o.level)
+                .chain(self.of_type.as_ref().map(|t| t.id))
+                .collect(),
             ElementKind::Sketch(s) => s.level.into_iter().collect(),
             ElementKind::Cut(c) => vec![c.target, c.cutter],
             ElementKind::Guide(g) => g.level.into_iter().collect(),
@@ -130,6 +135,7 @@ impl Element {
                 OpeningKind::Hole => "IfcOpeningElement",
             },
             ElementKind::Shaft(_) => "IfcOpeningElement",
+            ElementKind::Object(_) => "IfcFurniture",
             ElementKind::ElementType(t) => t.ifc_class(),
             ElementKind::FreeMesh(m) => &m.ifc_class,
             // Views are documentation, not building elements; they are not exported to IFC.
@@ -297,6 +303,7 @@ impl Element {
             ElementKind::Assembly(a) => a.validate(),
             ElementKind::ElementType(t) => t.validate(),
             ElementKind::Shaft(s) => s.validate(),
+            ElementKind::Object(o) => o.validate(),
             ElementKind::Sketch(s) => s.check(),
             ElementKind::Cut(c) => {
                 if c.target == c.cutter {
@@ -357,6 +364,9 @@ pub enum ElementKind {
     ElementType(crate::types::ElementType),
     /// A vertical hole through every slab and roof between two levels.
     Shaft(crate::slab::Shaft),
+    /// Furniture or a fixture: an instance of an object type, which holds
+    /// its shape.
+    Object(crate::objects::Object),
 }
 
 impl ElementKind {
@@ -391,6 +401,7 @@ impl ElementKind {
             ElementKind::Units(_) => "Units",
             ElementKind::ElementType(_) => "ElementType",
             ElementKind::Shaft(_) => "Shaft",
+            ElementKind::Object(_) => "Object",
         }
     }
 }

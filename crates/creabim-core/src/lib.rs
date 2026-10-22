@@ -6,6 +6,7 @@
 
 pub mod annotation;
 pub mod assembly;
+pub mod catalogue;
 pub mod constraint;
 pub mod csg;
 pub mod curtain;
@@ -21,6 +22,7 @@ pub mod marks;
 pub mod members;
 pub mod model;
 pub mod modifiers;
+pub mod objects;
 pub mod ops;
 pub mod polygon;
 pub mod pushpull;
@@ -55,6 +57,7 @@ pub use marks::{marks, material_of};
 pub use members::{Beam, Column, Landing, Profile, Railing, Roof, RoofShape, Stair, StairSide};
 pub use model::Model;
 pub use modifiers::{Axis, Modifier, ModifierKind};
+pub use objects::{CatalogueObject, Object, ObjectCategory, ObjectType};
 pub use ops::{Op, Transaction};
 pub use sketch::{bulge_through, Circle, Curve, SegmentKind};
 pub use slab::{room_outline, slab_from_sketch, Shaft};
