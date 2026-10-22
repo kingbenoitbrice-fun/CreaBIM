@@ -14,6 +14,7 @@ mod icons;
 mod memberstool;
 mod modal;
 mod outline;
+mod paneface;
 mod planview;
 mod render3d;
 mod schedulepane;

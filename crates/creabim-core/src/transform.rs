@@ -540,10 +540,143 @@ pub fn fresh_copies(model: &Model, elements: &[Element]) -> (Vec<Element>, usize
     (copies, dropped)
 }
 
+/// A section or elevation turned to look the other way along the same
+/// line, as one undo step: its ends swap (it looks to the left of start →
+/// end), and the dimensions, tags and notes drawn in it are mirrored so
+/// they stay on what they marked. `None` for any other element.
+pub fn flip_view(model: &Model, view: ElementId) -> Option<crate::Transaction> {
+    let before = model.get(view)?;
+    let mut after = before.clone();
+    let ElementKind::View(v) = &mut after.kind else {
+        return None;
+    };
+    let ViewKind::Section { start, end, .. } = &mut v.kind else {
+        return None;
+    };
+    let length = start.distance(*end);
+    std::mem::swap(start, end);
+    let label = if matches!(v.kind, ViewKind::Section { cut: false, .. }) {
+        "Flip elevation"
+    } else {
+        "Flip section"
+    };
+    // the drawing runs along the line from its start: across is mirrored
+    let mirror = |p: DVec2| DVec2::new(length - p.x, p.y);
+    let free = |h: &mut crate::HostPoint| {
+        if h.host.is_none() {
+            h.local = mirror(h.local);
+        }
+    };
+    let mut tx = crate::Transaction::new(label).replace(before.clone(), after);
+    for e in model.iter() {
+        let mut changed = e.clone();
+        let mine = match &mut changed.kind {
+            ElementKind::Dimension(d) if d.view == view => {
+                free(&mut d.a);
+                free(&mut d.b);
+                if let Some(c) = &mut d.center {
+                    free(c);
+                }
+                // left of a → b is now its right
+                d.offset = -d.offset;
+                true
+            }
+            ElementKind::Tag(t) if t.view == view => {
+                t.offset.x = -t.offset.x;
+                true
+            }
+            ElementKind::Note(n) if n.view == view => {
+                n.at = mirror(n.at);
+                if let Some(l) = &mut n.leader {
+                    free(l);
+                }
+                true
+            }
+            _ => false,
+        };
+        if mine && changed != *e {
+            tx = tx.replace(e.clone(), changed);
+        }
+    }
+    Some(tx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{sample::sample_house, Wall};
+
+    #[test]
+    fn a_flipped_section_looks_the_other_way_and_keeps_its_notes_in_place() {
+        let mut doc = crate::Document::from_model(sample_house());
+        let sec = Element::new(
+            "Section X",
+            ElementKind::View(crate::View::section(
+                DVec2::new(0.0, 3.0),
+                DVec2::new(10.0, 3.0),
+                8.0,
+                true,
+            )),
+        );
+        let id = sec.id;
+        let note = Element::new(
+            "Note",
+            ElementKind::Note(crate::Note::new(id, DVec2::new(2.0, 1.0), "here")),
+        );
+        let dim = Element::new(
+            "Dim",
+            ElementKind::Dimension(crate::Dimension::linear(
+                id,
+                crate::HostPoint::free(DVec2::new(1.0, 0.0)),
+                crate::HostPoint::free(DVec2::new(4.0, 0.0)),
+                0.5,
+            )),
+        );
+        let (nid, did) = (note.id, dim.id);
+        doc.commit(
+            crate::Transaction::new("Add")
+                .insert(sec)
+                .insert(note)
+                .insert(dim),
+        )
+        .unwrap();
+        let tx = flip_view(doc.model(), id).unwrap();
+        doc.commit(tx).unwrap();
+        let ElementKind::View(v) = &doc.model().get(id).unwrap().kind else {
+            panic!()
+        };
+        let ViewKind::Section { start, end, .. } = v.kind else {
+            panic!()
+        };
+        // the same line, run the other way: it now looks south
+        assert_eq!((start, end), (DVec2::new(10.0, 3.0), DVec2::new(0.0, 3.0)));
+        let ElementKind::Note(n) = &doc.model().get(nid).unwrap().kind else {
+            panic!()
+        };
+        assert_eq!(n.at, DVec2::new(8.0, 1.0));
+        let ElementKind::Dimension(d) = &doc.model().get(did).unwrap().kind else {
+            panic!()
+        };
+        assert_eq!(
+            (d.a.local, d.b.local),
+            (DVec2::new(9.0, 0.0), DVec2::new(6.0, 0.0))
+        );
+        assert_eq!(d.offset, -0.5);
+        assert_eq!(doc.undo_label(), Some("Flip section"));
+        doc.undo();
+        let ElementKind::View(v) = &doc.model().get(id).unwrap().kind else {
+            panic!()
+        };
+        assert!(matches!(v.kind, ViewKind::Section { start, .. } if start == DVec2::new(0.0, 3.0)));
+        // only sections and elevations flip
+        let wall = doc
+            .model()
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::Wall(_)))
+            .unwrap()
+            .id;
+        assert!(flip_view(doc.model(), wall).is_none());
+    }
 
     #[test]
     fn turning_a_wall_about_its_middle_keeps_its_length() {
