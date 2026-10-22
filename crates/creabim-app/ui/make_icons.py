@@ -12,6 +12,8 @@ names+="""drafting-compass radius diameter message-square-text arrow-up-right"""
 names+="""rectangle-vertical rectangle-horizontal tent fence corner-down-right""".split()
 # flipping a section or elevation round
 names+="""flip-horizontal-2""".split()
+# the Help menu and the Help panel
+names+="""circle-help book-open keyboard rocket x arrow-right info""".split()
 # snap markers, drawn like the markers in the views (not from Lucide)
 CUSTOM={
  "snap-endpoint": '<rect x="6" y="6" width="12" height="12" />',

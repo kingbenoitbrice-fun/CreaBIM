@@ -20,13 +20,22 @@ pub enum Pane {
     Popup,
     /// The 3D view's navigation buttons, over its top-right corner.
     Nav,
+    /// The guide, at the right of the window while it is open.
+    Help,
 }
 
-const PANES: usize = 5;
+const PANES: usize = 6;
 
 impl Pane {
     /// In the order they are made, which stacks the popup on top.
-    const ALL: [Pane; PANES] = [Pane::Top, Pane::Left, Pane::Status, Pane::Nav, Pane::Popup];
+    const ALL: [Pane; PANES] = [
+        Pane::Top,
+        Pane::Left,
+        Pane::Status,
+        Pane::Nav,
+        Pane::Help,
+        Pane::Popup,
+    ];
 
     fn name(self) -> &'static str {
         match self {
@@ -35,6 +44,7 @@ impl Pane {
             Pane::Status => "status",
             Pane::Popup => "popup",
             Pane::Nav => "nav",
+            Pane::Help => "help",
         }
     }
 }
@@ -62,9 +72,17 @@ const JS: &str = include_str!("../ui/app.js");
 const ICONS: &str = include_str!("../ui/icons.js");
 
 fn page(pane: Pane) -> String {
+    // the guide's pages are in its pane from the start, for searching
+    let pages = match pane {
+        Pane::Help => format!(
+            "<script>window.HELP = {};</script>",
+            crate::help::pages_json().to_string().replace("</", "<\\/")
+        ),
+        _ => String::new(),
+    };
     format!(
         "<!doctype html><html data-pane=\"{}\"><head><meta charset=\"utf-8\"><style>{CSS}</style></head>\
-         <body><div id=\"root\"></div><script>{ICONS}</script><script>{JS}</script></body></html>",
+         <body><div id=\"root\"></div><script>{ICONS}</script>{pages}<script>{JS}</script></body></html>",
         pane.name()
     )
 }

@@ -30,6 +30,8 @@ mod cropui;
 mod drafting;
 #[path = "gridvis.rs"]
 mod gridvis;
+#[path = "helpui.rs"]
+mod helpui;
 #[path = "levelsui.rs"]
 mod levelsui;
 #[path = "materials.rs"]
@@ -735,6 +737,10 @@ impl CreaBimApp {
                 !cmd && i.key_pressed(egui::Key::E),
             )
         });
+        // F1: the guide's page about what you are doing
+        if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+            self.run_action(ctx, "help");
+        }
         if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
             self.plan.snap.on = !self.plan.snap.on;
             self.status = format!(
@@ -4899,6 +4905,7 @@ impl eframe::App for CreaBimApp {
         self.templates_window(&ctx);
         self.units_window(&ctx);
         self.ground_spacing_window(&ctx);
+        self.help_window(&ctx);
         // a plan in its own window keeps egui's menus
         self.plan.web_menus = false;
 
@@ -5219,4 +5226,12 @@ fn draw_guide_3d(
     if run.len() > 1 {
         painter.extend(egui::Shape::dashed_line(&run, stroke, 6.0, 4.0));
     }
+}
+
+/// The app round the sample house, for tests.
+#[cfg(test)]
+pub(crate) fn test_app() -> CreaBimApp {
+    let mut app = CreaBimApp::blank(None);
+    app.load_model(sample_house());
+    app
 }
