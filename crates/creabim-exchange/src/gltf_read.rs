@@ -16,8 +16,11 @@ fn bad(m: impl Into<String>) -> ExchangeError {
     ExchangeError::Other(format!("glTF: {}", m.into()))
 }
 
+/// The objects of a file and its materials by name.
+pub type Read = (Vec<Incoming>, Vec<(String, Material)>);
+
 /// The objects of a glTF file, and its materials by name.
-pub fn read_file(path: &Path) -> Result<(Vec<Incoming>, Vec<(String, Material)>), ExchangeError> {
+pub fn read_file(path: &Path) -> Result<Read, ExchangeError> {
     let bytes = std::fs::read(path).map_err(|e| bad(e.to_string()))?;
     let dir = path.parent().unwrap_or(Path::new("."));
     read(&bytes, &|uri| {
@@ -32,7 +35,7 @@ pub fn read_file(path: &Path) -> Result<(Vec<Incoming>, Vec<(String, Material)>)
 pub fn read(
     bytes: &[u8],
     external: &dyn Fn(&str) -> Option<Vec<u8>>,
-) -> Result<(Vec<Incoming>, Vec<(String, Material)>), ExchangeError> {
+) -> Result<Read, ExchangeError> {
     let (json, bin) = if bytes.starts_with(b"glTF") {
         glb_chunks(bytes)?
     } else {
@@ -119,7 +122,9 @@ pub fn read(
                 .collect();
             let flip = world.determinant() < 0.0;
             let faces: Vec<Vec<u32>> = indices
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .filter(|t| t.iter().all(|i| (*i as usize) < count))
                 .filter(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2])
                 .map(|t| {

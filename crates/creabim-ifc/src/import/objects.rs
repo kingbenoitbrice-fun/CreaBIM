@@ -108,7 +108,11 @@ impl Importer<'_> {
             else {
                 continue;
             };
-            let predefined = e.args.last().and_then(|v| v.as_enum()).unwrap_or("NOTDEFINED");
+            let predefined = e
+                .args
+                .last()
+                .and_then(|v| v.as_enum())
+                .unwrap_or("NOTDEFINED");
             t.ifc = IfcKind::new(class, predefined).normalized();
             t.parts = parts;
             t.symbol = symbol;

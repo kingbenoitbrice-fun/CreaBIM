@@ -43,8 +43,12 @@ pub fn read_file(path: &Path, key: &str) -> Result<CatalogueObject, ExchangeErro
         .and_then(|s| s.to_str())
         .unwrap_or("Object")
         .replace(['_', '-'], " ");
-    object(&incoming, &looks, &stem, key)
-        .ok_or_else(|| ExchangeError::Other(format!("{} has no meshes to make an object of", path.display())))
+    object(&incoming, &looks, &stem, key).ok_or_else(|| {
+        ExchangeError::Other(format!(
+            "{} has no meshes to make an object of",
+            path.display()
+        ))
+    })
 }
 
 /// The object made of `incoming`, its materials' full looks taken from
@@ -121,7 +125,12 @@ pub fn guess(words: &str) -> (ObjectCategory, IfcKind, Mount) {
     let w = words.to_ascii_lowercase();
     let has = |k: &[&str]| k.iter().any(|k| w.contains(k));
     let (c, class, p, m) = if has(&["washbasin", "basin", "lavatory", "vanity"]) {
-        (C::Bathroom, "IfcSanitaryTerminal", "WASHHANDBASIN", Mount::Wall)
+        (
+            C::Bathroom,
+            "IfcSanitaryTerminal",
+            "WASHHANDBASIN",
+            Mount::Wall,
+        )
     } else if has(&["toilet", "wc", "loo"]) {
         (C::Bathroom, "IfcSanitaryTerminal", "TOILETPAN", Mount::Wall)
     } else if has(&["bathtub", "bath tub", "tub", "bath"]) {
@@ -131,11 +140,26 @@ pub fn guess(words: &str) -> (ObjectCategory, IfcKind, Mount) {
     } else if has(&["sink"]) {
         (C::Kitchen, "IfcSanitaryTerminal", "SINK", Mount::Wall)
     } else if has(&["fridge", "refrigerator", "freezer"]) {
-        (C::Kitchen, "IfcElectricAppliance", "FRIDGE_FREEZER", Mount::Wall)
+        (
+            C::Kitchen,
+            "IfcElectricAppliance",
+            "FRIDGE_FREEZER",
+            Mount::Wall,
+        )
     } else if has(&["oven", "cooker", "hob", "stove", "range"]) {
-        (C::Kitchen, "IfcElectricAppliance", "ELECTRICCOOKER", Mount::Wall)
+        (
+            C::Kitchen,
+            "IfcElectricAppliance",
+            "ELECTRICCOOKER",
+            Mount::Wall,
+        )
     } else if has(&["dishwasher"]) {
-        (C::Kitchen, "IfcElectricAppliance", "DISHWASHER", Mount::Wall)
+        (
+            C::Kitchen,
+            "IfcElectricAppliance",
+            "DISHWASHER",
+            Mount::Wall,
+        )
     } else if has(&["sofa", "couch", "settee"]) {
         (C::Living, "IfcFurniture", "SOFA", Mount::Wall)
     } else if has(&["armchair", "chair", "stool", "seat"]) {
@@ -162,7 +186,9 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture(rel: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(rel)
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(rel)
     }
 
     fn sits_on_floor(c: &CatalogueObject) {
@@ -176,11 +202,19 @@ mod tests {
 
     #[test]
     fn blender_and_freecad_files_become_objects() {
-        let b = read_file(&fixture("creabim-blend/fixtures/scene_4_0.blend"), "user/scene").unwrap();
+        let b = read_file(
+            &fixture("creabim-blend/fixtures/scene_4_0.blend"),
+            "user/scene",
+        )
+        .unwrap();
         assert!(!b.object.parts.is_empty());
         sits_on_floor(&b);
         assert_eq!(b.name, "Scene 4 0");
-        let f = read_file(&fixture("creabim-freecad/fixtures/parts.FCStd"), "user/parts").unwrap();
+        let f = read_file(
+            &fixture("creabim-freecad/fixtures/parts.FCStd"),
+            "user/parts",
+        )
+        .unwrap();
         assert!(!f.object.parts.is_empty());
         sits_on_floor(&f);
         assert!(read_file(Path::new("chair.obj"), "x").is_err());

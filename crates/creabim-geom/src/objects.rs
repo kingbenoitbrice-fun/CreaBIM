@@ -63,17 +63,28 @@ mod tests {
             .fold((DVec2::splat(1e9), DVec2::splat(-1e9)), |(a, b), (l, h)| {
                 (a.min(l), b.max(h))
             });
-        assert!((lo.x - 0.15).abs() < 1e-6 && (hi.x - 1.05).abs() < 1e-6, "{lo} {hi}");
+        assert!(
+            (lo.x - 0.15).abs() < 1e-6 && (hi.x - 1.05).abs() < 1e-6,
+            "{lo} {hi}"
+        );
         // a wall cupboard is overhead: dashed
         let cup = m
             .iter()
-            .find(|e| e.name.starts_with("Wall cabinet") && matches!(e.kind, ElementKind::Object(_)))
+            .find(|e| {
+                e.name.starts_with("Wall cabinet") && matches!(e.kind, ElementKind::Object(_))
+            })
             .unwrap();
         assert!(plan
             .items
             .iter()
             .filter(|i| i.id() == cup.id)
-            .all(|i| matches!(i, PlanItem::Polygon { pen: Pen::Hidden, .. })));
+            .all(|i| matches!(
+                i,
+                PlanItem::Polygon {
+                    pen: Pen::Hidden,
+                    ..
+                }
+            )));
         // every part of every object is in the 3D scene, in its material
         let scene = crate::scene::build_scene(&m);
         let parts = scene.iter().filter(|i| i.id == sofa.id).count();

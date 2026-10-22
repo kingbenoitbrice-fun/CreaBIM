@@ -53,10 +53,12 @@ pub enum Tool {
     Railing,
     Level,
     Align,
+    /// A piece of furniture or a fixture from the catalogue.
+    Object,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 27] = [
+    pub const ALL: [Tool; 28] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
@@ -70,6 +72,7 @@ impl Tool {
         Tool::Roof,
         Tool::Stair,
         Tool::Railing,
+        Tool::Object,
         Tool::Section,
         Tool::Elevation,
         Tool::Dimension,
@@ -120,6 +123,7 @@ impl Tool {
             Tool::Railing => "Railing",
             Tool::Level => "Level",
             Tool::Align => "Align",
+            Tool::Object => "Object",
         }
     }
 
@@ -151,6 +155,7 @@ impl Tool {
             Tool::Stair => "Click where the stair starts, then click the way it climbs. It rises to the next level in equal risers.",
             Tool::Railing => "Click inside a stair to rail both its sides, or click the points of a path; click the last point again to finish.",
             Tool::Level => "In a section or elevation, click where the level line starts (its height), then where it ends; its floor plan is made with it. In other views the Levels window opens to add, rename and move levels.",
+            Tool::Object => "Click to place the object picked in the Catalogue window. Sinks, WCs, kitchen units, beds and sofas back onto the nearest wall; Space turns the next one a quarter.",
             Tool::Align => "Click a reference line (a wall face, slab edge, guide or grid line), then the edge of what to align: it turns parallel and moves flush. In Extend mode a wall, beam or grid line end stretches to the reference instead.",
         }
     }
@@ -304,6 +309,11 @@ pub struct PlanState {
     /// The Level tool was used where level lines can't be drawn: the app
     /// opens the Levels window instead.
     pub want_levels: bool,
+    /// What the Object tool places.
+    pub objects: crate::objecttool::ObjectSettings,
+    /// The Object tool was used with nothing picked: the app opens the
+    /// Catalogue window.
+    pub want_catalogue: bool,
     /// The points clicked so far for a chain of walls (or beams, grid
     /// lines...), on a level, for alignment tracking.
     pub chain: (Option<ElementId>, Vec<DVec2>),
@@ -384,6 +394,8 @@ impl Default for PlanState {
             level_drag: None,
             members: Default::default(),
             want_levels: false,
+            objects: Default::default(),
+            want_catalogue: false,
             chain: (None, vec![]),
             rested: (None, vec![]),
             rest: None,
@@ -1228,6 +1240,21 @@ pub fn show(
         }
     }
 
+    // the object about to be placed, under the pointer
+    if let (Tool::Object, PaneKind::Plan { level }, Some(h)) = (tool, kind, hover_world) {
+        if ui.input(|i| i.key_pressed(egui::Key::Space)) && !ui.ctx().egui_wants_keyboard_input() {
+            state.objects.rotation = (state.objects.rotation + 90.0).rem_euclid(360.0);
+        }
+        crate::objecttool::preview(
+            &painter,
+            &|p| Some(xf.to_screen(p.truncate())),
+            doc.model(),
+            level,
+            h,
+            state,
+            false,
+        );
+    }
     // preview of the tool in progress
     if let (Some(a), Some(b)) = (state.pending, hover_world) {
         let accent = Stroke::new(1.5, Color32::from_rgb(230, 120, 30));
@@ -1753,6 +1780,7 @@ fn plan_click(
         Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing => {
             crate::memberstool::click(doc, level, tool, p, state, selection)
         }
+        Tool::Object => crate::objecttool::click(doc, level, p, state, selection),
         Tool::Guide => match state.pending.take() {
             None => {
                 state.pending = Some(p);

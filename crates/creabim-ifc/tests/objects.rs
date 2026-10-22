@@ -72,7 +72,11 @@ fn furnished_house_round_trips_through_ifc() {
             panic!("{name} is an object type");
         };
         assert_eq!(a.parts.len(), b.parts.len(), "{name}");
-        assert_eq!((a.category, a.mount, &a.ifc), (b.category, b.mount, &b.ifc), "{name}");
+        assert_eq!(
+            (a.category, a.mount, &a.ifc),
+            (b.category, b.mount, &b.ifc),
+            "{name}"
+        );
         assert_eq!(a.catalogue, b.catalogue, "{name}");
         assert!((a.size() - b.size()).length() < 1e-6, "{name}");
         for (pa, pb) in a.parts.iter().zip(&b.parts) {
@@ -85,7 +89,11 @@ fn furnished_house_round_trips_through_ifc() {
                 pa.name
             );
         }
-        let loops = |s: &[SymbolItem]| s.iter().filter(|i| matches!(i, SymbolItem::Loop(_))).count();
+        let loops = |s: &[SymbolItem]| {
+            s.iter()
+                .filter(|i| matches!(i, SymbolItem::Loop(_)))
+                .count()
+        };
         assert_eq!(loops(&a.plan_symbol()), loops(&b.symbol), "{name}");
         assert_eq!(a.plan_symbol().len(), b.symbol.len(), "{name}");
     }

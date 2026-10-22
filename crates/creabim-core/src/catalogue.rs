@@ -133,10 +133,22 @@ fn metal(name: &str, rgb: [u8; 3], rough: f32) -> Look {
 }
 
 fn ceramic() -> Look {
-    look("Sanitary ceramic, white", "ceramic", Hatch::Empty, [244, 244, 240], 0.12)
+    look(
+        "Sanitary ceramic, white",
+        "ceramic",
+        Hatch::Empty,
+        [244, 244, 240],
+        0.12,
+    )
 }
 fn acrylic() -> Look {
-    look("Acrylic, white", "plastic", Hatch::Empty, [247, 247, 245], 0.2)
+    look(
+        "Acrylic, white",
+        "plastic",
+        Hatch::Empty,
+        [247, 247, 245],
+        0.2,
+    )
 }
 fn chrome() -> Look {
     metal("Chrome", [218, 221, 226], 0.12)
@@ -164,16 +176,40 @@ fn walnut() -> Look {
     look("Walnut veneer", "wood", Hatch::Timber, [104, 70, 46], 0.5)
 }
 fn laminate() -> Look {
-    look("Laminate, white", "plastic", Hatch::Empty, [236, 236, 232], 0.4)
+    look(
+        "Laminate, white",
+        "plastic",
+        Hatch::Empty,
+        [236, 236, 232],
+        0.4,
+    )
 }
 fn kitchen_front() -> Look {
-    look("Kitchen front, sage", "finish", Hatch::Empty, [140, 158, 134], 0.45)
+    look(
+        "Kitchen front, sage",
+        "finish",
+        Hatch::Empty,
+        [140, 158, 134],
+        0.45,
+    )
 }
 fn quartz() -> Look {
-    look("Worktop, quartz", "stone", Hatch::Diagonal, [222, 220, 212], 0.25)
+    look(
+        "Worktop, quartz",
+        "stone",
+        Hatch::Diagonal,
+        [222, 220, 212],
+        0.25,
+    )
 }
 fn plinth() -> Look {
-    look("Plinth, dark grey", "plastic", Hatch::Empty, [52, 54, 58], 0.6)
+    look(
+        "Plinth, dark grey",
+        "plastic",
+        Hatch::Empty,
+        [52, 54, 58],
+        0.6,
+    )
 }
 fn fabric(name: &str, rgb: [u8; 3]) -> Look {
     look(name, "textile", Hatch::Empty, rgb, 0.95)
@@ -182,7 +218,13 @@ fn linen() -> Look {
     fabric("Linen, white", [236, 233, 225])
 }
 fn appliance_white() -> Look {
-    look("Appliance, white enamel", "metal", Hatch::Empty, [240, 240, 238], 0.3)
+    look(
+        "Appliance, white enamel",
+        "metal",
+        Hatch::Empty,
+        [240, 240, 238],
+        0.3,
+    )
 }
 
 // ---- building an object ----
@@ -286,7 +328,10 @@ fn washbasin() -> CatalogueObject {
         "Basin",
         ceramic(),
         stack(&[
-            (rrect(c + v2(0.0, 0.03), w - 0.1, d - 0.12, 0.05, k), top - 0.2),
+            (
+                rrect(c + v2(0.0, 0.03), w - 0.1, d - 0.12, 0.05, k),
+                top - 0.2,
+            ),
             (rrect(c, w, d, 0.07, k), top - 0.04),
             (rrect(c, w, d, 0.07, k), top),
             (rrect(bowl, 0.46, 0.3, 0.13, k), top),
@@ -408,12 +453,7 @@ fn shower() -> CatalogueObject {
     b.outline(rrect(c, s - 0.06, s - 0.06, 0.03, k));
     b.line(v2(-0.42, -0.03), v2(0.42, -0.87));
     b.line(v2(0.42, -0.03), v2(-0.42, -0.87));
-    b.add(
-        "Drain",
-        chrome(),
-        cylinder(c, 0.05, 0.025, 0.03),
-        false,
-    );
+    b.add("Drain", chrome(), cylinder(c, 0.05, 0.025, 0.03), false);
     // a fixed panel across half the front and one along the right side
     b.add(
         "Front panel",
@@ -484,10 +524,17 @@ fn base_unit(b: &mut Build, w: f64, doors: usize, front: Look) {
         b.add(
             "Door",
             front.clone(),
-            cuboid(v3(x0 + 0.002, -0.58, 0.102), v3(x0 + dw - 0.002, -0.56, 0.868)),
+            cuboid(
+                v3(x0 + 0.002, -0.58, 0.102),
+                v3(x0 + dw - 0.002, -0.56, 0.868),
+            ),
             false,
         );
-        let hx = if i % 2 == 0 && doors > 1 { x0 + dw - 0.05 } else { x0 + 0.05 };
+        let hx = if i % 2 == 0 && doors > 1 {
+            x0 + dw - 0.05
+        } else {
+            x0 + 0.05
+        };
         b.add(
             "Handle",
             stainless(),
@@ -669,13 +716,23 @@ fn fridge() -> CatalogueObject {
     b.add(
         "Body",
         appliance_white(),
-        soft_box(v3(-w / 2.0, -d + 0.04, 0.0), v3(w / 2.0, 0.0, h), 0.02, 0.01),
+        soft_box(
+            v3(-w / 2.0, -d + 0.04, 0.0),
+            v3(w / 2.0, 0.0, h),
+            0.02,
+            0.01,
+        ),
         true,
     );
     b.add(
         "Fridge door",
         appliance_white(),
-        soft_box(v3(-0.298, -d, 0.71), v3(0.298, -d + 0.04, h - 0.005), 0.01, 0.006),
+        soft_box(
+            v3(-0.298, -d, 0.71),
+            v3(0.298, -d + 0.04, h - 0.005),
+            0.01,
+            0.006,
+        ),
         false,
     );
     b.add(
@@ -729,7 +786,12 @@ fn sofa_like(b: &mut Build, seats: usize, seat_w: f64, cover: Look) {
     b.add(
         "Back",
         cover.clone(),
-        soft_box(v3(x0 + arm - 0.01, -0.2, 0.08), v3(-x0 - arm + 0.01, 0.0, 0.82), 0.03, 0.03),
+        soft_box(
+            v3(x0 + arm - 0.01, -0.2, 0.08),
+            v3(-x0 - arm + 0.01, 0.0, 0.82),
+            0.03,
+            0.03,
+        ),
         true,
     );
     for i in 0..seats {
@@ -737,13 +799,23 @@ fn sofa_like(b: &mut Build, seats: usize, seat_w: f64, cover: Look) {
         b.add(
             "Seat cushion",
             cover.clone(),
-            soft_box(v3(a + 0.005, -d + 0.02, 0.22), v3(a + seat_w - 0.005, -0.32, 0.44), 0.05, 0.05),
+            soft_box(
+                v3(a + 0.005, -d + 0.02, 0.22),
+                v3(a + seat_w - 0.005, -0.32, 0.44),
+                0.05,
+                0.05,
+            ),
             true,
         );
         b.add(
             "Back cushion",
             cover.clone(),
-            soft_box(v3(a + 0.01, -0.36, 0.44), v3(a + seat_w - 0.01, -0.18, 0.78), 0.05, 0.06),
+            soft_box(
+                v3(a + 0.01, -0.36, 0.44),
+                v3(a + seat_w - 0.01, -0.18, 0.78),
+                0.05,
+                0.06,
+            ),
             true,
         );
     }
@@ -753,7 +825,12 @@ fn sofa_like(b: &mut Build, seats: usize, seat_w: f64, cover: Look) {
         (x0 + 0.06, -0.06),
         (-x0 - 0.06, -0.06),
     ] {
-        b.add("Foot", walnut(), cylinder(v2(x, y), 0.025, 0.0, 0.08), false);
+        b.add(
+            "Foot",
+            walnut(),
+            cylinder(v2(x, y), 0.025, 0.0, 0.08),
+            false,
+        );
     }
 }
 
@@ -857,7 +934,12 @@ fn chair() -> CatalogueObject {
     b.add(
         "Seat",
         oak(),
-        soft_box(v3(-w / 2.0, -d, seat - 0.03), v3(w / 2.0, -0.02, seat), 0.03, 0.006),
+        soft_box(
+            v3(-w / 2.0, -d, seat - 0.03),
+            v3(w / 2.0, -0.02, seat),
+            0.03,
+            0.006,
+        ),
         true,
     );
     for (x, y) in [(-0.19, -0.05), (0.19, -0.05), (-0.19, -0.47), (0.19, -0.47)] {
@@ -895,25 +977,43 @@ fn bed(w: f64, pillows: usize, cover: Look) -> Build {
     b.add(
         "Headboard",
         oak(),
-        soft_box(v3(-fw / 2.0, -head, 0.0), v3(fw / 2.0, 0.0, 1.0), 0.01, 0.01),
+        soft_box(
+            v3(-fw / 2.0, -head, 0.0),
+            v3(fw / 2.0, 0.0, 1.0),
+            0.01,
+            0.01,
+        ),
         true,
     );
     b.add(
         "Frame",
         oak(),
-        cuboid(v3(-fw / 2.0, -head - l - 0.03, 0.12), v3(fw / 2.0, -head, 0.32)),
+        cuboid(
+            v3(-fw / 2.0, -head - l - 0.03, 0.12),
+            v3(fw / 2.0, -head, 0.32),
+        ),
         true,
     );
     for (x, y) in [
         (-fw / 2.0 + 0.04, -head - l + 0.01),
         (fw / 2.0 - 0.04, -head - l + 0.01),
     ] {
-        b.add("Leg", oak(), cuboid(v3(x - 0.03, y - 0.03, 0.0), v3(x + 0.03, y + 0.03, 0.12)), false);
+        b.add(
+            "Leg",
+            oak(),
+            cuboid(v3(x - 0.03, y - 0.03, 0.0), v3(x + 0.03, y + 0.03, 0.12)),
+            false,
+        );
     }
     b.add(
         "Mattress",
         linen(),
-        soft_box(v3(-w / 2.0, -head - l, 0.32), v3(w / 2.0, -head, 0.54), 0.05, 0.04),
+        soft_box(
+            v3(-w / 2.0, -head - l, 0.32),
+            v3(w / 2.0, -head, 0.54),
+            0.05,
+            0.04,
+        ),
         true,
     );
     let pw = (w - 0.1) / pillows as f64;
@@ -922,14 +1022,24 @@ fn bed(w: f64, pillows: usize, cover: Look) -> Build {
         b.add(
             "Pillow",
             linen(),
-            soft_box(v3(x0 + 0.02, -head - 0.48, 0.54), v3(x0 + pw - 0.02, -head - 0.08, 0.65), 0.08, 0.05),
+            soft_box(
+                v3(x0 + 0.02, -head - 0.48, 0.54),
+                v3(x0 + pw - 0.02, -head - 0.08, 0.65),
+                0.08,
+                0.05,
+            ),
             true,
         );
     }
     b.add(
         "Duvet",
         cover,
-        soft_box(v3(-w / 2.0 - 0.03, -head - l - 0.02, 0.48), v3(w / 2.0 + 0.03, -head - 0.62, 0.6), 0.04, 0.03),
+        soft_box(
+            v3(-w / 2.0 - 0.03, -head - l - 0.02, 0.48),
+            v3(w / 2.0 + 0.03, -head - 0.62, 0.6),
+            0.04,
+            0.03,
+        ),
         true,
     );
     // the duvet turned back
@@ -1003,7 +1113,12 @@ fn bedside() -> CatalogueObject {
     b.add(
         "Body",
         oak(),
-        soft_box(v3(-w / 2.0, -d + 0.02, 0.0), v3(w / 2.0, 0.0, h), 0.01, 0.004),
+        soft_box(
+            v3(-w / 2.0, -d + 0.02, 0.0),
+            v3(w / 2.0, 0.0, h),
+            0.01,
+            0.004,
+        ),
         true,
     );
     for (z0, z1) in [(0.05, 0.26), (0.28, 0.48)] {
@@ -1016,7 +1131,12 @@ fn bedside() -> CatalogueObject {
         b.add(
             "Knob",
             stainless(),
-            cylinder(v2(0.0, -d - 0.01), 0.012, (z0 + z1) / 2.0 - 0.012, (z0 + z1) / 2.0 + 0.012),
+            cylinder(
+                v2(0.0, -d - 0.01),
+                0.012,
+                (z0 + z1) / 2.0 - 0.012,
+                (z0 + z1) / 2.0 + 0.012,
+            ),
             false,
         );
     }
@@ -1038,7 +1158,12 @@ fn desk() -> CatalogueObject {
     b.add(
         "Top",
         laminate(),
-        soft_box(v3(-w / 2.0, -d, h - 0.025), v3(w / 2.0, 0.0, h), 0.01, 0.003),
+        soft_box(
+            v3(-w / 2.0, -d, h - 0.025),
+            v3(w / 2.0, 0.0, h),
+            0.01,
+            0.003,
+        ),
         true,
     );
     for x in [-w / 2.0 + 0.05, w / 2.0 - 0.05] {
@@ -1046,7 +1171,10 @@ fn desk() -> CatalogueObject {
             b.add(
                 "Leg",
                 black_metal(),
-                cuboid(v3(x - 0.02, y - 0.02, 0.0), v3(x + 0.02, y + 0.02, h - 0.025)),
+                cuboid(
+                    v3(x - 0.02, y - 0.02, 0.0),
+                    v3(x + 0.02, y + 0.02, h - 0.025),
+                ),
                 false,
             );
         }
@@ -1060,7 +1188,10 @@ fn desk() -> CatalogueObject {
     b.add(
         "Modesty panel",
         laminate(),
-        cuboid(v3(-w / 2.0 + 0.08, -0.05, 0.35), v3(w / 2.0 - 0.08, -0.032, h - 0.025)),
+        cuboid(
+            v3(-w / 2.0 + 0.08, -0.05, 0.35),
+            v3(w / 2.0 - 0.08, -0.032, h - 0.025),
+        ),
         false,
     );
     b.finish(

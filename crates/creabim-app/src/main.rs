@@ -12,6 +12,7 @@ mod handles;
 mod icons;
 mod memberstool;
 mod modal;
+mod objecttool;
 mod outline;
 mod paneface;
 mod planview;

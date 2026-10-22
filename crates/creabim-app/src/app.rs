@@ -35,6 +35,8 @@ mod gridvis;
 mod levelsui;
 #[path = "materials.rs"]
 mod materials;
+#[path = "objectsui.rs"]
+mod objectsui;
 #[path = "shell.rs"]
 mod shell;
 #[path = "typesui.rs"]
@@ -162,6 +164,8 @@ pub struct CreaBimApp {
     asm: assemblies::AssembliesUi,
     /// The Types window.
     types: typesui::TypesUi,
+    /// The Catalogue window and the user's own catalogue.
+    catalogue: objectsui::CatalogueUi,
     /// The Levels manager and the Project units dialog.
     levels: levelsui::LevelsUi,
     /// The annotation styles and sheet templates windows.
@@ -233,6 +237,7 @@ impl CreaBimApp {
             mat: Default::default(),
             asm: Default::default(),
             types: Default::default(),
+            catalogue: Default::default(),
             levels: Default::default(),
             drafting: Default::default(),
             orbit_selection: false,
@@ -2283,6 +2288,22 @@ impl CreaBimApp {
                 snaps::draw_tracked(painter, project, snap, align, c, from.and_then(project));
             }
         }
+        if tool == Tool::Object {
+            if ui.input(|i| i.key_pressed(egui::Key::Space))
+                && !ui.ctx().egui_wants_keyboard_input()
+            {
+                self.plan.objects.rotation = (self.plan.objects.rotation + 90.0).rem_euclid(360.0);
+            }
+            crate::objecttool::preview(
+                painter,
+                project,
+                self.doc.model(),
+                level,
+                p,
+                &self.plan,
+                true,
+            );
+        }
         if let Some(a) = from {
             match tool {
                 Tool::Guide => {
@@ -2375,7 +2396,7 @@ impl CreaBimApp {
                     (Tool::Slab | Tool::Roof | Tool::Shaft, _) => {
                         self.plan.status.take().unwrap_or_default()
                     }
-                    (Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing, _) => self
+                    (Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing | Tool::Object, _) => self
                         .plan
                         .status
                         .take()
@@ -3378,6 +3399,7 @@ impl CreaBimApp {
         let mut redraw = false;
         let mut new_style = false;
         let mut show_visibility = false;
+        let mut object_type = false;
         match &mut edited.kind {
             ElementKind::Level(l) => {
                 if num(ui, "Elevation", &mut l.elevation, -100.0, 1000.0) {
@@ -4303,6 +4325,10 @@ impl CreaBimApp {
                     }
                 }
             }
+            ElementKind::Object(o) => {
+                label = objectsui::object_fields(ui, o);
+                object_type = true;
+            }
             k @ (ElementKind::Column(_)
             | ElementKind::Beam(_)
             | ElementKind::Roof(_)
@@ -4379,6 +4405,9 @@ impl CreaBimApp {
             }
             let r = self.doc.edit_merged(id, label, |e| *e = edited.clone());
             self.report(r, format!("{label}."));
+        }
+        if object_type {
+            self.object_type_section(ui, id);
         }
         if new_style {
             self.status = "New text style: set its font, size and colour below.".into();
@@ -4573,10 +4602,14 @@ impl eframe::App for CreaBimApp {
         if std::mem::take(&mut self.plan.want_levels) {
             self.open_levels();
         }
+        if std::mem::take(&mut self.plan.want_catalogue) {
+            self.catalogue.open = true;
+        }
         self.open_view_menu();
         self.materials_window(&ctx);
         self.assemblies_window(&ctx);
         self.types_window(&ctx);
+        self.catalogue_window(&ctx);
         self.levels_window(&ctx);
         self.styles_window(&ctx);
         self.templates_window(&ctx);
@@ -4827,6 +4860,7 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Stair(_) => "stair",
         ElementKind::Railing(_) => "railing",
         ElementKind::CropBox(_) => "crop box",
+        ElementKind::Object(_) => "object",
         ElementKind::ElementType(_) => "type",
         ElementKind::Shaft(_) => "shaft",
     }

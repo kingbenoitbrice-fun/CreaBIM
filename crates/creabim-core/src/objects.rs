@@ -132,7 +132,13 @@ pub const IFC_CLASSES: &[(&str, &str, &[&str])] = &[
     (
         "IfcSystemFurnitureElement",
         "IfcSystemFurnitureElementType",
-        &["PANEL", "WORKSURFACE", "SUBRACK", "USERDEFINED", "NOTDEFINED"],
+        &[
+            "PANEL",
+            "WORKSURFACE",
+            "SUBRACK",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
     ),
 ];
 
@@ -370,6 +376,17 @@ impl Object {
 }
 
 /// The object type of a placed object.
+/// The object type with id `id`, if that is one.
+pub fn type_of_id(model: &Model, id: ElementId) -> Option<&ObjectType> {
+    match &model.get(id)?.kind {
+        ElementKind::ElementType(ElementType {
+            params: TypeParams::Object(t),
+            ..
+        }) => Some(t),
+        _ => None,
+    }
+}
+
 pub fn type_of<'a>(model: &'a Model, e: &Element) -> Option<&'a ObjectType> {
     match crate::types::type_of(model, e)? {
         (
@@ -415,16 +432,14 @@ pub fn hull(points: &[DVec2]) -> Vec<DVec2> {
     let cross = |o: DVec2, a: DVec2, b: DVec2| (a - o).perp_dot(b - o);
     let mut lower: Vec<DVec2> = vec![];
     for &q in &p {
-        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], q) <= 0.0
-        {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], q) <= 0.0 {
             lower.pop();
         }
         lower.push(q);
     }
     let mut upper: Vec<DVec2> = vec![];
     for &q in p.iter().rev() {
-        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], q) <= 0.0
-        {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], q) <= 0.0 {
             upper.pop();
         }
         upper.push(q);
@@ -571,7 +586,12 @@ pub fn from_type(model: &Model, type_id: ElementId, key: &str) -> Option<Catalog
 /// A catalogue object made from free meshes of a model (shapes modelled
 /// here or linked from Blender or FreeCAD), one part each, as they stand
 /// in the model; the first one's IFC class says what it is.
-pub fn from_meshes(model: &Model, ids: &[ElementId], name: &str, key: &str) -> Option<CatalogueObject> {
+pub fn from_meshes(
+    model: &Model,
+    ids: &[ElementId],
+    name: &str,
+    key: &str,
+) -> Option<CatalogueObject> {
     let mut parts = vec![];
     let mut materials = vec![];
     let mut class = None;
@@ -778,7 +798,10 @@ mod tests {
         let text = back.to_json();
         // (floats read back to within a hair: compare what matters)
         let read = CatalogueObject::from_json(&text).unwrap();
-        assert_eq!((&read.key, &read.name, &read.materials), (&back.key, &back.name, &back.materials));
+        assert_eq!(
+            (&read.key, &read.name, &read.materials),
+            (&back.key, &back.name, &back.materials)
+        );
         assert!((read.object.size() - back.object.size()).length() < 1e-9);
         // deleting the type deletes its objects with it, in one step
         let model = doc.model().clone();

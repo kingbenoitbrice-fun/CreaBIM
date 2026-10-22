@@ -999,7 +999,8 @@ fn object_type(
     }
     let body_rep = c.body_rep("Tessellation", &items);
     let origin = c.placement3d(DVec3::ZERO, None, None);
-    let body_map = c.w.add("IFCREPRESENTATIONMAP", format!("{origin},{body_rep}"));
+    let body_map =
+        c.w.add("IFCREPRESENTATIONMAP", format!("{origin},{body_rep}"));
     // the plan symbol, as polylines on the floor
     let mut curves = vec![];
     for s in o.plan_symbol() {
@@ -1094,8 +1095,10 @@ fn object_type(
         let mut reps = vec![];
         for (i, map) in maps.iter().enumerate() {
             let at = c.w.add("IFCCARTESIANPOINT", "(0.,0.,0.)");
-            let op =
-                c.w.add("IFCCARTESIANTRANSFORMATIONOPERATOR3D", format!("$,$,{at},$,$"));
+            let op = c.w.add(
+                "IFCCARTESIANTRANSFORMATIONOPERATOR3D",
+                format!("$,$,{at},$,$"),
+            );
             let item = c.w.add("IFCMAPPEDITEM", format!("{map},{op}"));
             let (ctx, ident) = if i == 0 {
                 (c.body, "Body")
