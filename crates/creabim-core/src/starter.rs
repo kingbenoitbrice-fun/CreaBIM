@@ -550,14 +550,14 @@ fn structure(b: &mut Builder) {
     let eaves = 2.8;
     let mut tx = Transaction::new("Starter house: grids");
     for (label, a, bb) in [
-        ("A", v(0.0, -1.8), v(0.0, 12.2)),
-        ("B", v(4.0, -1.8), v(4.0, 12.2)),
-        ("C", v(7.4, -1.8), v(7.4, 12.2)),
-        ("D", v(11.0, -1.8), v(11.0, 12.2)),
-        ("E", v(15.6, -1.8), v(15.6, 12.2)),
-        ("1", v(-1.8, 0.0), v(17.4, 0.0)),
-        ("2", v(-1.8, 5.6), v(17.4, 5.6)),
-        ("3", v(-1.8, 9.6), v(17.4, 9.6)),
+        ("A", v(0.0, -1.2), v(0.0, 11.8)),
+        ("B", v(4.0, -1.2), v(4.0, 11.8)),
+        ("C", v(7.4, -1.2), v(7.4, 11.8)),
+        ("D", v(11.0, -1.2), v(11.0, 11.8)),
+        ("E", v(15.6, -1.2), v(15.6, 11.8)),
+        ("1", v(-1.2, 0.0), v(17.0, 0.0)),
+        ("2", v(-1.2, 5.6), v(17.0, 5.6)),
+        ("3", v(-1.2, 9.6), v(17.0, 9.6)),
     ] {
         tx = tx.insert(Element::new(
             format!("Grid {label}"),
@@ -1546,48 +1546,48 @@ fn views(b: &mut Builder) -> Views {
     for (name, a, bb, depth, cut, style) in [
         (
             "Section A-A",
-            v(6.6, 12.8),
-            v(6.6, -4.0),
+            v(6.6, 12.2),
+            v(6.6, -4.6),
             10.0,
             true,
             ViewStyle::HiddenLine,
         ),
         (
             "Section B-B",
-            v(-2.0, 7.4),
-            v(17.6, 7.4),
+            v(-3.4, 7.4),
+            v(18.0, 7.4),
             3.0,
             true,
             ViewStyle::HiddenLine,
         ),
         (
             "South Elevation",
-            v(-2.5, -6.0),
-            v(18.1, -6.0),
+            v(-1.5, -5.2),
+            v(17.1, -5.2),
             30.0,
             false,
             ViewStyle::Shaded,
         ),
         (
             "East Elevation",
-            v(19.0, -4.5),
-            v(19.0, 13.5),
+            v(17.8, -2.4),
+            v(17.8, 11.6),
             30.0,
             false,
             ViewStyle::Shaded,
         ),
         (
             "North Elevation",
-            v(18.1, 15.0),
-            v(-2.5, 15.0),
+            v(17.5, 12.3),
+            v(-1.1, 12.3),
             30.0,
             false,
             ViewStyle::Shaded,
         ),
         (
             "West Elevation",
-            v(-5.0, 13.5),
-            v(-5.0, -4.5),
+            v(-3.6, 12.2),
+            v(-3.6, -1.5),
             30.0,
             false,
             ViewStyle::Shaded,
@@ -1606,11 +1606,15 @@ fn views(b: &mut Builder) -> Views {
         }
         tx = add(b, tx, name, view);
     }
+    // the 3D views show the house above ground, without the stair well's
+    // outline
     let mut street = View::axonometric(40.0, 28.0);
     street.scale = 100.0;
+    street.hidden.categories = vec![C::Openings, C::Footings];
     tx = add(b, tx, "3D Street view", street);
     let mut garden = View::axonometric(212.0, 26.0);
-    garden.scale = 80.0;
+    garden.scale = 100.0;
+    garden.hidden.categories = vec![C::Openings, C::Footings];
     tx = add(b, tx, "3D Garden view", garden);
     let mut schedules = vec![];
     for category in [
@@ -1690,7 +1694,7 @@ fn annotate(b: &mut Builder, views: &Views) {
         (
             "LIVING / DINING",
             rect(v(hw, spn), v(11.0 - H, 9.6 - H)),
-            v(7.6, 6.4),
+            v(9.0, 6.3),
         ),
         (
             "KITCHEN",
@@ -1751,6 +1755,40 @@ fn annotate(b: &mut Builder, views: &Views) {
             n.style = room;
             tx = tx.insert(Element::new(format!("Room {name}"), ElementKind::Note(n)));
         }
+    }
+    b.commit(tx);
+
+    // what the foundation and roof plans need saying, with leaders to
+    // what they are about
+    let notes: [(ElementId, DVec2, &str, Option<DVec2>); 7] = [
+        (
+            views.foundation,
+            v(12.2, 2.9),
+            "STRIP FOOTINGS\nC30/37 concrete, 450 deep\n800 wide under exterior walls\n600 wide under partitions\nTop -350, underside -800",
+            Some(v(11.2, 3.4)),
+        ),
+        (
+            views.foundation,
+            v(-3.6, 11.6),
+            "PAD 1000 × 1000\nunder the loggia column",
+            Some(v(-0.4, 10.0)),
+        ),
+        (
+            views.foundation,
+            v(12.6, 12.4),
+            "PADS 600 × 600\nunder the terrace posts",
+            Some(v(11.8, 11.4)),
+        ),
+        (views.roof, v(4.0, 2.4), "SLATE 35°\nfalls to the eaves", None),
+        (views.roof, v(4.0, 7.4), "SLATE 35°\nfalls to the eaves", None),
+        (views.roof, v(12.4, 7.6), "GREEN ROOF\nsedum on EPDM\nfalls 1:60 to the east", None),
+        (views.roof, v(4.4, -2.4), "ZINC CANOPY", Some(v(5.6, -0.9))),
+    ];
+    let mut tx = Transaction::new("Starter house: notes");
+    for (view, at, text, leader) in notes {
+        let mut n = Note::new(view, at, text);
+        n.leader = leader.map(HostPoint::free);
+        tx = tx.insert(Element::new("Note", ElementKind::Note(n)));
     }
     b.commit(tx);
 
@@ -1861,6 +1899,47 @@ fn annotate(b: &mut Builder, views: &Views) {
             off,
         ));
     }
+    // the west side, up past the loggia to the column's outer face
+    for (view, west) in [
+        (views.ground, b.id("GF West")),
+        (views.first, b.id("FF West")),
+        (views.foundation, b.id("GF West")),
+    ] {
+        let free = |y: f64| HostPoint::free(v(-H, y));
+        let chain = [
+            on(west, H, face, true),
+            on(west, 0.0, face, true),
+            on(west, 0.0, face, false),
+            free(9.6),
+            free(9.6 + H),
+        ];
+        for w in chain.windows(2) {
+            tx = tx.insert(dim(view, w[0], w[1], 1.5));
+        }
+        tx = tx.insert(dim(view, chain[0], chain[4], 2.3));
+    }
+    // the foundation plan: the grids and overall length along the front
+    let south = b.id("GF South");
+    for (u0, u1) in [
+        (-H, 0.0),
+        (0.0, 4.0),
+        (4.0, 7.4),
+        (7.4, 11.0),
+        (11.0, 11.0 + H),
+    ] {
+        tx = tx.insert(dim(
+            views.foundation,
+            on(south, u0, face, false),
+            on(south, u1, face, false),
+            -1.5,
+        ));
+    }
+    tx = tx.insert(dim(
+        views.foundation,
+        on(south, -H, face, false),
+        on(south, H, face, true),
+        -2.3,
+    ));
     // the wing's length along its south wall
     let wing = b.id("GF Wing South");
     tx = tx.insert(dim(
@@ -1906,54 +1985,55 @@ fn sheets(b: &mut Builder, views: &Views) {
     // drawing point pinned there, crop))
     type Place = (ElementId, DVec2, DVec2, Option<[DVec2; 2]>);
     let crop = |lo: (f64, f64), hi: (f64, f64)| Some([v(lo.0, lo.1), v(hi.0, hi.1)]);
-    let plan_crop = crop((-4.0, -5.2), (20.0, 13.4));
+    let plan_crop = crop((-5.0, -5.6), (19.5, 13.4));
     let sched = &views.schedules;
     let set: Vec<(&str, &str, &str, Vec<Place>)> = vec![
         (
             "A000",
             "Cover",
             "A3",
-            vec![(views.garden, v(170.0, 165.0), v(0.0, 0.0), None)],
+            vec![(views.garden, v(235.0, 200.0), v(0.0, 0.0), None)],
         ),
         (
             "A101",
             "Ground Floor Plan",
             "A2",
-            vec![(views.ground, v(250.0, 225.0), v(7.8, 4.0), plan_crop)],
+            vec![(views.ground, v(287.0, 222.0), v(7.8, 4.0), plan_crop)],
         ),
         (
             "A102",
             "First Floor Plan",
             "A2",
-            vec![(views.first, v(250.0, 225.0), v(7.8, 4.0), plan_crop)],
+            vec![(views.first, v(287.0, 222.0), v(7.8, 4.0), plan_crop)],
         ),
         (
             "A103",
-            "Foundation and Roof Plans",
+            "Foundation Plan",
             "A2",
-            vec![
-                (
-                    views.foundation,
-                    v(185.0, 230.0),
-                    v(7.8, 4.0),
-                    crop((-3.0, -3.0), (18.5, 13.0)),
-                ),
-                (
-                    views.roof,
-                    v(470.0, 290.0),
-                    v(7.8, 4.8),
-                    crop((-2.0, -1.5), (17.5, 12.5)),
-                ),
-            ],
+            vec![(views.foundation, v(287.0, 222.0), v(7.8, 4.0), plan_crop)],
+        ),
+        (
+            "A104",
+            "Roof Plan",
+            "A3",
+            vec![(
+                views.roof,
+                v(160.0, 172.0),
+                v(7.8, 4.8),
+                crop((-4.0, -4.0), (19.0, 13.0)),
+            )],
         ),
         (
             "A201",
-            "Sections",
+            "Section A-A",
             "A2",
-            vec![
-                (views.sections[0], v(150.0, 220.0), v(8.0, 3.0), None),
-                (views.sections[1], v(420.0, 220.0), v(9.0, 3.0), None),
-            ],
+            vec![(views.sections[0], v(280.0, 235.0), v(9.6, 4.8), None)],
+        ),
+        (
+            "A202",
+            "Section B-B",
+            "A2",
+            vec![(views.sections[1], v(290.0, 245.0), v(12.2, 3.6), None)],
         ),
         (
             "A301",
@@ -1968,23 +2048,31 @@ fn sheets(b: &mut Builder, views: &Views) {
         ),
         (
             "A601",
-            "Schedules",
+            "Door, Window and Structure Schedules",
             "A2",
             vec![
                 (sched[0], v(35.0, 400.0), DVec2::ZERO, None),
-                (sched[1], v(35.0, 250.0), DVec2::ZERO, None),
+                (sched[1], v(35.0, 270.0), DVec2::ZERO, None),
                 (sched[3], v(320.0, 400.0), DVec2::ZERO, None),
-                (sched[4], v(320.0, 330.0), DVec2::ZERO, None),
-                (sched[5], v(35.0, 120.0), DVec2::ZERO, None),
+            ],
+        ),
+        (
+            "A602",
+            "Furniture, Fixture and Wall Schedules",
+            "A2",
+            vec![
+                (sched[4], v(35.0, 400.0), DVec2::ZERO, None),
+                (sched[2], v(35.0, 245.0), DVec2::ZERO, None),
+                (sched[5], v(320.0, 400.0), DVec2::ZERO, None),
             ],
         ),
         (
             "A901",
             "3D Views",
-            "A3",
+            "A2",
             vec![
-                (views.street, v(115.0, 170.0), DVec2::ZERO, None),
-                (views.garden, v(300.0, 110.0), DVec2::ZERO, None),
+                (views.street, v(150.0, 215.0), DVec2::ZERO, None),
+                (views.garden, v(420.0, 225.0), DVec2::ZERO, None),
             ],
         ),
     ];
@@ -2011,35 +2099,56 @@ fn sheets(b: &mut Builder, views: &Views) {
     }
     b.commit(tx);
 
-    // the cover's project notes and drawing list, written on the sheet
+    // the cover: the project's name large, the drawing list and a few
+    // words on the house, written on the sheet clear of the 3D view
+    let mut tx = Transaction::new("Starter house: cover styles");
+    for (name, size) in [("Cover title", 9.0), ("Cover heading", 3.5)] {
+        let style = TextStyle {
+            size,
+            bold: true,
+            purpose: StyleUse::Notes,
+            ..Default::default()
+        };
+        tx = b.keep(name, Element::new(name, ElementKind::TextStyle(style)), tx);
+    }
+    b.commit(tx);
     let cover = b.id("A000");
+    let title = Some(b.id("Cover title"));
+    let heading = Some(b.id("Cover heading"));
     let notes = [
+        (v(30.0, 272.0), PROJECT.to_string(), title),
         (
-            v(30.0, 270.0),
-            format!("{PROJECT}\n{ADDRESS}\nA new family house for {CLIENT}"),
+            v(30.0, 259.0),
+            format!("{ADDRESS}  ·  a new family house for {CLIENT}"),
+            heading,
         ),
+        (v(30.0, 92.0), "DRAWINGS".to_string(), heading),
         (
-            v(30.0, 95.0),
-            "DRAWINGS\nA000  Cover\nA101  Ground Floor Plan  1:50\nA102  First Floor Plan  1:50\n\
-             A103  Foundation and Roof Plans  1:50, 1:100\nA201  Sections  1:50\n\
-             A301  Elevations  1:100\nA601  Schedules\nA901  3D Views"
+            v(30.0, 84.0),
+            "A000  Cover\nA101  Ground Floor Plan  1:50\nA102  First Floor Plan  1:50\n\
+             A103  Foundation Plan  1:50\nA104  Roof Plan  1:100\nA201  Section A-A  1:50\nA202  Section B-B  1:50\n\
+             A301  Elevations  1:100\nA601  Door, Window and Structure Schedules\nA602  Furniture, Fixture and Wall Schedules\nA901  3D Views"
                 .to_string(),
+            None,
         ),
+        (v(115.0, 92.0), "THE HOUSE".to_string(), heading),
         (
-            v(150.0, 95.0),
-            "THE HOUSE\nTwo storeys and a kitchen wing, 4 bedrooms' worth of space\n\
-             Gross floor area about 235 m²\nWalls: rendered and timber-clad block, 400 mm\n\
-             Roofs: slate at 35°, a green flat roof over the wing\n\
-             Edit anything: every drawing here follows the model"
+            v(115.0, 84.0),
+            "Two storeys and a single-storey kitchen wing\n\
+             Gross floor area about 220 m²\n\
+             Walls: rendered and timber-clad block, 400 mm\n\
+             Roofs: slate at 35°, green flat roof on the wing\n\
+             Every drawing here follows the model:\n\
+             change it and the sheets update"
                 .to_string(),
+            None,
         ),
     ];
     let mut tx = Transaction::new("Starter house: cover notes");
-    for (at, text) in notes {
-        tx = tx.insert(Element::new(
-            "Note",
-            ElementKind::Note(Note::new(cover, at, text)),
-        ));
+    for (at, text, style) in notes {
+        let mut note = Note::new(cover, at, text);
+        note.style = style;
+        tx = tx.insert(Element::new("Note", ElementKind::Note(note)));
     }
     b.commit(tx);
 }
