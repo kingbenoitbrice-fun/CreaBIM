@@ -20,8 +20,10 @@ pub(super) struct TypePreview {
     pub spotlight: Option<ElementId>,
     /// The sample's drawings, and what they were made for: (type, model
     /// revision, azimuth, altitude).
-    cache: Option<((ElementId, u64, i64, i64), Option<Sample>)>,
+    cache: Option<(SampleKey, Option<Sample>)>,
 }
+
+type SampleKey = (ElementId, u64, i64, i64);
 
 impl Default for TypePreview {
     fn default() -> Self {

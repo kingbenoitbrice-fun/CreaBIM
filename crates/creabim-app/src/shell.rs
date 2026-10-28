@@ -176,6 +176,15 @@ fn icon_name(i: Icon) -> &'static str {
 }
 
 /// A plain name for a group of the project browser.
+/// The project browser's group an element is listed in: every kind of
+/// type in one, the rest by IFC class.
+fn class_of(e: &Element) -> String {
+    match e.kind {
+        ElementKind::ElementType(_) => "ElementType".to_string(),
+        _ => e.ifc_class().to_string(),
+    }
+}
+
 fn group_title(class: &str) -> String {
     match class {
         "View" => "Views".into(),
@@ -756,7 +765,34 @@ impl CreaBimApp {
             flatten(vec![item], "Help › ", &mut out);
         }
         flatten(self.menu_items("views"), "Open › ", &mut out);
+        // and the model's elements, by name: picking one selects and frames it
+        for e in self.doc.model().iter() {
+            if matches!(
+                e.kind,
+                ElementKind::Units(_) | ElementKind::View(_) | ElementKind::Sheet(_)
+            ) {
+                continue;
+            }
+            out.push(
+                Item::new(
+                    format!("find:{}", e.id.0),
+                    format!("Find › {} › {}", group_title(&class_of(e)), e.name),
+                )
+                .icon(icon_name(Icon::of(e)))
+                .hint("Select it and frame it in the 3D view"),
+            );
+        }
         out
+    }
+
+    /// How many elements the project has, leaving out its units, which
+    /// every project has once.
+    pub(super) fn element_count(&self) -> usize {
+        self.doc
+            .model()
+            .iter()
+            .filter(|e| !matches!(e.kind, ElementKind::Units(_)))
+            .count()
     }
 
     /// The 3D view's navigation buttons.
@@ -1004,6 +1040,21 @@ impl CreaBimApp {
                 ) {
                     self.place_view(sheet, view);
                 }
+            }
+            "find" => {
+                if let Some(id) = by_uuid(self) {
+                    self.selection.only(id);
+                    self.frame_selection();
+                    self.status = format!(
+                        "{} selected and framed.",
+                        crate::hoverpick::describe(self.doc.model(), id)
+                    );
+                }
+            }
+            // a link to a website, from the guide: the system's browser
+            "url" if arg.starts_with("https://") || arg.starts_with("http://") => {
+                ctx.open_url(egui::OpenUrl::new_tab(arg));
+                self.status = format!("Opened {arg} in your browser.");
             }
             "vpscale" => {
                 // the scale of the view placed in the selected viewport
@@ -1980,11 +2031,7 @@ impl CreaBimApp {
             if matches!(e.kind, ElementKind::Units(_) | ElementKind::View(_)) {
                 continue;
             }
-            // every kind of type in one group
-            let class = match e.kind {
-                ElementKind::ElementType(_) => "ElementType".to_string(),
-                _ => e.ifc_class().to_string(),
-            };
+            let class = class_of(e);
             match groups.iter_mut().find(|(c, _)| *c == class) {
                 Some((_, v)) => v.push(e),
                 None => groups.push((class, vec![e])),
@@ -2054,7 +2101,7 @@ impl CreaBimApp {
         let groups = out;
         json!({
             "theme": self.theme(),
-            "count": format!("{} elements", model.len()),
+            "count": format!("{} elements", self.element_count()),
             "groups": groups,
         })
     }
@@ -2086,7 +2133,7 @@ impl CreaBimApp {
                 {"kind": "menu", "key": "pivot", "label": "Pivot", "value": self.plan.pivot.label(), "icon": "crosshair",
                  "hint": "What rotate and scale turn about. Shift+right-click places the pivot cursor."},
                 {"kind": "sep"},
-                {"kind": "meta", "label": format!("{} elements", self.doc.model().len())},
+                {"kind": "meta", "label": format!("{} elements", self.element_count())},
             ],
         })
     }

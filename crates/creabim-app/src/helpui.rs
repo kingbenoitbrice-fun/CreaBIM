@@ -97,6 +97,56 @@ impl CreaBimApp {
         h.open = true;
     }
 
+    /// The heading of a section of Properties: click it to fold the section
+    /// shut or open it again, remembered between sessions; a ? beside it
+    /// opens a few lines from `help`'s page. Returns whether it is open.
+    pub(super) fn prop_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: &str,
+        title: &str,
+        default_open: bool,
+        help: Option<&str>,
+    ) -> bool {
+        let open = self
+            .shell
+            .settings
+            .props_open
+            .get(key)
+            .copied()
+            .unwrap_or(default_open);
+        let mut toggle = false;
+        ui.horizontal(|ui| {
+            let (_, r) = ui.allocate_exact_size(egui::vec2(14.0, 16.0), egui::Sense::click());
+            egui::collapsing_header::paint_default_icon(ui, if open { 1.0 } else { 0.0 }, &r);
+            let t = ui
+                .add(
+                    egui::Label::new(egui::RichText::new(title).strong())
+                        .sense(egui::Sense::click())
+                        .truncate(),
+                )
+                .on_hover_text(if open {
+                    "Click to fold this section"
+                } else {
+                    "Click to open this section"
+                });
+            toggle = r.clicked() || t.clicked();
+            if let Some(link) = help {
+                self.quick_help_button(ui, link, title);
+            }
+        });
+        if toggle {
+            let s = &mut self.shell.settings;
+            if !open == default_open {
+                s.props_open.remove(key);
+            } else {
+                s.props_open.insert(key.to_string(), !open);
+            }
+            s.store();
+        }
+        open != toggle
+    }
+
     /// A small ? beside a heading in Properties: it opens a few lines from
     /// the page `link` and a link to read the rest in the Help panel.
     pub(super) fn quick_help_button(&mut self, ui: &mut egui::Ui, link: &str, title: &str) {

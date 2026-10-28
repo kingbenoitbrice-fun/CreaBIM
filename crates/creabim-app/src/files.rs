@@ -179,6 +179,10 @@ pub struct Settings {
     pub render_3d: crate::render3d::RenderMode,
     /// Width of the Help panel, in points.
     pub help_width: f32,
+    /// Which sections of Properties are open, by key, where it differs
+    /// from how each opens at first.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub props_open: std::collections::BTreeMap<String, bool>,
 }
 
 impl Default for Settings {
@@ -197,6 +201,7 @@ impl Default for Settings {
             guides_hidden: false,
             render_3d: Default::default(),
             help_width: 400.0,
+            props_open: Default::default(),
         }
     }
 }
@@ -282,6 +287,18 @@ mod tests {
         assert_eq!(s.ground_grid_spacing, 1.0);
         assert!(s.hidden_3d.is_empty() && !s.xray && !s.guides_hidden && !s.hidden_colour_3d);
         assert_eq!(s.render_3d, crate::render3d::RenderMode::Shaded);
+        assert!(s.props_open.is_empty());
+    }
+
+    #[test]
+    fn folded_properties_sections_round_trip_and_none_writes_nothing() {
+        let mut s = Settings::default();
+        s.props_open.insert("visibility.view".into(), false);
+        s.props_open.insert("visibility.3d".into(), true);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.props_open, s.props_open);
+        let plain = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(!plain.contains("props_open"));
     }
 
     #[test]

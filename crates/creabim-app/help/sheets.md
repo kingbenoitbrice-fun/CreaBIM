@@ -14,6 +14,7 @@ A **sheet** is a page for printing, from A0 to A4, with a title block. Views pla
 
 Each placed view (a **viewport**) shows its view at the view's scale, with what the view hides left out.
 
+- **Scale** a viewport: select it and pick a scale in *Properties* (1:1 to 1:500, or type any other after *1:*), or right-click it and choose **Scale**. The viewport grows or shrinks about its middle. The scale is the view's own, so the view shows at that scale on every sheet it is placed on.
 - **Crop** a viewport: select it and drag its dashed crop frame's edge handles, or set the crop in *Properties*.
 - **Work through it**: double-click a viewport to edit the model right there, with every tool; drag to orbit a 3D view. `Esc` finishes.
 

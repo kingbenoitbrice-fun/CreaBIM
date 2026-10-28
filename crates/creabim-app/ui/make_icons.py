@@ -14,6 +14,8 @@ names+="""rectangle-vertical rectangle-horizontal tent fence corner-down-right""
 names+="""flip-horizontal-2""".split()
 # the Help menu and the Help panel
 names+="""circle-help book-open keyboard rocket x arrow-right info""".split()
+# folding the project browser's groups
+names+="""chevrons-down-up chevrons-up-down""".split()
 # snap markers, drawn like the markers in the views (not from Lucide)
 CUSTOM={
  "snap-endpoint": '<rect x="6" y="6" width="12" height="12" />',

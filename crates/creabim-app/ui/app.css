@@ -885,3 +885,16 @@ kbd {
 .hp-more span { flex: 1; text-align: left; }
 .hp-more:hover { background: var(--raise); }
 .hp-more svg.i { width: 15px; height: 15px; }
+
+/* The project browser: fold every group at once; a long group name ends
+   in an ellipsis rather than wrapping onto a second line. */
+.title .fold { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; color: var(--faint); }
+.title .fold:hover { background: var(--raise-2); color: var(--text); }
+.title .fold svg.i { width: 14px; height: 14px; }
+.group > span:not(.n):not(.gnote) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+/* The guide: links to websites, and pictures that enlarge when clicked. */
+.hdoc a.ext { text-decoration: underline; text-decoration-color: var(--border-2); }
+.hdoc figure.zoomable { cursor: zoom-in; }
+.hdoc figure.zoomable.big { cursor: zoom-out; position: fixed; inset: 8px; margin: 0; z-index: 10; background: var(--panel); padding: 8px; border-radius: 8px; box-shadow: 0 0 0 1px var(--border-2), 0 10px 40px rgba(0, 0, 0, 0.35); display: flex; flex-direction: column; justify-content: center; overflow: auto; }
+.hdoc figure.zoomable.big img { width: auto; max-width: none; min-width: 100%; }

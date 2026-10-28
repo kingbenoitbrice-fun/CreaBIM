@@ -188,7 +188,9 @@
 
   function drawLeft() {
     const f = local.filter.trim().toLowerCase();
-    let html = `<div class="browser"><div class="browser-head"><div class="title">${icon("layout-dashboard")}Project<span class="count">${esc(S.count)}</span></div>` +
+    const anyOpen = S.groups.some((g) => (local.open[g.key] !== undefined ? local.open[g.key] : g.open));
+    let html = `<div class="browser"><div class="browser-head"><div class="title">${icon("layout-dashboard")}Project<span class="count">${esc(S.count)}</span>` +
+      `<button class="gact fold" data-fold="${anyOpen ? 0 : 1}" title="${anyOpen ? "Collapse every group" : "Expand every group"}">${icon(anyOpen ? "chevrons-down-up" : "chevrons-up-down")}</button></div>` +
       `<label class="search">${icon("search")}<input data-key="filter" data-live="1" placeholder="Find views and elements" value="${esc(local.filter)}"></label></div><div class="tree">`;
     let any = false;
     for (const g of S.groups) {
@@ -509,13 +511,15 @@
   }
 
   function mdLink(text, href) {
-    if (/^https?:/.test(href)) return `${text} <span class="url">(${href})</span>`;
+    // a website opens in the system's browser
+    if (/^https?:/.test(href)) return `<a class="ext" data-act="url:${href}" title="${href}">${text}</a>`;
     return `<a data-act="help:${href}">${text}</a>`;
   }
 
   function mdImage(alt, src) {
     const url = S && S.images && S.images[src];
-    return url ? `<figure><img src="${url}" alt="${alt}"><figcaption>${alt}</figcaption></figure>` : "";
+    // click a picture to see it as wide as the panel lets it, again to go back
+    return url ? `<figure class="zoomable" title="Click to enlarge"><img src="${url}" alt="${alt}"><figcaption>${alt}</figcaption></figure>` : "";
   }
 
   // Inline marks, on text already escaped.
@@ -759,6 +763,14 @@
 
   document.addEventListener("click", (e) => {
     if (local.dragged) return;
+    const fig = e.target.closest("figure.zoomable");
+    if (fig) { fig.classList.toggle("big"); return; }
+    const fold = e.target.closest("[data-fold]");
+    if (fold && S && S.groups) {
+      for (const g of S.groups) local.open[g.key] = fold.dataset.fold === "1";
+      drawLeft();
+      return focusViews(e);
+    }
     const t = e.target.closest("button, .row, .group, a[data-act]");
     if (!t || t.disabled) return focusViews(e);
     if (t.dataset.popup) {

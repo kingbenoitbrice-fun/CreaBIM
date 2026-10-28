@@ -390,7 +390,7 @@ fn unlink(s: &str) -> String {
 
 /// A quick-help line without its marks, for egui.
 pub fn plain(line: &str) -> String {
-    line.replace("**", "").replace('`', "").replace('*', "")
+    line.replace(['`', '*'], "")
 }
 
 /// A key or a mouse action that isn't on a menu, and what it does.
