@@ -348,11 +348,17 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
                     continue;
                 };
                 let shape = creabim_core::room::shape(model, e.id);
-                let (a, p) = shape
-                    .as_ref()
-                    .map_or((0.0, 0.0), |s| (creabim_core::room::net_area(model, r, s), s.perimeter()));
+                let (a, p) = shape.as_ref().map_or((0.0, 0.0), |s| {
+                    (creabim_core::room::net_area(model, r, s), s.perimeter())
+                });
                 total += a;
-                let dash = |s: &str| if s.is_empty() { "-".to_string() } else { s.to_string() };
+                let dash = |s: &str| {
+                    if s.is_empty() {
+                        "-".to_string()
+                    } else {
+                        s.to_string()
+                    }
+                };
                 rows.push((
                     model.level(r.level).map_or(0.0, |l| l.elevation),
                     r.number.clone(),
@@ -544,7 +550,10 @@ fn with_level_totals(model: &Model, rows: Vec<Row>) -> Vec<Row> {
         let mut cells = vec![String::new(); group[0].cells.len()];
         let level_name = model.get(l).map_or("No level".into(), |e| e.name.clone());
         let n = group.len();
-        cells[0] = format!("{level_name} ({n} {})", if n == 1 { "room" } else { "rooms" });
+        cells[0] = format!(
+            "{level_name} ({n} {})",
+            if n == 1 { "room" } else { "rooms" }
+        );
         if let Some(c) = cells.get_mut(3) {
             *c = model.units().area(total);
         }

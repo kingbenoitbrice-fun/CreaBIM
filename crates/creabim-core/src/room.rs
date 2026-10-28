@@ -88,6 +88,90 @@ impl Room {
 /// A room separation line: closes rooms off where there is no wall, as
 /// between a kitchen and the living room it opens into. Drawn in plans
 /// only; it has no body.
+/// One thing a room tag can show. A tag lists the fields it shows; one
+/// that lists none shows the room's name, number and area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RoomField {
+    Name,
+    Number,
+    Area,
+    Perimeter,
+    Height,
+    Level,
+    FloorFinish,
+    WallFinish,
+    CeilingFinish,
+    Occupancy,
+    Department,
+}
+
+impl RoomField {
+    pub const ALL: [RoomField; 11] = [
+        RoomField::Name,
+        RoomField::Number,
+        RoomField::Area,
+        RoomField::Perimeter,
+        RoomField::Height,
+        RoomField::Level,
+        RoomField::FloorFinish,
+        RoomField::WallFinish,
+        RoomField::CeilingFinish,
+        RoomField::Occupancy,
+        RoomField::Department,
+    ];
+    /// What a tag shows when it lists no fields.
+    pub const DEFAULT: [RoomField; 3] = [RoomField::Name, RoomField::Number, RoomField::Area];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RoomField::Name => "Name",
+            RoomField::Number => "Number",
+            RoomField::Area => "Area",
+            RoomField::Perimeter => "Perimeter",
+            RoomField::Height => "Height",
+            RoomField::Level => "Level",
+            RoomField::FloorFinish => "Floor finish",
+            RoomField::WallFinish => "Wall finish",
+            RoomField::CeilingFinish => "Ceiling finish",
+            RoomField::Occupancy => "Occupancy",
+            RoomField::Department => "Department",
+        }
+    }
+
+    /// This field of a room as its tag writes it; empty when the room has
+    /// none, and "Not enclosed" for the area or perimeter of a room its
+    /// walls don't close off.
+    pub fn value(self, model: &Model, room: ElementId) -> String {
+        let Some(e) = model.get(room) else {
+            return String::new();
+        };
+        let ElementKind::Room(r) = &e.kind else {
+            return String::new();
+        };
+        let units = model.units();
+        match self {
+            RoomField::Name => e.name.clone(),
+            RoomField::Number => r.number.clone(),
+            RoomField::Area => shape_of(model, r).map_or("Not enclosed".into(), |s| {
+                units.area(net_area(model, r, &s))
+            }),
+            RoomField::Perimeter => {
+                shape_of(model, r).map_or("Not enclosed".into(), |s| units.dimension(s.perimeter()))
+            }
+            RoomField::Height => units.dimension(height(model, r)),
+            RoomField::Level => model
+                .get(r.level)
+                .map(|l| l.name.clone())
+                .unwrap_or_default(),
+            RoomField::FloorFinish => r.floor_finish.clone(),
+            RoomField::WallFinish => r.wall_finish.clone(),
+            RoomField::CeilingFinish => r.ceiling_finish.clone(),
+            RoomField::Occupancy => r.occupancy.clone(),
+            RoomField::Department => r.department.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Separator {
     pub level: ElementId,
@@ -247,7 +331,11 @@ fn bounding_lines(model: &Model, level: ElementId) -> Vec<(DVec2, DVec2, Element
             _ => None,
         })
         .collect();
-    let reach = walls.iter().map(|w| w.1.thickness / 2.0).fold(0.0, f64::max) + 0.01;
+    let reach = walls
+        .iter()
+        .map(|w| w.1.thickness / 2.0)
+        .fold(0.0, f64::max)
+        + 0.01;
     let mut out = Vec::new();
     for (id, w) in &walls {
         let d = w.direction();
@@ -421,7 +509,12 @@ pub fn next_number(model: &Model, level: ElementId) -> String {
         if r.level != level {
             continue;
         }
-        let digits = r.number.chars().rev().take_while(char::is_ascii_digit).count();
+        let digits = r
+            .number
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .count();
         if digits == 0 {
             continue;
         }
@@ -514,7 +607,10 @@ mod tests {
     #[test]
     fn a_room_fills_to_the_inner_faces_and_follows_its_walls() {
         let (mut doc, l, walls) = house();
-        let room = Element::new("Living", ElementKind::Room(Room::new(l, DVec2::new(2.0, 2.0))));
+        let room = Element::new(
+            "Living",
+            ElementKind::Room(Room::new(l, DVec2::new(2.0, 2.0))),
+        );
         let rid = room.id;
         doc.commit(Transaction::new("room").insert(room)).unwrap();
         let s = shape(doc.model(), rid).expect("enclosed");
@@ -522,7 +618,10 @@ mod tests {
         assert!((s.area() - 5.8 * 3.8).abs() < 1e-9, "{}", s.area());
         assert!((s.perimeter() - 2.0 * (5.8 + 3.8)).abs() < 1e-9);
         // every edge runs along a wall
-        assert!(s.bounded_by.iter().all(|b| b.is_some_and(|b| walls.contains(&b))));
+        assert!(s
+            .bounded_by
+            .iter()
+            .all(|b| b.is_some_and(|b| walls.contains(&b))));
         // move the east wall out a metre (and stretch the two it meets)
         for (i, id) in walls.iter().enumerate() {
             doc.edit(*id, "Move east wall", |e| {
@@ -557,7 +656,10 @@ mod tests {
     #[test]
     fn a_room_is_as_tall_as_the_ceiling_over_it() {
         let (mut doc, l, _) = house();
-        let room = Element::new("Room", ElementKind::Room(Room::new(l, DVec2::new(2.0, 2.0))));
+        let room = Element::new(
+            "Room",
+            ElementKind::Room(Room::new(l, DVec2::new(2.0, 2.0))),
+        );
         let rid = room.id;
         let r = match &room.kind {
             ElementKind::Room(r) => r.clone(),
@@ -565,10 +667,19 @@ mod tests {
         };
         doc.commit(Transaction::new("room").insert(room)).unwrap();
         assert_eq!(height(doc.model(), &r), 3.0);
-        let c = Element::new("Ceiling", ElementKind::Ceiling(Ceiling::in_room(l, rid, 2.4)));
+        let c = Element::new(
+            "Ceiling",
+            ElementKind::Ceiling(Ceiling::in_room(l, rid, 2.4)),
+        );
         doc.commit(Transaction::new("ceiling").insert(c)).unwrap();
         assert!((height(doc.model(), &r) - 2.4).abs() < 1e-12);
-        let o = match &doc.model().iter().find(|e| e.name == "Ceiling").unwrap().kind {
+        let o = match &doc
+            .model()
+            .iter()
+            .find(|e| e.name == "Ceiling")
+            .unwrap()
+            .kind
+        {
             ElementKind::Ceiling(c) => c.outline(doc.model()).unwrap(),
             _ => unreachable!(),
         };
@@ -587,10 +698,21 @@ mod tests {
     }
 
     #[test]
+    fn tags_from_before_room_fields_still_read() {
+        let id = serde_json::to_string(&ElementId::new()).unwrap();
+        let t: crate::Tag = serde_json::from_str(&format!(
+            r#"{{"view":{id},"host":{id},"offset":[0.0,0.0]}}"#
+        ))
+        .unwrap();
+        assert!(t.fields.is_empty());
+        assert!(!serde_json::to_string(&t).unwrap().contains("fields"));
+    }
+
+    #[test]
     fn rooms_and_ceilings_read_with_only_what_they_need() {
         let level = serde_json::to_string(&ElementId::new()).unwrap();
-        let r: Room = serde_json::from_str(&format!(r#"{{"level":{level},"at":[1.0,2.0]}}"#))
-            .unwrap();
+        let r: Room =
+            serde_json::from_str(&format!(r#"{{"level":{level},"at":[1.0,2.0]}}"#)).unwrap();
         assert!(r.number.is_empty() && r.height.is_none() && !r.is_drawn());
         let text = serde_json::to_string(&r).unwrap();
         assert!(!text.contains("finish") && !text.contains("boundary"));

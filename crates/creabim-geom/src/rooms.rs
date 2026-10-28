@@ -97,12 +97,20 @@ fn grid_lines(outline: &[DVec2], size: f64) -> Vec<(DVec2, DVec2)> {
     }
     let mut x = lo.x + size;
     while x < hi.x - 1e-6 {
-        out.extend(clip_line(outline, DVec2::new(x, lo.y - 1.0), DVec2::new(x, hi.y + 1.0)));
+        out.extend(clip_line(
+            outline,
+            DVec2::new(x, lo.y - 1.0),
+            DVec2::new(x, hi.y + 1.0),
+        ));
         x += size;
     }
     let mut y = lo.y + size;
     while y < hi.y - 1e-6 {
-        out.extend(clip_line(outline, DVec2::new(lo.x - 1.0, y), DVec2::new(hi.x + 1.0, y)));
+        out.extend(clip_line(
+            outline,
+            DVec2::new(lo.x - 1.0, y),
+            DVec2::new(hi.x + 1.0, y),
+        ));
         y += size;
     }
     out

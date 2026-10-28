@@ -61,14 +61,15 @@ fn zones(model: &Model, o: &Opening, w: &Wall) -> Zones {
         let back = -side * (t + PASSAGE);
         parts.push((
             Blocks::Opening,
-            vec![at(u0, back), at(u1, back), at(u1, side * t), at(u0, side * t)],
+            vec![
+                at(u0, back),
+                at(u1, back),
+                at(u1, side * t),
+                at(u0, side * t),
+            ],
         ));
         // the leaf's sweep: a quarter circle about its hinge
-        let (hinge_u, towards) = if o.flip_hand {
-            (u1, -1.0)
-        } else {
-            (u0, 1.0)
-        };
+        let (hinge_u, towards) = if o.flip_hand { (u1, -1.0) } else { (u0, 1.0) };
         let hinge = at(hinge_u, side * t);
         let along = d * towards;
         let out = n * side;

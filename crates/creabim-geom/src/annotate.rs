@@ -6,8 +6,8 @@ use crate::annotation::{end_marks, measure, runs_past, Annotation, Ends, Shape, 
 use crate::plan::PlanItem;
 use crate::section::{AxoFrame, SectionFrame};
 use creabim_core::{
-    DimensionKind, ElementId, ElementKind, HostPoint, Model, Note, OpeningKind, TagShape,
-    Terminator, View, ViewKind, Wall,
+    DimensionKind, ElementId, ElementKind, HostPoint, Model, Note, OpeningKind, RoomField,
+    TagShape, Terminator, View, ViewKind, Wall,
 };
 use glam::{DAffine3, DMat3, DVec2, DVec3};
 
@@ -299,34 +299,53 @@ pub fn tag_text(model: &Model, id: ElementId) -> (String, bool) {
             },
             false,
         ),
-        ElementKind::Room(_) => (room_tag_text(model, id), false),
+        ElementKind::Room(_) => (room_tag_text(model, id, &[]), false),
         // a ceiling: its height above the floor, as reflected ceiling plans write it
         ElementKind::Ceiling(c) => (format!("CLG +{}", units.dimension(c.height)), false),
         _ => (e.name.clone(), false),
     }
 }
 
-/// What a room's tag reads: its name in capitals, then its number and its
-/// area (or that the walls don't close it off).
-pub fn room_tag_text(model: &Model, id: ElementId) -> String {
+/// What a room's tag reads: each of `fields` on its own line (the room's
+/// name, number and area when there are none), its name in capitals and
+/// its number and area side by side; fields the room has no value for are
+/// left out.
+pub fn room_tag_text(model: &Model, id: ElementId, fields: &[RoomField]) -> String {
     let Some(e) = model.get(id) else {
         return String::new();
     };
-    let ElementKind::Room(r) = &e.kind else {
+    if !matches!(e.kind, ElementKind::Room(_)) {
         return e.name.clone();
-    };
-    let area = match creabim_core::room::shape_of(model, r) {
-        Some(s) => model
-            .units()
-            .area(creabim_core::room::net_area(model, r, &s)),
-        None => "Not enclosed".into(),
-    };
-    let second = if r.number.is_empty() {
-        area
+    }
+    let fields = if fields.is_empty() {
+        &RoomField::DEFAULT[..]
     } else {
-        format!("{}  {area}", r.number)
+        fields
     };
-    format!("{}\n{second}", e.name.to_uppercase())
+    let mut lines: Vec<String> = Vec::new();
+    let mut joined = false;
+    for (i, f) in fields.iter().enumerate() {
+        let value = f.value(model, id);
+        if value.is_empty() {
+            continue;
+        }
+        let value = if *f == RoomField::Name {
+            value.to_uppercase()
+        } else {
+            value
+        };
+        // the area goes beside the number written just before it
+        if *f == RoomField::Area && joined && i > 0 && fields[i - 1] == RoomField::Number {
+            if let Some(last) = lines.last_mut() {
+                last.push_str("  ");
+                last.push_str(&value);
+                continue;
+            }
+        }
+        joined = *f == RoomField::Number;
+        lines.push(value);
+    }
+    lines.join("\n")
 }
 
 /// A room's tag as drawing text: its lines stacked and centred on `at`.
@@ -498,10 +517,13 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
                 };
                 let anchor = project.project(c);
                 // a room's tag is its name, number and area, without a bubble
-                if matches!(model.get(t.host).map(|h| &h.kind), Some(ElementKind::Room(_))) {
+                if matches!(
+                    model.get(t.host).map(|h| &h.kind),
+                    Some(ElementKind::Room(_))
+                ) {
                     out.push(room_tag_item(
                         e.id,
-                        room_tag_text(model, t.host),
+                        room_tag_text(model, t.host, &t.fields),
                         anchor + t.offset,
                         look_of(model, t.style, t.color),
                         view.scale / 1000.0,
@@ -737,6 +759,58 @@ mod tests {
 
     fn named(m: &Model, name: &str) -> ElementId {
         m.iter().find(|e| e.name == name).unwrap().id
+    }
+
+    #[test]
+    fn room_tags_show_the_fields_they_list() {
+        let m = creabim_core::starter::starter_house();
+        let study = named(&m, "Study");
+        let text = |f: &[RoomField]| room_tag_text(&m, study, f);
+        let area = RoomField::Area.value(&m, study);
+        assert_eq!(text(&[]), format!("STUDY\n0.01  {area}"));
+        assert_eq!(
+            text(&[
+                RoomField::Name,
+                RoomField::Area,
+                RoomField::FloorFinish,
+                RoomField::Level
+            ]),
+            format!("STUDY\n{area}\nOak boards\nGround Floor")
+        );
+        // a field the room has nothing for is left out
+        assert_eq!(text(&[RoomField::Department, RoomField::Number]), "0.01");
+        // and the tag's own list is what its drawing writes
+        let mut doc = creabim_core::Document::from_model(m.clone());
+        let tag = m
+            .iter()
+            .find(|e| matches!(&e.kind, ElementKind::Tag(t) if t.host == study))
+            .unwrap()
+            .id;
+        doc.edit(tag, "Fields", |e| {
+            if let ElementKind::Tag(t) = &mut e.kind {
+                t.fields = vec![RoomField::Name, RoomField::CeilingFinish];
+            }
+        })
+        .unwrap();
+        let ElementKind::Tag(t) = &doc.model().get(tag).unwrap().kind else {
+            unreachable!()
+        };
+        let ElementKind::View(view) = &doc.model().get(t.view).unwrap().kind else {
+            unreachable!()
+        };
+        let items = annotations(doc.model(), t.view, view);
+        let shown: Vec<String> = items
+            .iter()
+            .filter_map(|i| match i {
+                PlanItem::Annotation { id, item } if *id == tag => Some(item.text.clone()),
+                _ => None,
+            })
+            .collect();
+        let ceiling = RoomField::CeilingFinish.value(doc.model(), study);
+        assert_eq!(
+            shown,
+            vec![format!("STUDY\n{ceiling}").trim_end().to_string()]
+        );
     }
 
     #[test]

@@ -698,6 +698,10 @@ pub struct Tag {
     pub style: Option<ElementId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[f32; 3]>,
+    /// For a room's tag, what it shows, in order; none shows the name,
+    /// number and area.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<crate::room::RoomField>,
 }
 
 impl Tag {
@@ -708,6 +712,7 @@ impl Tag {
             offset,
             style: None,
             color: None,
+            fields: Vec::new(),
         }
     }
 }
