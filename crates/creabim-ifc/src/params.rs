@@ -18,6 +18,9 @@ pub(crate) const TYPE_PSET: &str = "CreaBIM_TypeParameters";
 pub(crate) const CURTAIN_PSET: &str = "CreaBIM_CurtainWall";
 /// The property set a footing's own values go in.
 pub(crate) const FOOTING_PSET: &str = "CreaBIM_Footing";
+/// The property sets a room's and a ceiling's own values go in.
+pub(crate) const ROOM_PSET: &str = "CreaBIM_Room";
+pub(crate) const CEILING_PSET: &str = "CreaBIM_Ceiling";
 
 /// One property value.
 #[derive(Clone, Debug, PartialEq)]
@@ -26,6 +29,7 @@ pub(crate) enum Prop {
     Count(i64),
     Real(f64),
     Label(String),
+    Bool(bool),
 }
 
 impl Prop {
@@ -36,6 +40,7 @@ impl Prop {
             Prop::Count(n) => format!("IFCINTEGER({n})"),
             Prop::Real(v) => format!("IFCREAL({})", real(*v)),
             Prop::Label(s) => format!("IFCLABEL({})", string(s)),
+            Prop::Bool(b) => format!("IFCBOOLEAN({})", if *b { ".T." } else { ".F." }),
         }
     }
 }
@@ -394,6 +399,53 @@ pub(crate) fn footing_from(
     Some((f, label(p, "Host").map(str::to_string)))
 }
 
+/// A room's own values, beyond its shape: where its point is and whether
+/// its outline was drawn, so CreaBIM finds it from the walls again.
+pub(crate) fn room_props(r: &creabim_core::Room) -> Vec<(&'static str, Prop)> {
+    let mut out = vec![
+        ("PointX", Prop::Length(r.at.x)),
+        ("PointY", Prop::Length(r.at.y)),
+        ("Drawn", Prop::Bool(r.is_drawn())),
+    ];
+    if let Some(h) = r.height {
+        out.push(("Height", Prop::Length(h)));
+    }
+    if !r.department.is_empty() {
+        out.push(("Department", Prop::Label(r.department.clone())));
+    }
+    out
+}
+
+/// A ceiling's own values: the room it follows and its tile grid.
+pub(crate) fn ceiling_props(c: &creabim_core::Ceiling, room: Option<String>) -> Vec<(&'static str, Prop)> {
+    let mut out = vec![("Height", Prop::Length(c.height))];
+    if c.grid > 0.0 {
+        out.push(("Grid", Prop::Length(c.grid)));
+    }
+    if let Some(r) = room {
+        out.push(("Room", Prop::Label(r)));
+    }
+    out
+}
+
+/// A room's point, whether it was drawn, its own height and department,
+/// read back.
+pub(crate) fn room_from(p: &Props) -> (Option<glam::DVec2>, bool, Option<f64>, String) {
+    let at = len(p, "PointX").zip(len(p, "PointY")).map(|(x, y)| glam::DVec2::new(x, y));
+    let drawn = p.get("Drawn").and_then(|v| v.0).is_none_or(|v| v != 0.0);
+    let height = len(p, "Height").filter(|h| *h > 0.0);
+    let department = label(p, "Department").unwrap_or("").to_string();
+    (at, drawn, height, department)
+}
+
+/// A ceiling's grid and the GlobalId of the room it follows, read back.
+pub(crate) fn ceiling_from(p: &Props) -> (f64, Option<String>) {
+    (
+        len(p, "Grid").filter(|g| *g >= 0.1).unwrap_or(0.0),
+        label(p, "Room").map(str::to_string),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,6 +459,7 @@ mod tests {
                     Prop::Count(n) => (Some(*n as f64), None),
                     Prop::Real(x) => (Some(*x), None),
                     Prop::Label(s) => (None, Some(s.clone())),
+                    Prop::Bool(b) => (Some(*b as i64 as f64), None),
                 };
                 (k.to_string(), r)
             })
