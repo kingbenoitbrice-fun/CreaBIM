@@ -847,6 +847,81 @@ mod tests {
     }
 
     #[test]
+    fn furniture_and_fixtures_are_counted_by_type_and_level() {
+        let m = creabim_core::sample::furnished_house();
+        let s = schedule(&m, ScheduleCategory::Fixtures);
+        let titles: Vec<&str> = s.columns.iter().map(|c| c.title).collect();
+        assert_eq!(
+            titles,
+            ["Mark", "Type", "Level", "Mounting", "IFC", "Count"]
+        );
+        // a heading for each category, in catalogue order
+        let headings: Vec<&str> = s
+            .rows
+            .iter()
+            .filter(|r| r.group)
+            .map(|r| r.cells[0].split(" (").next().unwrap())
+            .collect();
+        assert_eq!(
+            headings,
+            [
+                "Bathroom",
+                "Kitchen",
+                "Electrical",
+                "Lighting",
+                "Plumbing",
+                "Heating and ventilation"
+            ]
+        );
+        let line = |ty: &str, level: &str| {
+            s.rows
+                .iter()
+                .find(|r| !r.group && r.cells[1] == ty && r.cells[2] == level)
+                .unwrap_or_else(|| panic!("{ty} on {level}"))
+        };
+        let sockets = line("Double socket", "Ground Floor");
+        assert_eq!(sockets.cells[5], "5");
+        assert!(sockets.cells[0].starts_with('E'), "{:?}", sockets.cells);
+        assert_eq!(sockets.cells[3], "300 above floor");
+        assert_eq!(sockets.cells[4], "IfcOutlet POWEROUTLET");
+        assert_eq!(line("Double socket", "First Floor").cells[5], "3");
+        let lights = line("Recessed downlight", "Ground Floor");
+        assert_eq!(
+            (lights.cells[3].as_str(), lights.cells[5].as_str()),
+            ("At the ceiling", "3")
+        );
+        assert!(lights.cells[0].starts_with('L'));
+        // the counts add up to every fixture, and furniture is apart
+        let counted: usize = s
+            .rows
+            .iter()
+            .filter(|r| !r.group)
+            .map(|r| r.cells[5].parse::<usize>().unwrap())
+            .sum();
+        assert_eq!(counted, s.listed);
+        assert_eq!(s.totals[5], s.listed.to_string());
+        let f = schedule(&m, ScheduleCategory::Furniture);
+        let objects = m
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Object(_)))
+            .count();
+        assert_eq!(f.listed + s.listed, objects);
+        assert!(f
+            .rows
+            .iter()
+            .all(|r| r.group || r.cells[4].starts_with("IfcFurniture")));
+        // grouped by type instead: one row an object, under its type
+        let by = schedule_by(&m, ScheduleCategory::Fixtures, true);
+        assert_eq!(by.rows.iter().filter(|r| !r.group).count(), s.listed);
+        assert!(by
+            .rows
+            .iter()
+            .any(|r| r.group && r.cells[0] == "Double socket (8)"));
+        assert_eq!(by.totals.len(), by.columns.len());
+        assert!(to_csv(&s).starts_with("Mark,Type,Level,Mounting,IFC,Count"));
+    }
+
+    #[test]
     fn schedule_drawing_is_a_table() {
         let m = sample_house();
         let s = schedule(&m, ScheduleCategory::Windows);

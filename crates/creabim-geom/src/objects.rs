@@ -89,6 +89,26 @@ mod tests {
                     ..
                 }
             )));
+        // a light hangs far above the cut, but its symbol is drawn in full,
+        // as are the sockets' down by the floor
+        for name in ["Ceiling light", "Double socket", "Radiator"] {
+            let e = m
+                .iter()
+                .find(|e| e.name.starts_with(name) && matches!(e.kind, ElementKind::Object(_)))
+                .unwrap_or_else(|| panic!("a {name}"));
+            let items: Vec<&PlanItem> = plan.items.iter().filter(|i| i.id() == e.id).collect();
+            assert!(items.len() >= 3, "{name}");
+            assert!(items.iter().all(|i| !matches!(
+                i,
+                PlanItem::Polygon {
+                    pen: Pen::Hidden,
+                    ..
+                } | PlanItem::Line {
+                    pen: Pen::Hidden,
+                    ..
+                }
+            )));
+        }
         // every part of every object is in the 3D scene, in its material
         let scene = crate::scene::build_scene(&m);
         let parts = scene.iter().filter(|i| i.id == sofa.id).count();

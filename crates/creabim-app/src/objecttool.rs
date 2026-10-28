@@ -304,4 +304,38 @@ mod tests {
         set_option(&mut st, "object.rotation", -90.0);
         assert_eq!(st.objects.rotation, 270.0);
     }
+
+    #[test]
+    fn fixtures_go_in_at_their_height_and_lights_where_clicked() {
+        let mut doc = Document::from_model(sample_house());
+        let level = ground(&doc);
+        let mut st = PlanState::default();
+        let mut sel = Selection::default();
+        // a switch backs onto the south wall, 1100 mm up
+        st.objects.current = creabim_core::catalogue::starter("starter/switch-1-gang");
+        click(&mut doc, level, DVec2::new(3.0, 0.4), &mut st, &mut sel).unwrap();
+        let e = doc.model().get(sel.active.unwrap()).unwrap();
+        let ElementKind::Object(o) = &e.kind else {
+            panic!("an object")
+        };
+        assert!((o.offset - 1.1).abs() < 1e-9 && (o.position.y - 0.15).abs() < 1e-9);
+        // a second one of the project's own type takes the type's height too
+        st.objects.project_type = e.of_type.as_ref().map(|t| t.id);
+        click(&mut doc, level, DVec2::new(4.0, 0.4), &mut st, &mut sel).unwrap();
+        let ElementKind::Object(o) = &doc.model().get(sel.active.unwrap()).unwrap().kind else {
+            panic!()
+        };
+        assert!((o.offset - 1.1).abs() < 1e-9);
+        // a downlight hangs under the ceiling, its middle where clicked,
+        // even next to a wall
+        st.objects.project_type = None;
+        st.objects.current = creabim_core::catalogue::starter("starter/downlight");
+        let p = DVec2::new(3.0, 0.4);
+        click(&mut doc, level, p, &mut st, &mut sel).unwrap();
+        let m = doc.model();
+        let e = m.get(sel.active.unwrap()).unwrap();
+        let c = creabim_geom::annotate::centre(m, e.id).unwrap();
+        assert!((c.truncate() - p).length() < 1e-9, "{c}");
+        assert!(c.z > 2.7 && c.z < 2.75, "{c}");
+    }
 }

@@ -1211,5 +1211,93 @@ mod tests {
             IfcKind::new("IfcSanitaryTerminal", "USERDEFINED")
         );
         assert_eq!(class_of_type("IFCFURNITURETYPE"), Some("IfcFurniture"));
+        assert_eq!(
+            class_of_type("IfcLightFixtureType"),
+            Some("IfcLightFixture")
+        );
+        assert!(predefined_types("IfcOutlet").contains(&"POWEROUTLET"));
+    }
+
+    #[test]
+    fn fixtures_go_in_at_their_height_and_lights_hang_from_the_ceiling() {
+        let mut doc = Document::from_model(crate::sample::sample_house());
+        let l = level(doc.model());
+        // a socket 300 mm up its wall
+        let socket = crate::catalogue::starter("starter/socket-double").unwrap();
+        let (tx, s) = place(doc.model(), &socket, l, DVec2::new(3.0, 0.15), 0.0);
+        doc.commit(tx).unwrap();
+        let e = doc.model().get(s).unwrap();
+        assert!((base_z(doc.model(), e).unwrap() - 0.3).abs() < 1e-9);
+        assert!(!hung(doc.model(), e));
+        // a pendant under the first floor's slab (top 3.0, 250 thick)
+        let light = crate::catalogue::starter("starter/ceiling-light").unwrap();
+        assert_eq!(light.object.mount, Mount::Ceiling);
+        let at = centred(&light.object, DVec2::new(3.0, 2.0), 0.0);
+        let (tx, p) = place(doc.model(), &light, l, at, 0.0);
+        doc.commit(tx).unwrap();
+        let m = doc.model();
+        let e = m.get(p).unwrap();
+        assert!((ceiling_at(m, l, DVec2::new(3.0, 2.0)) - 2.75).abs() < 1e-9);
+        let top = model_parts(m, e)
+            .iter()
+            .flat_map(|(mesh, _)| mesh.vertices.iter().map(|v| v.z))
+            .fold(f64::MIN, f64::max);
+        assert!((top - 2.75).abs() < 1e-9, "{top}");
+        // centred where asked
+        let (lo, hi) = type_of(m, e).unwrap().bounds();
+        let ElementKind::Object(o) = &e.kind else {
+            unreachable!()
+        };
+        let middle = o.to_plan((lo.truncate() + hi.truncate()) / 2.0);
+        assert!((middle - DVec2::new(3.0, 2.0)).length() < 1e-9, "{middle}");
+        // moving it down 200 lowers it from the ceiling
+        let moved = crate::transform::transformed(
+            m,
+            e,
+            &crate::transform::Xform::Move(DVec3::new(0.0, 0.0, -0.2)),
+        )
+        .unwrap();
+        let ElementKind::Object(o) = &moved.kind else {
+            unreachable!()
+        };
+        assert!((o.offset - 0.2).abs() < 1e-9);
+        let z = base_z(m, &moved).unwrap();
+        assert!((z - (base_z(m, e).unwrap() - 0.2)).abs() < 1e-9);
+        // and the offset that puts it somewhere is the inverse
+        let t = type_of(m, e).unwrap();
+        assert!((offset_for(m, o, t, z) - 0.2).abs() < 1e-9);
+        // with no slab over it, the level's top is its ceiling
+        let first = m
+            .levels()
+            .max_by(|a, b| a.1.elevation.total_cmp(&b.1.elevation))
+            .unwrap()
+            .0
+            .id;
+        assert!((ceiling_at(m, first, DVec2::new(3.0, 2.0)) - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn object_types_from_older_files_still_read() {
+        // a type written before mounting heights and ceilings existed
+        let old = r#"{"category":"Kitchen","ifc":{"class":"IfcFurniture","predefined":"USERDEFINED"},"mount":"Wall","parts":[]}"#;
+        let t: ObjectType = serde_json::from_str(old).unwrap();
+        assert_eq!((t.mount, t.offset), (Mount::Wall, 0.0));
+        let new = ObjectType {
+            mount: Mount::Ceiling,
+            offset: 0.1,
+            category: ObjectCategory::Lighting,
+            ..t
+        };
+        let text = serde_json::to_string(&new).unwrap();
+        assert!(text.contains(r#""mount":"Ceiling""#) && text.contains(r#""offset":0.1"#));
+        assert_eq!(serde_json::from_str::<ObjectType>(&text).unwrap(), new);
+        // a zero height is left out, so unchanged types write as before
+        let plain = serde_json::to_string(&ObjectType { offset: 0.0, ..new }).unwrap();
+        assert!(!plain.contains("offset"));
+        assert_eq!(Mount::from_label("ceiling"), Mount::Ceiling);
+        assert_eq!(
+            ObjectCategory::from_label("Heating and ventilation"),
+            ObjectCategory::Hvac
+        );
     }
 }
