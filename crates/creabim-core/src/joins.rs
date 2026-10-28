@@ -346,7 +346,26 @@ fn joinables(model: &Model) -> Vec<Joinable<'_>> {
 
 /// Join every wall in the model with its neighbours on the same level.
 pub fn wall_joins(model: &Model) -> HashMap<ElementId, WallEnds> {
-    let walls = joinables(model);
+    joins_among(&joinables(model))
+}
+
+/// Join walls that are not in a model (all without layers), as walls of
+/// the model would join: what strip footings use to meet each other the
+/// way the walls over them do.
+pub fn plain_joins(walls: &[(ElementId, Wall)]) -> HashMap<ElementId, WallEnds> {
+    let walls: Vec<Joinable> = walls
+        .iter()
+        .filter(|(_, w)| w.length() > TOL)
+        .map(|(id, w)| Joinable {
+            id: *id,
+            wall: w,
+            core: None,
+        })
+        .collect();
+    joins_among(&walls)
+}
+
+fn joins_among(walls: &[Joinable]) -> HashMap<ElementId, WallEnds> {
     let mut out = HashMap::new();
     for (i, me) in walls.iter().enumerate() {
         let w = me.wall;
@@ -388,7 +407,7 @@ pub fn wall_joins(model: &Model) -> HashMap<ElementId, WallEnds> {
             let local_left = if at_end { 1.0 } else { -1.0 };
             let t = w.thickness / 2.0;
 
-            let neighbours = meeting(&walls, me, p, d_in);
+            let neighbours = meeting(walls, me, p, d_in);
             // extensions of the faces left and right of d_in, and of the core
             let ext = match neighbours.as_slice() {
                 [(o, d_out)] => {

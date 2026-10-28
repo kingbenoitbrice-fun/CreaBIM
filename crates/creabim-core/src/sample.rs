@@ -670,6 +670,53 @@ pub fn typed_house() -> Model {
     }
     tx = tx.replace(ff.clone(), after);
     doc.commit(tx).expect("the typed house is valid");
+
+    // a porch column by the front door, and footings: strips under the
+    // ground floor's walls, their tops at the underside of its slab, and
+    // a pad under the column
+    let mut column = Element::new(
+        "Porch Column",
+        ElementKind::Column(Column::new(
+            g,
+            DVec2::new(1.6, -1.5),
+            Profile::Rectangle {
+                width: 0.3,
+                depth: 0.3,
+            },
+        )),
+    );
+    types::stamp(doc.model(), &mut column, starter("Column 300 × 300"));
+    let porch = column.id;
+    doc.commit(Transaction::new("Porch column").insert(column))
+        .expect("the column is valid");
+    let ground: Vec<ElementId> = doc
+        .model()
+        .iter()
+        .filter(|e| matches!(&e.kind, ElementKind::Wall(w) if w.level == g))
+        .map(|e| e.id)
+        .chain([porch])
+        .collect();
+    let (strip, pad) = (
+        starter("Strip footing 600 × 300"),
+        starter("Pad footing 1200 × 1200 × 400"),
+    );
+    let model = doc.model().clone();
+    let (mut tx, _) = footing::under(&model, &ground, &|e| {
+        let t = match &e.kind {
+            ElementKind::Footing(f) if f.kind == FootingKind::Pad => pad,
+            _ => strip,
+        };
+        types::stamp(&model, e, t);
+        if let ElementKind::Footing(f) = &mut e.kind {
+            f.below = if f.kind == FootingKind::Strip {
+                0.3
+            } else {
+                0.5
+            };
+        }
+    });
+    tx.label = "Footings".into();
+    doc.commit(tx).expect("the footings are valid");
     doc.model().clone()
 }
 

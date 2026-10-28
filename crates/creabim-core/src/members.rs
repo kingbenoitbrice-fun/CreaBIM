@@ -100,6 +100,12 @@ pub struct Column {
     pub height: Option<f64>,
     #[serde(default)]
     pub material: Option<ElementId>,
+    /// The top constraint: tied to a level (`offset` above it), the top
+    /// follows that level, so a column can run from its base level up
+    /// through several storeys and stretch when either level moves. A top
+    /// level that is gone leaves the column as `height` says.
+    #[serde(default, skip_serializing_if = "crate::WallTop::is_unconnected")]
+    pub top: crate::WallTop,
 }
 
 impl Column {
@@ -112,20 +118,94 @@ impl Column {
             base_offset: 0.0,
             height: None,
             material: None,
+            top: crate::WallTop::Unconnected,
         }
     }
 
-    /// The height as built: the fixed one, or up to the level above.
+    /// The height as built: up to its top level, the fixed one, or up to
+    /// the level above.
     pub fn height_in(&self, model: &Model) -> f64 {
+        if let Some(top) = self.constrained_top(model) {
+            return (top - elevation(model, self.level) - self.base_offset).max(0.01);
+        }
         self.height
             .unwrap_or_else(|| storey_height(model, self.level) - self.base_offset)
             .max(0.01)
+    }
+
+    /// The absolute height of the top its top level gives it, when it is
+    /// tied to a level that exists.
+    pub fn constrained_top(&self, model: &Model) -> Option<f64> {
+        match self.top {
+            crate::WallTop::UpToLevel { level, offset } => {
+                Some(model.level(level)?.elevation + offset)
+            }
+            crate::WallTop::Unconnected => None,
+        }
+    }
+
+    /// The level its top is tied to, if any.
+    pub fn top_level(&self) -> Option<ElementId> {
+        match self.top {
+            crate::WallTop::UpToLevel { level, .. } => Some(level),
+            crate::WallTop::Unconnected => None,
+        }
     }
 
     /// Absolute heights of the base and the top.
     pub fn span(&self, model: &Model) -> (f64, f64) {
         let z0 = elevation(model, self.level) + self.base_offset;
         (z0, z0 + self.height_in(model))
+    }
+
+    /// Stand it on `level`, its top staying where it is: a top that ran up
+    /// to the next level is tied to that level, a fixed height grows or
+    /// shrinks. So a column drawn on one level can be stood on a lower one
+    /// and still reach as high as before.
+    pub fn set_base_level(&mut self, model: &Model, level: ElementId) {
+        if level == self.level || model.level(level).is_none() {
+            return;
+        }
+        let (_, z1) = self.span(model);
+        if self.top.is_unconnected() && self.height.is_none() {
+            if let Some(next) = level_above(model, self.level) {
+                self.top = crate::WallTop::UpToLevel {
+                    level: next,
+                    offset: 0.0,
+                };
+            }
+        }
+        if self.top.is_unconnected() {
+            let z0 = elevation(model, level) + self.base_offset;
+            self.height = Some((z1 - z0).max(0.1));
+        }
+        self.level = level;
+    }
+
+    /// Tie its top to `level`, `offset` above it, or (with `None`) let it
+    /// go, keeping the height it has.
+    pub fn set_top_level(&mut self, model: &Model, level: Option<ElementId>, offset: f64) {
+        match level {
+            Some(l) => self.top = crate::WallTop::UpToLevel { level: l, offset },
+            None => {
+                if !self.top.is_unconnected() {
+                    self.height = Some(self.height_in(model));
+                }
+                self.top = crate::WallTop::Unconnected;
+            }
+        }
+    }
+
+    /// Does it pass through the plan of `level` cut `cut` above it? A
+    /// column standing on another level shows there when it runs up
+    /// through the cut.
+    pub fn crosses(&self, model: &Model, level: ElementId, cut: f64) -> bool {
+        let Some(l) = model.level(level) else {
+            return false;
+        };
+        let (z0, z1) = self.span(model);
+        let z = l.elevation + cut;
+        z0 < z && z < z1
     }
 
     pub fn outline(&self) -> Vec<DVec2> {
@@ -718,6 +798,16 @@ pub fn elevation(model: &Model, level: ElementId) -> f64 {
     model.level(level).map_or(0.0, |l| l.elevation)
 }
 
+/// The nearest level above `level`.
+pub fn level_above(model: &Model, level: ElementId) -> Option<ElementId> {
+    let z = model.level(level)?.elevation;
+    model
+        .levels()
+        .filter(|(_, l)| l.elevation > z + 1e-6)
+        .min_by(|a, b| a.1.elevation.total_cmp(&b.1.elevation))
+        .map(|(e, _)| e.id)
+}
+
 /// Floor-to-floor height of a level: up to the next level above, else
 /// the level's own height.
 pub fn storey_height(model: &Model, level: ElementId) -> f64 {
@@ -757,6 +847,9 @@ pub fn validate(kind: &ElementKind) -> Result<(), String> {
             finite(c.rotation, "column rotation")?;
             if !c.position.is_finite() {
                 return Err("column position must be finite".into());
+            }
+            if let crate::WallTop::UpToLevel { offset, .. } = c.top {
+                finite(offset, "column top offset")?;
             }
             match c.height {
                 Some(h) => positive(h, "column height"),
@@ -801,6 +894,7 @@ pub fn validate(kind: &ElementKind) -> Result<(), String> {
             }
             Ok(())
         }
+        ElementKind::Footing(f) => f.validate(),
         ElementKind::Railing(r) => {
             positive(r.height, "railing height")?;
             positive(r.post_spacing, "post spacing")?;
@@ -824,6 +918,7 @@ pub fn level_of(kind: &ElementKind) -> Option<ElementId> {
         ElementKind::Roof(r) => r.level,
         ElementKind::Stair(s) => s.level,
         ElementKind::Railing(r) => r.level,
+        ElementKind::Footing(f) => f.level,
         _ => return None,
     })
 }
@@ -836,6 +931,7 @@ pub fn level_mut(kind: &mut ElementKind) -> Option<&mut ElementId> {
         ElementKind::Roof(r) => &mut r.level,
         ElementKind::Stair(s) => &mut s.level,
         ElementKind::Railing(r) => &mut r.level,
+        ElementKind::Footing(f) => &mut f.level,
         _ => return None,
     })
 }
@@ -848,6 +944,7 @@ pub fn material_mut(kind: &mut ElementKind) -> Option<&mut Option<ElementId>> {
         ElementKind::Roof(r) => &mut r.material,
         ElementKind::Stair(s) => &mut s.material,
         ElementKind::Railing(r) => &mut r.material,
+        ElementKind::Footing(f) => &mut f.material,
         _ => return None,
     })
 }
@@ -859,6 +956,7 @@ pub fn material(kind: &ElementKind) -> Option<ElementId> {
         ElementKind::Roof(r) => r.material,
         ElementKind::Stair(s) => s.material,
         ElementKind::Railing(r) => r.material,
+        ElementKind::Footing(f) => f.material,
         _ => None,
     }
 }
@@ -930,6 +1028,19 @@ pub fn transform(model: &Model, kind: &mut ElementKind, t: &Xform) -> Option<()>
                 }
             }
         }
+        ElementKind::Footing(f) => {
+            f.below -= dz;
+            // one under a wall or a column goes where its host goes
+            if f.host.is_some_and(|h| model.get(h).is_some()) {
+                return Some(());
+            }
+            f.start = t.point2(f.start);
+            f.end = t.point2(f.end);
+            f.rotation = (f.rotation + turn).rem_euclid(360.0);
+            if f.kind == crate::FootingKind::Strip && f.start.distance(f.end) < 1e-6 {
+                return None;
+            }
+        }
         ElementKind::Railing(r) => {
             if r.stair.is_some() {
                 // a railing on a stair goes where the stair goes
@@ -964,6 +1075,7 @@ pub fn pivot(model: &Model, e: &Element) -> Option<DVec3> {
             let n = p.len().max(1) as f64;
             p.iter().copied().sum::<DVec3>() / n
         }
+        ElementKind::Footing(f) => f.anchor(model),
         _ => return None,
     })
 }
@@ -999,7 +1111,13 @@ pub fn grips(model: &Model, e: &Element) -> Vec<Grip> {
     match &e.kind {
         ElementKind::Column(c) => {
             let (z0, z1) = c.span(model);
-            vec![flat(c.position.extend(z0)), up(c.position.extend(z1))]
+            // the base grip moves it across the plan; the two upright
+            // ones, best dragged in a section, set its top and its base
+            vec![
+                flat(c.position.extend(z0)),
+                up(c.position.extend(z1)),
+                up(c.position.extend(z0)),
+            ]
         }
         ElementKind::Beam(b) => {
             let z = b.top(model);
@@ -1051,8 +1169,130 @@ pub fn grips(model: &Model, e: &Element) -> Vec<Grip> {
                 .map(|a| vec![up(*a + DVec3::Z * r.height)])
                 .unwrap_or_default()
         }
+        ElementKind::Footing(f) => footing_grips(model, f)
+            .into_iter()
+            .map(|(g, _)| g)
+            .collect(),
         _ => vec![],
     }
+}
+
+/// What a footing's grip changes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FootingGrip {
+    Start,
+    End,
+    Center,
+    /// The side square to a strip, or a pad's side along its own x axis.
+    Width,
+    /// A pad's side along its own y axis.
+    Length,
+    /// The top: how far below its level it sits.
+    Top,
+    /// The underside: its thickness.
+    Underside,
+}
+
+/// A footing's grips: a free one's ends or centre, its sides, its top and
+/// its underside. One under a host has no grips to move it: it goes where
+/// the host goes.
+fn footing_grips(model: &Model, f: &crate::Footing) -> Vec<(Grip, FootingGrip)> {
+    let hosted = f.host.is_some_and(|h| model.get(h).is_some());
+    let top = f.top(model);
+    let flat = |at: DVec3| Grip {
+        at,
+        how: GripMove::Flat,
+    };
+    let along = |at: DVec3, d: DVec2| Grip {
+        at,
+        how: GripMove::Along(d),
+    };
+    let up = |at: DVec3| Grip {
+        at,
+        how: GripMove::Vertical,
+    };
+    let mut out = vec![];
+    let c = f.anchor(model).truncate();
+    match f.kind {
+        crate::FootingKind::Strip => {
+            let (a, b) = f.line(model);
+            if !hosted {
+                out.push((flat(a.extend(top)), FootingGrip::Start));
+                out.push((flat(b.extend(top)), FootingGrip::End));
+            }
+            let n = (b - a).normalize_or_zero().perp();
+            out.push((
+                along((c + n * f.width / 2.0).extend(top), n),
+                FootingGrip::Width,
+            ));
+        }
+        crate::FootingKind::Pad => {
+            let (_, turn) = f.place(model);
+            let x = DVec2::from_angle(turn.to_radians());
+            if !hosted {
+                out.push((flat(c.extend(top)), FootingGrip::Center));
+            }
+            out.push((
+                along((c + x * f.width / 2.0).extend(top), x),
+                FootingGrip::Width,
+            ));
+            out.push((
+                along((c + x.perp() * f.length / 2.0).extend(top), x.perp()),
+                FootingGrip::Length,
+            ));
+        }
+    }
+    // the top and underside in the middle, best dragged in a section
+    out.push((up(c.extend(top)), FootingGrip::Top));
+    out.push((up(c.extend(top - f.thickness)), FootingGrip::Underside));
+    out
+}
+
+fn drag_footing(
+    model: &Model,
+    f: &mut crate::Footing,
+    i: usize,
+    d: DVec3,
+    now: DVec3,
+    step: f64,
+) -> Result<(), String> {
+    let round = |v: f64, s: f64| if s > 0.0 { (v / s).round() * s } else { v };
+    let grips = footing_grips(model, f);
+    let (g, what) = *grips.get(i).ok_or("no such handle")?;
+    let fine = step / 5.0;
+    match what {
+        FootingGrip::Start => f.start = now.truncate(),
+        FootingGrip::End => f.end = now.truncate(),
+        FootingGrip::Center => {
+            f.start = now.truncate();
+            f.end = f.start;
+        }
+        FootingGrip::Width | FootingGrip::Length => {
+            let GripMove::Along(dir) = g.how else {
+                return Ok(());
+            };
+            // both sides move: the footing stays centred on its line
+            let by = 2.0 * d.truncate().dot(dir);
+            if what == FootingGrip::Width {
+                f.width = round(f.width + by, fine).max(0.1);
+            } else {
+                f.length = round(f.length + by, fine).max(0.1);
+            }
+        }
+        FootingGrip::Top => {
+            // the underside stays where it is
+            let dz = round(d.z, fine).min(f.thickness - 0.05);
+            f.below -= dz;
+            f.thickness -= dz;
+        }
+        FootingGrip::Underside => {
+            f.thickness = round(f.thickness - d.z, fine).max(0.05);
+        }
+    }
+    if f.kind == crate::FootingKind::Strip && f.host.is_none() && f.start.distance(f.end) < 0.05 {
+        return Err("a footing needs some length".into());
+    }
+    Ok(())
 }
 
 /// Grip `i` of `e` dragged from `grab` to `now`; lengths round to `step`.
@@ -1071,9 +1311,23 @@ pub fn drag_grip(
     match &mut e.kind {
         ElementKind::Column(c) => match i {
             0 => c.position = now.truncate(),
-            _ => {
+            1 => {
                 let h = c.height_in(model);
-                c.height = Some(round(h + d.z, step).max(0.1));
+                let new = round(h + d.z, step).max(0.1);
+                match &mut c.top {
+                    // tied to a level: the drag sets how far above it the top is
+                    crate::WallTop::UpToLevel { offset, .. } => *offset += new - h,
+                    crate::WallTop::Unconnected => c.height = Some(new),
+                }
+            }
+            _ => {
+                // the base moves, the top stays where it is
+                let (z0, z1) = c.span(model);
+                let dz = round(d.z, step).min(z1 - z0 - 0.1);
+                c.base_offset += dz;
+                if c.top.is_unconnected() && c.height.is_some() {
+                    c.height = Some((z1 - z0 - dz).max(0.1));
+                }
             }
         },
         ElementKind::Beam(b) => match i {
@@ -1118,6 +1372,7 @@ pub fn drag_grip(
                 s.tread = round(t, 0.005).clamp(0.15, 0.6);
             }
         },
+        ElementKind::Footing(f) => drag_footing(model, f, i, d, now, step)?,
         ElementKind::Railing(r) => {
             if r.stair.is_none() && i < r.path.len() {
                 let z = r.path[i].z;
@@ -1165,6 +1420,20 @@ pub fn readout(model: &Model, e: &Element) -> Option<String> {
         ElementKind::Railing(r) => {
             format!("length {:.2} m, height {:.2} m", r.length(model), r.height)
         }
+        ElementKind::Footing(f) => match f.kind {
+            crate::FootingKind::Strip => format!(
+                "strip {:.2} m long, {:.0} wide, {:.0} thick",
+                f.strip_length(model),
+                f.width * 1000.0,
+                f.thickness * 1000.0
+            ),
+            crate::FootingKind::Pad => format!(
+                "pad {:.0} × {:.0}, {:.0} thick",
+                f.width * 1000.0,
+                f.length * 1000.0,
+                f.thickness * 1000.0
+            ),
+        },
         _ => return None,
     })
 }
@@ -1458,6 +1727,38 @@ mod tests {
         let s: Stair = serde_json::from_str(json).unwrap();
         assert_eq!(s.waist, 0.15);
         assert!(s.landing.is_none() && s.height.is_none());
+    }
+
+    #[test]
+    fn columns_from_older_files_run_up_their_storey_as_before() {
+        let (mut m, ground, first) = two_levels();
+        let json = format!(
+            r#"{{"level":"{}","position":[1.0,2.0],"profile":{{"Rectangle":{{"width":0.3,"depth":0.3}}}},"material":null}}"#,
+            ground.0
+        );
+        let c: Column = serde_json::from_str(&json).unwrap();
+        assert!(c.top.is_unconnected());
+        assert_eq!(c.span(&m), (0.0, 2.88));
+        // a constraint saves, and a column without one saves as before
+        assert!(!serde_json::to_string(&c).unwrap().contains("top"));
+        let mut tied = c.clone();
+        tied.set_top_level(&m, Some(first), 0.5);
+        assert_eq!(tied.span(&m), (0.0, 3.38));
+        let back: Column = serde_json::from_str(&serde_json::to_string(&tied).unwrap()).unwrap();
+        assert_eq!(back, tied);
+        // its top level gone, it keeps the height it had when let go
+        tied.set_top_level(&m, None, 0.0);
+        assert_eq!(tied.height, Some(3.38));
+        // the base grip lowers the base and leaves the top
+        let mut e = Element::new("C", ElementKind::Column(c));
+        let g = grips(&m, &e);
+        assert_eq!(g.len(), 3);
+        drag_grip(&m, &mut e, 2, g[2].at, g[2].at + DVec3::Z * 0.5, 0.0).unwrap();
+        let ElementKind::Column(c) = &e.kind else {
+            panic!()
+        };
+        assert_eq!(c.span(&m), (0.5, 2.88));
+        Transaction::new("c").insert(e).apply(&mut m).unwrap();
     }
 
     #[test]
