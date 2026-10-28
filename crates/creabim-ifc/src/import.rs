@@ -1499,7 +1499,16 @@ impl<'a> Importer<'a> {
             }
             None => {
                 let mesh = self.g.product_mesh(e, world);
-                let w = brep::wall_of_mesh(&mesh, axis)?;
+                let mut w = brep::wall_of_mesh(&mesh, axis)?;
+                // run the way the element's placement does
+                let x = world.x_axis.truncate().truncate();
+                if axis.is_none() && (w.end - w.start).dot(x) < 0.0 {
+                    let len = w.start.distance(w.end);
+                    std::mem::swap(&mut w.start, &mut w.end);
+                    for v in &mut w.voids {
+                        (v.u0, v.u1) = (len - v.u1, len - v.u0);
+                    }
+                }
                 (w.start, w.end, w.thickness, w.z0, w.z1, w.voids)
             }
         };
