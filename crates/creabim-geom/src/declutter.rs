@@ -406,6 +406,17 @@ fn edge_toward(b: &TextBox, p: DVec2) -> DVec2 {
     c + v * k
 }
 
+/// What a label, tag, note or dimension reads, for reports.
+pub fn label_text(item: &PlanItem) -> String {
+    match item {
+        PlanItem::Label { text, .. }
+        | PlanItem::Tag { text, .. }
+        | PlanItem::Dimension { text, .. } => text.clone(),
+        PlanItem::Annotation { item, .. } => item.text.replace('\n', " "),
+        _ => String::new(),
+    }
+}
+
 /// Pairs of label boxes that overlap: none after [`place_labels`], where
 /// there was room.
 pub fn overlapping_labels(items: &[PlanItem], mm: f64) -> Vec<(usize, usize)> {

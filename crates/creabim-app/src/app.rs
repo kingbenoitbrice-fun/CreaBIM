@@ -5448,7 +5448,7 @@ fn plan_graphics_ui(
             label = Some("Below-cut fill");
         }
     }
-    let mut to_level = g.view_depth.is_none();
+    let mut to_level = g.range.view_depth.is_none();
     if ui
         .checkbox(&mut to_level, "View depth: down to the level below")
         .on_hover_text(
@@ -5456,10 +5456,10 @@ fn plan_graphics_ui(
         )
         .changed()
     {
-        g.view_depth = if to_level { None } else { Some(1.0) };
+        g.range.view_depth = if to_level { None } else { Some(1.0) };
         label = Some("View depth");
     }
-    if let Some(d) = &mut g.view_depth {
+    if let Some(d) = &mut g.range.view_depth {
         ui.horizontal(|ui| {
             ui.label("View depth below the floor");
             if ui.add(crate::units::drag(d).range(0.0..=100.0)).changed() {
@@ -5480,6 +5480,38 @@ fn plan_graphics_ui(
         };
         label = Some("Line weights");
     }
+    egui::CollapsingHeader::new("Pens by category")
+        .id_salt("plan_category_pens")
+        .show(ui, |ui| {
+            use creabim_core::graphics::{CategoryPen, PenClass};
+            use creabim_core::Category as C;
+            for c in [
+                C::Objects,
+                C::Railings,
+                C::Stairs,
+                C::Slabs,
+                C::Roofs,
+                C::FreeMeshes,
+            ] {
+                let current = g.pen_of(c);
+                let mut pick = current;
+                egui::ComboBox::from_label(c.label())
+                    .selected_text(current.map_or("As drawn", |p| p.label()))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut pick, None, "As drawn");
+                        for p in PenClass::ALL {
+                            ui.selectable_value(&mut pick, Some(p), p.label());
+                        }
+                    });
+                if pick != current {
+                    g.category_pens.retain(|x| x.category != c);
+                    if let Some(pen) = pick {
+                        g.category_pens.push(CategoryPen { category: c, pen });
+                    }
+                    label = Some("Pens by category");
+                }
+            }
+        });
     if let Some(w) = &mut g.weights {
         for (name, v) in w.fields_mut() {
             ui.horizontal(|ui| {

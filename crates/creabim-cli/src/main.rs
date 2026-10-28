@@ -38,6 +38,8 @@ usage: (<model> is a .creabim project or a legacy .creabim.json file)
   creabim view <model> <view-name> <out.svg>
                                        draw any view (plan, section, elevation)
   creabim views <model>                list the model's views
+  creabim label-clashes <model>        list labels, tags and notes that still
+                                       overlap in each plan
   creabim sheets <model>               list the model's sheets
   creabim sheet <model> <number> <out.svg>
                                        draw one sheet
@@ -216,6 +218,26 @@ fn main() -> ExitCode {
                         creabim_core::ViewKind::Schedule { .. } => "schedule",
                     };
                     println!("{kind:10} 1:{:<5} {}", v.scale, e.name);
+                }
+            }
+        }),
+        ["label-clashes", input] => load(input).map(|m| {
+            for e in m.iter() {
+                let creabim_core::ElementKind::View(v) = &e.kind else {
+                    continue;
+                };
+                if !matches!(v.kind, creabim_core::ViewKind::Plan { .. }) {
+                    continue;
+                }
+                let Some(d) = creabim_geom::section::view_drawing(&m, e.id) else {
+                    continue;
+                };
+                let mm = v.scale / 1000.0;
+                let clashes = creabim_geom::declutter::overlapping_labels(&d.items, mm);
+                println!("{}: {} overlapping", e.name, clashes.len());
+                for (a, b) in clashes {
+                    let text = |k: usize| creabim_geom::declutter::label_text(&d.items[k]);
+                    println!("  {:?} and {:?}", text(a), text(b));
                 }
             }
         }),

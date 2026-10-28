@@ -7,8 +7,8 @@ use crate::plan::{Pen, PlanItem};
 use creabim_core::objects::{self, SymbolItem};
 use creabim_core::{Element, ElementKind, Model};
 
-/// An object's plan symbol, turned and placed, in the fine pen of small
-/// things. Objects hung above the cut plane (wall cupboards) are drawn
+/// An object's plan symbol, turned and placed (a view's table of pens by
+/// category draws it in the fine pen of small things). Objects hung above the cut plane (wall cupboards) are drawn
 /// dashed, as things overhead are; the symbols of building services (a
 /// light, a socket, a diffuser) are drawn in full wherever they are, as
 /// services drawings show them.
@@ -25,7 +25,7 @@ pub fn object_plan(model: &Model, e: &Element, cut_height: f64) -> Vec<PlanItem>
     let pen = if above && !t.category.is_services() {
         Pen::Hidden
     } else {
-        Pen::Fine
+        Pen::Projection
     };
     t.plan_symbol()
         .into_iter()

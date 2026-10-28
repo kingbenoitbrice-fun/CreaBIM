@@ -2,6 +2,7 @@
 //! footprints of what lies below the cut, and how far below its floor it
 //! looks (its view depth).
 
+use crate::visibility::Category;
 use serde::{Deserialize, Serialize};
 
 /// Pen widths on paper, in millimetres, from heavy to light.
@@ -60,13 +61,81 @@ impl LineWeights {
     }
 }
 
+/// The pens of [`LineWeights`], for naming one as data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PenClass {
+    Projection,
+    Symbol,
+    Fine,
+}
+
+impl PenClass {
+    pub const ALL: [PenClass; 3] = [PenClass::Projection, PenClass::Symbol, PenClass::Fine];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PenClass::Projection => "Projection",
+            PenClass::Symbol => "Symbols",
+            PenClass::Fine => "Fine",
+        }
+    }
+}
+
+/// Which pen a category's lines seen below the cut are drawn with (its
+/// cut lines always take the cut pen, and what is overhead the hidden one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CategoryPen {
+    pub category: Category,
+    pub pen: PenClass,
+}
+
+/// The categories drawn with a pen of their own unless a view says
+/// otherwise: furniture and fixtures in the fine pen.
+pub fn default_category_pens() -> Vec<CategoryPen> {
+    vec![CategoryPen {
+        category: Category::Objects,
+        pen: PenClass::Fine,
+    }]
+}
+
+fn is_default_category_pens(v: &[CategoryPen]) -> bool {
+    v == default_category_pens().as_slice()
+}
+
+/// How far a plan looks, about its cut plane (which stays the plan's
+/// `cut_height`). Only the depth below the floor is kept so far; a top and
+/// a bottom, each relative to a level, can join it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlanRange {
+    /// How far below its level's floor the plan looks, in metres: what
+    /// lies between the floor and the cut is *below* it, drawn in
+    /// projection; what lies under the floor, down to this depth and seen
+    /// through a hole in it (a stair from the level below, in its well), is
+    /// *beyond*. None looks down to the level below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_depth: Option<f64>,
+}
+
+impl PlanRange {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// A plan's graphics. Every field has a default, so views saved before
 /// it read as they drew then, with the weights tuned to their scale.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlanGraphics {
     /// Pen weights of the user's own; none takes them from the scale.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weights: Option<LineWeights>,
+    /// The pens categories draw with, by category: a table, so an office
+    /// standard can set them.
+    #[serde(
+        default = "default_category_pens",
+        skip_serializing_if = "is_default_category_pens"
+    )]
+    pub category_pens: Vec<CategoryPen>,
     /// Fill what lies wholly below the cut (furniture, fittings, imported
     /// meshes) with a light tint of its material's colour.
     #[serde(default = "yes")]
@@ -77,13 +146,9 @@ pub struct PlanGraphics {
     /// Fill it in light grey rather than in its material's colour.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub below_grey: bool,
-    /// How far below its level's floor the plan looks, in metres: what
-    /// lies between the floor and the cut is *below* it, drawn in
-    /// projection; what lies under the floor, down to this depth and seen
-    /// through a hole in it (a stair from the level below, in its well), is
-    /// *beyond*. None looks down to the level below.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub view_depth: Option<f64>,
+    /// How far it looks above and below the cut.
+    #[serde(default, skip_serializing_if = "PlanRange::is_default")]
+    pub range: PlanRange,
 }
 
 fn yes() -> bool {
@@ -98,10 +163,11 @@ impl Default for PlanGraphics {
     fn default() -> Self {
         Self {
             weights: None,
+            category_pens: default_category_pens(),
             below_fill: true,
             below_strength: default_strength(),
             below_grey: false,
-            view_depth: None,
+            range: PlanRange::default(),
         }
     }
 }
@@ -109,6 +175,15 @@ impl Default for PlanGraphics {
 impl PlanGraphics {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// The pen a category's lines seen below the cut take, if it has one
+    /// of its own.
+    pub fn pen_of(&self, category: Category) -> Option<PenClass> {
+        self.category_pens
+            .iter()
+            .find(|c| c.category == category)
+            .map(|c| c.pen)
     }
 
     /// The pens a view at 1:`scale` draws with.
@@ -131,7 +206,8 @@ impl PlanGraphics {
     /// How far below the floor of a level at `elevation` the plan looks,
     /// with `below` the elevation of the next level down, if any.
     pub fn depth(&self, elevation: f64, below: Option<f64>) -> f64 {
-        self.view_depth
+        self.range
+            .view_depth
             .unwrap_or_else(|| below.map_or(3.0, |b| elevation - b))
             .max(0.0)
     }
@@ -167,7 +243,7 @@ mod tests {
         // the defaults write nothing; a change is kept
         assert!(!serde_json::to_string(&v).unwrap().contains("graphics"));
         let mut changed = v.clone();
-        changed.graphics.view_depth = Some(1.0);
+        changed.graphics.range.view_depth = Some(1.0);
         changed.graphics.below_fill = false;
         let back: crate::View =
             serde_json::from_str(&serde_json::to_string(&changed).unwrap()).unwrap();

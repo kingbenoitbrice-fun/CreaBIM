@@ -1117,8 +1117,42 @@ pub fn plan_view_with(
         }
     }
     items.extend(stairs_beyond(model, level, graphics));
+    category_pens(model, &mut items, graphics);
     shades.append(&mut items);
     PlanView { items: shades }
+}
+
+/// The lines a category draws in projection given the pen its view's
+/// table names for it: furniture and fixtures in the fine pen.
+fn category_pens(model: &Model, items: &mut [PlanItem], graphics: &creabim_core::PlanGraphics) {
+    if graphics.category_pens.is_empty() {
+        return;
+    }
+    let cutters = std::collections::HashSet::new();
+    let mut of: std::collections::HashMap<ElementId, Option<Pen>> = Default::default();
+    for it in items.iter_mut() {
+        let (PlanItem::Line { id, pen, .. }
+        | PlanItem::Polygon { id, pen, .. }
+        | PlanItem::Arc { id, pen, .. }) = it
+        else {
+            continue;
+        };
+        if !matches!(pen, Pen::Projection | Pen::Symbol | Pen::Fine) {
+            continue;
+        }
+        let to = *of.entry(*id).or_insert_with(|| {
+            let e = model.get(*id)?;
+            let c = creabim_core::visibility::Category::of(e, &cutters)?;
+            graphics.pen_of(c).map(|p| match p {
+                creabim_core::graphics::PenClass::Projection => Pen::Projection,
+                creabim_core::graphics::PenClass::Symbol => Pen::Symbol,
+                creabim_core::graphics::PenClass::Fine => Pen::Fine,
+            })
+        });
+        if let Some(to) = to {
+            *pen = to;
+        }
+    }
 }
 
 /// Does a stair standing on `level` start inside `outline`?
@@ -2087,7 +2121,9 @@ mod tests {
         // a view depth too shallow to reach the stair's foot shows less
         let f = named(&m, "First Floor");
         let shallow = creabim_core::PlanGraphics {
-            view_depth: Some(1.0),
+            range: creabim_core::graphics::PlanRange {
+                view_depth: Some(1.0),
+            },
             ..Default::default()
         };
         let count = |g: &creabim_core::PlanGraphics| {
