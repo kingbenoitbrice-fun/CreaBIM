@@ -204,6 +204,8 @@ fn schedule_icon(c: ScheduleCategory) -> &'static str {
         ScheduleCategory::Walls => "brick-wall",
         ScheduleCategory::Slabs => "layers-2",
         ScheduleCategory::Structure => "rectangle-vertical",
+        ScheduleCategory::Furniture => "sofa",
+        ScheduleCategory::Fixtures => "fixtures",
     }
 }
 
@@ -1182,9 +1184,8 @@ impl CreaBimApp {
                     web.hide_all(self.shell.classic);
                 }
             }
-            "view.shaded" | "view.tag" | "view.reveal" | "view.colour" | "view.xray" => {
-                self.view_action(head)
-            }
+            "view.shaded" | "view.tag" | "view.tagobjects" | "view.reveal" | "view.colour"
+            | "view.xray" => self.view_action(head),
             "hidden.colour3d" => self.set_hidden_colour_3d(!self.shell.settings.hidden_colour_3d),
             "object" => {
                 if crate::objecttool::toggle_option(&mut self.plan, arg) {
@@ -1405,6 +1406,16 @@ impl CreaBimApp {
                 self.status = match r {
                     Ok(0) => "Every door and window here is tagged already.".into(),
                     Ok(n) => format!("Tagged {n} doors and windows. Drag a tag to move it."),
+                    Err(e) => format!("Couldn't do that: {e}"),
+                };
+            }
+            "view.tagobjects" => {
+                let r = planview::tag_objects(&mut self.doc, id);
+                self.status = match r {
+                    Ok(0) => "Every object here is tagged already (tags go on plans).".into(),
+                    Ok(n) => format!(
+                        "Tagged {n} pieces of furniture and fixtures with their type marks. Drag a tag to move it."
+                    ),
                     Err(e) => format!("Couldn't do that: {e}"),
                 };
             }
@@ -1641,6 +1652,12 @@ impl CreaBimApp {
                 "kind": "button", "id": "view.tag", "label": "Tag openings", "icon": "tag",
                 "hint": "Tag every door and window in this view that has no tag yet",
             }));
+            if self.active_plan().is_some() {
+                options.push(json!({
+                    "kind": "button", "id": "view.tagobjects", "label": "Tag objects", "icon": "sofa",
+                    "hint": "Tag every piece of furniture and every fixture on this plan with its type's mark",
+                }));
+            }
         }
         if let Some((view, level)) = self.active_plan() {
             let u = self.view(view).map(|v| v.underlay).unwrap_or_default();

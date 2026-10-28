@@ -51,7 +51,7 @@ pub fn show(
     csv_path: &str,
 ) -> Option<String> {
     let table = schedule::schedule_by(doc.model(), category, by_type);
-    let listed = table.rows.iter().filter(|r| !r.group).count();
+    let listed = table.listed;
     let materials: Vec<(ElementId, String)> = doc
         .model()
         .iter()
@@ -271,13 +271,25 @@ pub fn show(
                         // the first column selects the row's element
                         let resp = ui.interact(
                             c,
-                            egui::Id::new(("schedule_pick", view, r.id)),
+                            egui::Id::new(("schedule_pick", view, n, r.id)),
                             egui::Sense::click(),
                         );
                         let color = if resp.hovered() { ACCENT } else { INK };
                         text_at(ui, c, text, col.numeric, color, false);
-                        if resp.on_hover_text("Click to select it").clicked() {
-                            selection.only(r.id);
+                        // a count of furniture or fixtures selects what it counts
+                        let counted = matches!(e.kind, ElementKind::ElementType(_));
+                        let hint = if counted {
+                            "Click to select every one of this type"
+                        } else {
+                            "Click to select it"
+                        };
+                        if resp.on_hover_text(hint).clicked() {
+                            if counted {
+                                let all = creabim_core::types::instances(doc.model(), r.id);
+                                selection.extend(all, false);
+                            } else {
+                                selection.only(r.id);
+                            }
                         }
                     }
                     _ => text_at(ui, c, text, col.numeric, INK, false),

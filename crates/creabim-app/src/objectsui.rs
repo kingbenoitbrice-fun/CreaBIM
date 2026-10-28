@@ -318,6 +318,7 @@ pub(super) fn from_selection(
             category,
             ifc,
             mount,
+            offset: 0.0,
             parts,
             symbol: vec![],
             catalogue: Some(key.to_string()),
@@ -330,6 +331,7 @@ fn mount_label(m: Mount) -> &'static str {
     match m {
         Mount::Wall => "Against a wall",
         Mount::Floor => "Free-standing",
+        Mount::Ceiling => "From the ceiling",
     }
 }
 
@@ -386,7 +388,7 @@ pub(super) fn type_fields(ui: &mut egui::Ui, model: &Model, o: &mut ObjectType) 
         egui::ComboBox::from_id_salt("object_mount")
             .selected_text(mount_label(o.mount))
             .show_ui(ui, |ui| {
-                for m in [Mount::Wall, Mount::Floor] {
+                for m in Mount::ALL {
                     if ui
                         .selectable_value(&mut o.mount, m, mount_label(m))
                         .changed()
@@ -396,7 +398,27 @@ pub(super) fn type_fields(ui: &mut egui::Ui, model: &Model, o: &mut ObjectType) 
                 }
             })
             .response
-            .on_hover_text("Against a wall: the Object tool backs it onto the nearest wall face");
+            .on_hover_text(
+                "Against a wall: the Object tool backs it onto the nearest wall face. \
+                 From the ceiling: it hangs below the ceiling over it, centred where clicked",
+            );
+    });
+    ui.horizontal(|ui| {
+        ui.label(if o.mount == Mount::Ceiling {
+            "New ones below the ceiling"
+        } else {
+            "New ones above the floor"
+        });
+        if ui
+            .add(crate::units::drag(&mut o.offset).range(-10.0..=100.0))
+            .on_hover_text(
+                "The height the Object tool places new ones at: to their underside, \
+                 or from the ceiling down to their top",
+            )
+            .changed()
+        {
+            label = "Object mounting height";
+        }
     });
     ui.horizontal(|ui| {
         ui.label("IFC");
@@ -449,11 +471,20 @@ pub(super) fn type_fields(ui: &mut egui::Ui, model: &Model, o: &mut ObjectType) 
     label
 }
 
-/// A placed object's own fields. Returns the undo label, or "".
-pub(super) fn object_fields(ui: &mut egui::Ui, o: &mut objects::Object) -> &'static str {
+/// A placed object's own fields; `hung` when its type hangs from the
+/// ceiling. Returns the undo label, or "".
+pub(super) fn object_fields(
+    ui: &mut egui::Ui,
+    o: &mut objects::Object,
+    hung: bool,
+) -> &'static str {
     let mut label = "";
     ui.horizontal(|ui| {
-        ui.label("Above its level");
+        ui.label(if hung {
+            "Below the ceiling"
+        } else {
+            "Above its level"
+        });
         if ui
             .add(crate::units::drag(&mut o.offset).range(-10.0..=100.0))
             .changed()

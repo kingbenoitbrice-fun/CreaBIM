@@ -115,6 +115,12 @@ pub fn push_face(
     if look == Facing::Sloped && !slopes {
         return None;
     }
+    // an object hung from the ceiling measures its height down from there
+    let up = if crate::objects::hung(model, first) {
+        -1.0
+    } else {
+        1.0
+    };
     match &mut out[0].kind {
         ElementKind::Wall(w) => {
             let d = w.direction();
@@ -344,8 +350,8 @@ pub fn push_face(
             }
         }
         ElementKind::Object(o) => match look {
-            Facing::Top => o.offset += s,
-            Facing::Bottom => o.offset -= s,
+            Facing::Top => o.offset += up * s,
+            Facing::Bottom => o.offset -= up * s,
             Facing::Side(flat) => o.position += flat * s,
             Facing::Sloped => return None,
         },

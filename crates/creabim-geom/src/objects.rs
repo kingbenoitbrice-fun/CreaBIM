@@ -8,7 +8,9 @@ use creabim_core::objects::{self, SymbolItem};
 use creabim_core::{Element, ElementKind, Model};
 
 /// An object's plan symbol, turned and placed. Objects hung above the cut
-/// plane (wall cupboards) are drawn dashed, as things overhead are.
+/// plane (wall cupboards) are drawn dashed, as things overhead are; the
+/// symbols of building services (a light, a socket, a diffuser) are drawn
+/// in full wherever they are, as services drawings show them.
 pub fn object_plan(model: &Model, e: &Element, cut_height: f64) -> Vec<PlanItem> {
     let ElementKind::Object(o) = &e.kind else {
         return vec![];
@@ -17,7 +19,9 @@ pub fn object_plan(model: &Model, e: &Element, cut_height: f64) -> Vec<PlanItem>
         return vec![];
     };
     let (lo, _) = t.bounds();
-    let pen = if o.offset + lo.z > cut_height {
+    let floor = model.level(o.level).map_or(0.0, |l| l.elevation);
+    let above = objects::base_z_of(model, o, t) - floor + lo.z > cut_height;
+    let pen = if above && !t.category.is_services() {
         Pen::Hidden
     } else {
         Pen::Projection

@@ -124,6 +124,12 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
             .and_then(|l| model.level(l))
             .map_or(0.0, |l| l.elevation)
     };
+    // an object hung from the ceiling measures its height down from there
+    let up = if crate::objects::hung(model, e) {
+        -1.0
+    } else {
+        1.0
+    };
     // origins of masses and sketches are relative to their level
     let origin = |o: DVec3, level: Option<ElementId>| {
         let z = DVec3::Z * elevation(level);
@@ -306,7 +312,7 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
             // its shape is its type's: it moves and turns, but keeps its size
             Xform::Move(d) => {
                 o.position += d.truncate();
-                o.offset += d.z;
+                o.offset += up * d.z;
             }
             Xform::Rotate { degrees, .. } if t.keeps_upright() => {
                 o.position = t.point2(o.position);
@@ -380,7 +386,9 @@ pub fn pivot(model: &Model, id: ElementId) -> Option<DVec3> {
         ElementKind::Guide(g) => (g.a + g.b) / 2.0 + DVec3::Z * elevation(g.level),
         ElementKind::CropBox(c) => c.center(),
         ElementKind::Shaft(s) => mean(&s.boundary).extend(s.span(model).0),
-        ElementKind::Object(o) => o.position.extend(elevation(Some(o.level)) + o.offset),
+        ElementKind::Object(o) => o.position.extend(
+            crate::objects::base_z(model, e).unwrap_or(elevation(Some(o.level)) + o.offset),
+        ),
         _ => return crate::members::pivot(model, e),
     })
 }

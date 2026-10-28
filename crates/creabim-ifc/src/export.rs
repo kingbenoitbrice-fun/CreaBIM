@@ -1106,9 +1106,12 @@ fn object_type(
             continue;
         };
         let (s, co) = ob.rotation.to_radians().sin_cos();
+        // hung from the ceiling or not, where it stands above its storey
+        let floor = model.level(ob.level).map_or(0.0, |l| l.elevation);
+        let z = creabim_core::objects::base_z_of(model, ob, o) - floor;
         let pl = c.local_placement(
             Some(spl),
-            ob.position.extend(ob.offset),
+            ob.position.extend(z),
             Some(DVec3::new(co, s, 0.0)),
         );
         let mut reps = vec![];

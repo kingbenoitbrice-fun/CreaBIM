@@ -32,18 +32,31 @@ pub enum ObjectCategory {
     Dining,
     Bedroom,
     Office,
+    /// Sockets, switches, distribution boards and detectors.
+    Electrical,
+    /// Ceiling, wall and recessed lights.
+    Lighting,
+    /// Drains, water heaters and taps (sanitary ware is in Bathroom).
+    Plumbing,
+    /// Heating, ventilation and air conditioning: radiators, diffusers,
+    /// split units and fans.
+    Hvac,
     #[default]
     Other,
 }
 
 impl ObjectCategory {
-    pub const ALL: [ObjectCategory; 7] = [
+    pub const ALL: [ObjectCategory; 11] = [
         ObjectCategory::Bathroom,
         ObjectCategory::Kitchen,
         ObjectCategory::Living,
         ObjectCategory::Dining,
         ObjectCategory::Bedroom,
         ObjectCategory::Office,
+        ObjectCategory::Electrical,
+        ObjectCategory::Lighting,
+        ObjectCategory::Plumbing,
+        ObjectCategory::Hvac,
         ObjectCategory::Other,
     ];
 
@@ -55,7 +68,37 @@ impl ObjectCategory {
             ObjectCategory::Dining => "Dining",
             ObjectCategory::Bedroom => "Bedroom",
             ObjectCategory::Office => "Office",
+            ObjectCategory::Electrical => "Electrical",
+            ObjectCategory::Lighting => "Lighting",
+            ObjectCategory::Plumbing => "Plumbing",
+            ObjectCategory::Hvac => "Heating and ventilation",
             ObjectCategory::Other => "Other",
+        }
+    }
+
+    /// Building services (electrical, lighting, plumbing, heating and
+    /// ventilation): drawn as their plan symbols whatever their height.
+    pub fn is_services(self) -> bool {
+        matches!(
+            self,
+            ObjectCategory::Electrical
+                | ObjectCategory::Lighting
+                | ObjectCategory::Plumbing
+                | ObjectCategory::Hvac
+        )
+    }
+
+    /// The letter its types' marks start with: E01 for a socket, L01 for
+    /// a light, F01 for a sofa (see [`crate::marks::object_marks`]).
+    pub fn mark_prefix(self) -> &'static str {
+        match self {
+            ObjectCategory::Bathroom => "S",
+            ObjectCategory::Kitchen => "K",
+            ObjectCategory::Electrical => "E",
+            ObjectCategory::Lighting => "L",
+            ObjectCategory::Plumbing => "P",
+            ObjectCategory::Hvac => "M",
+            _ => "F",
         }
     }
 
@@ -140,6 +183,198 @@ pub const IFC_CLASSES: &[(&str, &str, &[&str])] = &[
             "NOTDEFINED",
         ],
     ),
+    (
+        "IfcOutlet",
+        "IfcOutletType",
+        &[
+            "AUDIOVISUALOUTLET",
+            "COMMUNICATIONSOUTLET",
+            "POWEROUTLET",
+            "DATAOUTLET",
+            "TELEPHONEOUTLET",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IfcSwitchingDevice",
+        "IfcSwitchingDeviceType",
+        &[
+            "CONTACTOR",
+            "DIMMERSWITCH",
+            "EMERGENCYSTOP",
+            "KEYPAD",
+            "MOMENTARYSWITCH",
+            "SELECTORSWITCH",
+            "STARTER",
+            "SWITCHDISCONNECTOR",
+            "TOGGLESWITCH",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IfcLightFixture",
+        "IfcLightFixtureType",
+        &[
+            "POINTSOURCE",
+            "DIRECTIONSOURCE",
+            "SECURITYLIGHTING",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IfcElectricDistributionBoard",
+        "IfcElectricDistributionBoardType",
+        &[
+            "CONSUMERUNIT",
+            "DISTRIBUTIONBOARD",
+            "MOTORCONTROLCENTRE",
+            "SWITCHBOARD",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IfcSensor",
+        "IfcSensorType",
+        &[
+            "CO2SENSOR",
+            "CONDUCTANCESENSOR",
+            "CONTACTSENSOR",
+            "FIRESENSOR",
+            "FLOWSENSOR",
+            "FROSTSENSOR",
+            "GASSENSOR",
+            "HEATSENSOR",
+            "HUMIDITYSENSOR",
+            "IDENTIFIERSENSOR",
+            "IONCONCENTRATIONSENSOR",
+            "LEVELSENSOR",
+            "LIGHTSENSOR",
+            "MOISTURESENSOR",
+            "MOVEMENTSENSOR",
+            "PHSENSOR",
+            "PRESSURESENSOR",
+            "RADIATIONSENSOR",
+            "RADIOACTIVITYSENSOR",
+            "SMOKESENSOR",
+            "SOUNDSENSOR",
+            "TEMPERATURESENSOR",
+            "WINDSENSOR",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IfcAlarm",
+        "IfcAlarmType",
+        &[
+            "BELL",
+            "BREAKGLASSBUTTON",
+            "LIGHT",
+            "MANUALPULLBOX",
+            "SIREN",
+            "WHISTLE",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IfcWasteTerminal",
+        "IfcWasteTerminalType",
+        &[
+            "FLOORTRAP",
+            "FLOORWASTE",
+            "GULLYSUMP",
+            "GULLYTRAP",
+            "ROOFDRAIN",
+            "WASTEDISPOSALUNIT",
+            "WASTETRAP",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IfcValve",
+        "IfcValveType",
+        &[
+            "AIRRELEASE",
+            "ANTIVACUUM",
+            "CHANGEOVER",
+            "CHECK",
+            "COMMISSIONING",
+            "DIVERTING",
+            "DRAWOFFCOCK",
+            "DOUBLECHECK",
+            "DOUBLEREGULATING",
+            "FAUCET",
+            "FLUSHING",
+            "GASCOCK",
+            "GASTAP",
+            "ISOLATING",
+            "MIXING",
+            "PRESSUREREDUCING",
+            "PRESSURERELIEF",
+            "REGULATING",
+            "SAFETYCUTOFF",
+            "STEAMTRAP",
+            "STOPCOCK",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IfcBoiler",
+        "IfcBoilerType",
+        &["WATER", "STEAM", "USERDEFINED", "NOTDEFINED"],
+    ),
+    (
+        "IfcSpaceHeater",
+        "IfcSpaceHeaterType",
+        &["CONVECTOR", "RADIATOR", "USERDEFINED", "NOTDEFINED"],
+    ),
+    (
+        "IfcAirTerminal",
+        "IfcAirTerminalType",
+        &[
+            "DIFFUSER",
+            "GRILLE",
+            "LOUVRE",
+            "REGISTER",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IfcUnitaryEquipment",
+        "IfcUnitaryEquipmentType",
+        &[
+            "AIRHANDLER",
+            "AIRCONDITIONINGUNIT",
+            "DEHUMIDIFIER",
+            "SPLITSYSTEM",
+            "ROOFTOPUNIT",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IfcFan",
+        "IfcFanType",
+        &[
+            "CENTRIFUGALFORWARDCURVED",
+            "CENTRIFUGALRADIAL",
+            "CENTRIFUGALBACKWARDINCLINEDCURVED",
+            "CENTRIFUGALAIRFOIL",
+            "TUBEAXIAL",
+            "VANEAXIAL",
+            "PROPELLORAXIAL",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
 ];
 
 /// The predefined types of an occurrence class, or none for classes not in
@@ -217,6 +452,30 @@ pub enum Mount {
     Wall,
     /// Free-standing, wherever it is clicked.
     Floor,
+    /// Hung from the ceiling (a light, a diffuser, a smoke detector):
+    /// placed centred where clicked, its height measured down from the
+    /// ceiling over it to its top (see [`ceiling_at`]).
+    Ceiling,
+}
+
+impl Mount {
+    pub const ALL: [Mount; 3] = [Mount::Wall, Mount::Floor, Mount::Ceiling];
+
+    /// As written in IFC property sets.
+    pub fn label(self) -> &'static str {
+        match self {
+            Mount::Wall => "Wall",
+            Mount::Floor => "Floor",
+            Mount::Ceiling => "Ceiling",
+        }
+    }
+
+    pub fn from_label(s: &str) -> Mount {
+        Mount::ALL
+            .into_iter()
+            .find(|m| m.label().eq_ignore_ascii_case(s.trim()))
+            .unwrap_or_default()
+    }
 }
 
 /// One line of a plan symbol, in the object's own axes.
@@ -246,6 +505,11 @@ pub struct ObjectType {
     pub ifc: IfcKind,
     #[serde(default)]
     pub mount: Mount,
+    /// The height new objects of it are placed at: above their level to
+    /// their underside (a socket at 300 mm, a switch at 1100 mm), or for
+    /// those hung from the ceiling, from the ceiling down to their top.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub offset: f64,
     pub parts: Vec<ObjectPart>,
     /// The plan symbol; empty draws each part's outline seen from above.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -327,7 +591,9 @@ pub struct Object {
     pub level: ElementId,
     /// Where its origin (the middle of its back edge) is in plan.
     pub position: DVec2,
-    /// How far its floor is above its level.
+    /// How far its floor is above its level; for an object of a type hung
+    /// from the ceiling ([`Mount::Ceiling`]), how far its top is below the
+    /// ceiling over it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub offset: f64,
     /// Turn about its origin, degrees anticlockwise. At 0 its back is
@@ -356,10 +622,10 @@ impl Object {
         self.position + DVec2::new(p.x * c - p.y * s, p.x * s + p.y * c)
     }
 
-    /// From the object's own axes to the model's, its level at `level_z`.
-    pub fn to_model(&self, p: DVec3, level_z: f64) -> DVec3 {
-        self.to_plan(p.truncate())
-            .extend(p.z + level_z + self.offset)
+    /// From the object's own axes to the model's, its own floor (`z = 0`)
+    /// at `base_z` (see [`base_z`]).
+    pub fn to_model(&self, p: DVec3, base_z: f64) -> DVec3 {
+        self.to_plan(p.truncate()).extend(p.z + base_z)
     }
 
     /// The way it faces in plan (its front).
@@ -375,7 +641,6 @@ impl Object {
     }
 }
 
-/// The object type of a placed object.
 /// The object type with id `id`, if that is one.
 pub fn type_of_id(model: &Model, id: ElementId) -> Option<&ObjectType> {
     match &model.get(id)?.kind {
@@ -387,6 +652,7 @@ pub fn type_of_id(model: &Model, id: ElementId) -> Option<&ObjectType> {
     }
 }
 
+/// The object type of a placed object.
 pub fn type_of<'a>(model: &'a Model, e: &Element) -> Option<&'a ObjectType> {
     match crate::types::type_of(model, e)? {
         (
@@ -408,7 +674,7 @@ pub fn model_parts(model: &Model, e: &Element) -> Vec<(EditMesh, Option<ElementI
     let Some(t) = type_of(model, e) else {
         return vec![];
     };
-    let z = model.level(o.level).map_or(0.0, |l| l.elevation);
+    let z = base_z_of(model, o, t);
     t.parts
         .iter()
         .map(|p| {
@@ -419,6 +685,79 @@ pub fn model_parts(model: &Model, e: &Element) -> Vec<(EditMesh, Option<ElementI
             (m, p.material)
         })
         .collect()
+}
+
+/// Is a placed object hung from the ceiling, its offset measured down
+/// from there?
+pub fn hung(model: &Model, e: &Element) -> bool {
+    type_of(model, e).is_some_and(|t| t.mount == Mount::Ceiling)
+}
+
+/// The height of the ceiling over `p` on `level`: the underside of the
+/// lowest slab or roof above head height on the level that covers `p` and
+/// is no higher than the level's top, else the level's top (its elevation
+/// and floor-to-floor height).
+pub fn ceiling_at(model: &Model, level: ElementId, p: DVec2) -> f64 {
+    let Some(l) = model.level(level) else {
+        return 0.0;
+    };
+    let top = l.elevation + l.height;
+    let mut best = top;
+    for e in model.iter() {
+        let s = match &e.kind {
+            ElementKind::Slab(s) => s,
+            _ => continue,
+        };
+        let z = model.level(s.level).map_or(0.0, |l| l.elevation);
+        let under = z + s.top_offset - s.thickness;
+        if under <= l.elevation + 1.0 || under > top + 1e-6 || under >= best {
+            continue;
+        }
+        if crate::polygon::contains(&s.boundary, p)
+            && !s.holes.iter().any(|h| crate::polygon::contains(h, p))
+        {
+            best = under;
+        }
+    }
+    best
+}
+
+/// Where the own floor (`z = 0`) of an object of type `t` stands in the
+/// model: its offset above its level, or when hung from the ceiling, its
+/// top that far below the ceiling over its middle.
+pub fn base_z_of(model: &Model, o: &Object, t: &ObjectType) -> f64 {
+    let floor = model.level(o.level).map_or(0.0, |l| l.elevation);
+    if t.mount != Mount::Ceiling {
+        return floor + o.offset;
+    }
+    let (lo, hi) = t.bounds();
+    let middle = o.to_plan((lo.truncate() + hi.truncate()) / 2.0);
+    ceiling_at(model, o.level, middle) - o.offset - hi.z
+}
+
+/// Where a placed object's own floor stands in the model (see
+/// [`base_z_of`]); for an object without a type, its offset above its level.
+pub fn base_z(model: &Model, e: &Element) -> Option<f64> {
+    let ElementKind::Object(o) = &e.kind else {
+        return None;
+    };
+    Some(match type_of(model, e) {
+        Some(t) => base_z_of(model, o, t),
+        None => model.level(o.level).map_or(0.0, |l| l.elevation) + o.offset,
+    })
+}
+
+/// The offset that puts the own floor of an object of type `t` at `z` in
+/// the model: the inverse of [`base_z_of`].
+pub fn offset_for(model: &Model, o: &Object, t: &ObjectType, z: f64) -> f64 {
+    let mut probe = o.clone();
+    probe.offset = 0.0;
+    let at_zero = base_z_of(model, &probe, t);
+    if t.mount == Mount::Ceiling {
+        at_zero - z
+    } else {
+        z - at_zero
+    }
 }
 
 /// Convex hull, anticlockwise (Andrew's monotone chain).
@@ -637,6 +976,7 @@ pub fn from_meshes(
             category: ObjectCategory::Other,
             ifc,
             mount: Mount::Floor,
+            offset: 0.0,
             parts,
             symbol: vec![],
             catalogue: Some(key.to_string()),
@@ -679,6 +1019,14 @@ pub fn replace_material(
         out.push((e.clone(), after));
     }
     out
+}
+
+/// Where an object of type `t` turned by `rotation` goes so the middle
+/// of its plan box is at `middle`: how lights and diffusers are placed.
+pub fn centred(t: &ObjectType, middle: DVec2, rotation: f64) -> DVec2 {
+    let (lo, hi) = t.bounds();
+    let o = Object::new(ElementId::NIL, DVec2::ZERO, rotation);
+    middle - o.to_plan((lo.truncate() + hi.truncate()) / 2.0)
 }
 
 /// Where an object goes against a wall near `p` on `level`: the point on
@@ -734,12 +1082,16 @@ pub fn place(
     let (tx, type_id) = add_to_model(model, c);
     let mut tx = tx;
     tx.label = format!("Place {}", c.name);
-    let e = instance(type_id, &c.name, level, position, rotation);
+    let mut e = instance(type_id, &c.name, level, position, rotation);
+    if let ElementKind::Object(o) = &mut e.kind {
+        o.offset = c.object.offset;
+    }
     let id = e.id;
     (tx.insert(e), id)
 }
 
-/// A new object of type `type_id`.
+/// A new object of type `type_id`, at no height (the caller sets the
+/// type's own [`ObjectType::offset`]).
 pub fn instance(
     type_id: ElementId,
     name: &str,
@@ -846,6 +1198,7 @@ mod tests {
             category: ObjectCategory::Other,
             ifc: IfcKind::default(),
             mount: Mount::Floor,
+            offset: 0.0,
             parts,
             symbol: vec![],
             catalogue: None,

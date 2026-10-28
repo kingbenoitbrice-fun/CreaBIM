@@ -3424,6 +3424,21 @@ impl CreaBimApp {
                             Err(e) => format!("Couldn't do that: {e}"),
                         };
                     }
+                    if matches!(v.kind, ViewKind::Plan { .. })
+                        && ui
+                            .button("Tag objects")
+                            .on_hover_text(
+                                "Tag every piece of furniture and every fixture on this plan with its type's mark",
+                            )
+                            .clicked()
+                    {
+                        let r = planview::tag_objects(&mut self.doc, id);
+                        self.status = match r {
+                            Ok(0) => "Every object here is tagged already.".into(),
+                            Ok(n) => format!("Tagged {n} objects. Drag a tag to move it."),
+                            Err(e) => format!("Couldn't do that: {e}"),
+                        };
+                    }
                 }
             }
             ui.label("Wall thickness:");
@@ -3494,7 +3509,7 @@ impl CreaBimApp {
     fn new_schedule(&mut self, category: ScheduleCategory) {
         let label = category.label();
         let e = Element::new(
-            format!("{} Schedule", &label[..label.len() - 1]),
+            category.schedule_name(),
             ElementKind::View(View::schedule(category)),
         );
         let id = e.id;
@@ -4757,7 +4772,8 @@ impl CreaBimApp {
                 }
             }
             ElementKind::Object(o) => {
-                label = objectsui::object_fields(ui, o);
+                let hung = creabim_core::objects::hung(self.doc.model(), &e);
+                label = objectsui::object_fields(ui, o, hung);
                 object_type = true;
             }
             k @ (ElementKind::Column(_)

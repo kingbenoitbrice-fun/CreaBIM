@@ -174,11 +174,10 @@ pub(crate) fn type_props(t: &ElementType) -> Vec<(&'static str, Prop)> {
             out.push(("Depth", Prop::Length(s.y)));
             out.push(("Height", Prop::Length(s.z)));
             out.push(("Category", Prop::Label(o.category.label().into())));
-            let mount = match o.mount {
-                creabim_core::objects::Mount::Wall => "Wall",
-                creabim_core::objects::Mount::Floor => "Floor",
-            };
-            out.push(("Mount", Prop::Label(mount.into())));
+            out.push(("Mount", Prop::Label(o.mount.label().into())));
+            if o.offset != 0.0 {
+                out.push(("DefaultOffset", Prop::Length(o.offset)));
+            }
             if let Some(k) = &o.catalogue {
                 out.push(("CatalogueKey", Prop::Label(k.clone())));
             }
@@ -291,10 +290,10 @@ pub(crate) fn type_from(category: TypeCategory, curtain: bool, p: &Props) -> Typ
                 .map(creabim_core::ObjectCategory::from_label)
                 .unwrap_or_default(),
             ifc: Default::default(),
-            mount: match label(p, "Mount") {
-                Some("Floor") => creabim_core::objects::Mount::Floor,
-                _ => creabim_core::objects::Mount::Wall,
-            },
+            mount: label(p, "Mount")
+                .map(creabim_core::objects::Mount::from_label)
+                .unwrap_or_default(),
+            offset: len(p, "DefaultOffset").unwrap_or(0.0),
             parts: vec![],
             symbol: vec![],
             catalogue: label(p, "CatalogueKey").map(str::to_string),

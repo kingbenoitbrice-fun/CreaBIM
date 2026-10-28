@@ -3770,7 +3770,7 @@ fn tag_tool(
             let taggable = picked.filter(|id| is_taggable(doc.model(), *id));
             if picked.is_some() && taggable.is_none() {
                 state.status = Some(
-                    "That can't take a tag: pick a door, window, wall, slab, roof, column, beam, stair or railing."
+                    "That can't take a tag: pick a door, window, wall, slab, roof, column, beam, stair, railing, furniture or a fixture."
                         .into(),
                 );
             }
@@ -3809,8 +3809,60 @@ pub fn is_taggable(model: &creabim_core::Model, id: ElementId) -> bool {
                 | ElementKind::Beam(_)
                 | ElementKind::Stair(_)
                 | ElementKind::Railing(_)
+                | ElementKind::Object(_)
         )
     ) && annotate::centre(model, id).is_some()
+}
+
+/// Tag every piece of furniture and every fixture on a plan's level that
+/// has no tag there yet, with its type's mark: in front of what stands
+/// against a wall, beside what stands free or hangs from the ceiling.
+/// Returns how many were added.
+pub fn tag_objects(doc: &mut Document, view: ElementId) -> Result<usize, creabim_core::ModelError> {
+    let model = doc.model();
+    let Some(ElementKind::View(v)) = model.get(view).map(|e| &e.kind) else {
+        return Ok(0);
+    };
+    let ViewKind::Plan { level, .. } = v.kind else {
+        return Ok(0);
+    };
+    let tagged: Vec<ElementId> = model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Tag(t) if t.view == view => Some(t.host),
+            _ => None,
+        })
+        .collect();
+    let scale = v.scale / 100.0;
+    let mut tx = Transaction::new("Tag furniture and fixtures");
+    let mut n = 0;
+    for e in model.iter() {
+        let ElementKind::Object(o) = &e.kind else {
+            continue;
+        };
+        if o.level != level || tagged.contains(&e.id) {
+            continue;
+        }
+        let Some(t) = creabim_core::objects::type_of(model, e) else {
+            continue;
+        };
+        let offset = match t.mount {
+            creabim_core::objects::Mount::Wall => o.facing() * (t.size().y / 2.0 + 0.45 * scale),
+            _ => {
+                DVec2::new(1.0, 1.0).normalize()
+                    * (t.size().truncate().length() / 2.0 + 0.3 * scale)
+            }
+        };
+        tx = tx.insert(Element::new(
+            "Tag",
+            ElementKind::Tag(Tag::new(view, e.id, offset)),
+        ));
+        n += 1;
+    }
+    if n > 0 {
+        doc.commit(tx)?;
+    }
+    Ok(n)
 }
 
 /// Tag every door and window in a view that has no tag there yet, just
