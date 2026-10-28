@@ -1453,3 +1453,38 @@ fn section_marker(
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cut_footings(model: &Model, level: &str, cut: f64) -> usize {
+        let level = model
+            .iter()
+            .find(|e| e.name == level && matches!(e.kind, ElementKind::Level(_)))
+            .unwrap()
+            .id;
+        let footings: std::collections::HashSet<ElementId> = plan_view(model, level, cut)
+            .items
+            .iter()
+            .map(|it| it.id())
+            .filter(|id| {
+                matches!(
+                    model.get(*id).map(|e| &e.kind),
+                    Some(ElementKind::Footing(_))
+                )
+            })
+            .collect();
+        footings.len()
+    }
+
+    #[test]
+    fn a_foundation_level_plan_cuts_the_footings_under_the_floor_above() {
+        let m = creabim_core::starter::starter_house();
+        // 0.25 above the foundation level is 0.55 below the ground floor:
+        // inside every footing (top -0.35, 0.45 deep)
+        assert_eq!(cut_footings(&m, "Foundation", 0.25), 16);
+        // a cut above their tops passes none of them
+        assert_eq!(cut_footings(&m, "Foundation", 0.6), 0);
+    }
+}

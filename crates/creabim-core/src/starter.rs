@@ -1500,7 +1500,7 @@ fn views(b: &mut Builder) -> Views {
         if let ViewKind::Plan { cut_height, .. } = &mut v.kind {
             *cut_height = cut;
         }
-        v.hidden.categories = hide.iter().copied().collect();
+        v.hidden.categories = hide.to_vec();
         v
     };
     let add = |b: &mut Builder, tx: Transaction, name: &str, v: View| {
@@ -2231,5 +2231,84 @@ mod tests {
     fn the_starter_house_builds() {
         let m = starter_house();
         assert!(m.len() > 300);
+        for e in m.iter() {
+            assert!(e.validate().is_ok(), "{}: {:?}", e.name, e.validate());
+        }
+    }
+
+    fn count(m: &Model, f: impl Fn(&ElementKind) -> bool) -> usize {
+        m.iter().filter(|e| f(&e.kind)).count()
+    }
+
+    #[test]
+    fn the_starter_house_shows_the_features_a_new_user_looks_for() {
+        use ElementKind as K;
+        let m = starter_house();
+        assert_eq!(count(&m, |k| matches!(k, K::Level(_))), 3);
+        assert_eq!(count(&m, |k| matches!(k, K::Grid(_))), 8);
+        assert_eq!(
+            count(&m, |k| matches!(k, K::Wall(w) if w.curtain.is_none())),
+            24
+        );
+        assert_eq!(
+            count(&m, |k| matches!(k, K::Wall(w) if w.curtain.is_some())),
+            1
+        );
+        let openings =
+            |kind: OpeningKind| count(&m, |k| matches!(k, K::Opening(o) if o.kind == kind));
+        assert_eq!(openings(OpeningKind::Door), 16);
+        assert_eq!(openings(OpeningKind::Window), 20);
+        assert_eq!(openings(OpeningKind::Hole), 1);
+        assert!(count(&m, |k| matches!(k, K::Opening(o) if o.flip_hand)) > 0);
+        assert!(count(&m, |k| matches!(k, K::Opening(o) if o.flip_facing)) > 0);
+        assert_eq!(count(&m, |k| matches!(k, K::Roof(_))), 3);
+        assert_eq!(count(&m, |k| matches!(k, K::Slab(_))), 5);
+        assert!(count(&m, |k| matches!(k, K::Slab(s) if !s.holes.is_empty())) > 0);
+        assert_eq!(count(&m, |k| matches!(k, K::Stair(_))), 1);
+        assert_eq!(count(&m, |k| matches!(k, K::Shaft(_))), 1);
+        assert_eq!(count(&m, |k| matches!(k, K::Railing(_))), 3);
+        assert_eq!(count(&m, |k| matches!(k, K::Column(_))), 3);
+        assert_eq!(count(&m, |k| matches!(k, K::Beam(_))), 4);
+        let footings =
+            |kind: FootingKind| count(&m, |k| matches!(k, K::Footing(f) if f.kind == kind));
+        assert_eq!(footings(FootingKind::Pad), 3);
+        assert_eq!(footings(FootingKind::Strip), 13);
+        assert!(count(&m, |k| matches!(k, K::Object(_))) >= 100);
+        assert!(count(&m, |k| matches!(k, K::Dimension(_))) >= 40);
+        assert!(count(&m, |k| matches!(k, K::Tag(_))) >= 36);
+        // every door and window carries a type
+        for e in m.iter() {
+            if let K::Opening(o) = &e.kind {
+                if o.kind != OpeningKind::Hole && e.name != "Garden door" {
+                    assert!(e.of_type.is_some(), "{} has no type", e.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_starter_sheet_has_its_title_block_and_views() {
+        let m = starter_house();
+        let sheets: Vec<(ElementId, &Sheet)> = m
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::Sheet(s) => Some((e.id, s)),
+                _ => None,
+            })
+            .collect();
+        let numbers: Vec<&str> = sheets.iter().map(|(_, s)| s.number.as_str()).collect();
+        for n in [
+            "A000", "A101", "A102", "A103", "A104", "A201", "A202", "A301", "A601", "A602", "A901",
+        ] {
+            assert!(numbers.contains(&n), "no sheet {n}");
+        }
+        for (id, s) in &sheets {
+            assert!(s.template.is_some(), "{} has no title block", s.number);
+            let placed = m
+                .iter()
+                .filter(|e| matches!(&e.kind, ElementKind::Viewport(v) if v.sheet == *id))
+                .count();
+            assert!(placed > 0, "{} has no views", s.number);
+        }
     }
 }

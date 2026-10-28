@@ -2,7 +2,7 @@
 
 Furniture and fixtures are objects you place in a building rather than build: basins, WCs, baths, showers, kitchen units, sofas, chairs, tables, beds, wardrobes and desks, and the sockets, switches, lights, radiators and other [electrical, plumbing and HVAC fixtures](fixtures). Every object is an instance of an **object type**. The type holds the shape (its parts, each in a material), its category, its IFC class, whether it stands against a wall, on its own or hangs from the ceiling, and the height new ones go in at. The object itself only knows where it is, how it is turned and how far above its level it sits.
 
-To try it out, open *File › New furnished sample house*.
+To try it out, open the [starter house](starter-house), or *File › New furnished sample house*.
 
 ## The Catalogue window
 

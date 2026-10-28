@@ -8,8 +8,9 @@ Pick *File › New empty project*. You get one level, *Level 0*, with its floor 
 
 The *File* menu has a few ready-made houses to explore:
 
-- *New sample house*: a two-storey house with walls, doors, windows, slabs, a roof, a stair, sections, elevations, schedules and sheets.
-- *New layered sample house*: the same house built from layered walls, floors and roof (see [Layered assemblies](assemblies)).
+- *New starter house*: the house CreaBIM opens on, a two-storey family house with every kind of element, its plans, sections, elevations, schedules and a full set of sheets. See [The starter house](starter-house).
+- *New simple sample house*: a plain two-storey house with walls, doors, windows, slabs, a roof, a stair, sections, elevations, schedules and sheets.
+- *New layered sample house*: the simple house built from layered walls, floors and roof (see [Layered assemblies](assemblies)).
 - *New typed sample house*: walls, doors and windows that share [types](types), a storefront [curtain wall](curtain-walls), a wall opening and a stair shaft.
 - *New sample with a beam in a wall*: a lintel hidden inside a wall, to try [X-ray](visibility#x-ray) and [picking what is hidden](select#picking-what-is-underneath).
 
