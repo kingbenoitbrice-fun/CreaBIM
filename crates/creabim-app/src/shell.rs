@@ -1184,7 +1184,7 @@ impl CreaBimApp {
                     web.hide_all(self.shell.classic);
                 }
             }
-            "view.shaded" | "view.tag" | "view.tagobjects" | "view.reveal" | "view.colour"
+            "view.shaded" | "view.tag" | "view.tagfixtures" | "view.reveal" | "view.colour"
             | "view.xray" => self.view_action(head),
             "hidden.colour3d" => self.set_hidden_colour_3d(!self.shell.settings.hidden_colour_3d),
             "object" => {
@@ -1409,13 +1409,13 @@ impl CreaBimApp {
                     Err(e) => format!("Couldn't do that: {e}"),
                 };
             }
-            "view.tagobjects" => {
-                let r = planview::tag_objects(&mut self.doc, id);
+            "view.tagfixtures" => {
+                let r = planview::tag_fixtures(&mut self.doc, id);
                 self.status = match r {
-                    Ok(0) => "Every object here is tagged already (tags go on plans).".into(),
-                    Ok(n) => format!(
-                        "Tagged {n} pieces of furniture and fixtures with their type marks. Drag a tag to move it."
-                    ),
+                    Ok(0) => "Every fixture here is tagged already (tags go on plans).".into(),
+                    Ok(n) => {
+                        format!("Tagged {n} fixtures with their type marks. Drag a tag to move it.")
+                    }
                     Err(e) => format!("Couldn't do that: {e}"),
                 };
             }
@@ -1654,8 +1654,8 @@ impl CreaBimApp {
             }));
             if self.active_plan().is_some() {
                 options.push(json!({
-                    "kind": "button", "id": "view.tagobjects", "label": "Tag objects", "icon": "sofa",
-                    "hint": "Tag every piece of furniture and every fixture on this plan with its type's mark",
+                    "kind": "button", "id": "view.tagfixtures", "label": "Tag fixtures", "icon": "fixtures",
+                    "hint": "Tag every socket, switch, light, drain, radiator and other fixture on this plan with its type's mark",
                 }));
             }
         }

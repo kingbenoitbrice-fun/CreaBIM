@@ -3814,11 +3814,16 @@ pub fn is_taggable(model: &creabim_core::Model, id: ElementId) -> bool {
     ) && annotate::centre(model, id).is_some()
 }
 
-/// Tag every piece of furniture and every fixture on a plan's level that
-/// has no tag there yet, with its type's mark: in front of what stands
-/// against a wall, beside what stands free or hangs from the ceiling.
+/// Tag every services fixture (electrical, lighting, plumbing, heating and
+/// ventilation) on a plan's level that has no tag there yet, with its
+/// type's mark: in front of what stands against a wall, beside what stands
+/// free or hangs from the ceiling. Furniture and sanitary ware are left
+/// for the Tag tool, so a furnished plan doesn't drown in tags.
 /// Returns how many were added.
-pub fn tag_objects(doc: &mut Document, view: ElementId) -> Result<usize, creabim_core::ModelError> {
+pub fn tag_fixtures(
+    doc: &mut Document,
+    view: ElementId,
+) -> Result<usize, creabim_core::ModelError> {
     let model = doc.model();
     let Some(ElementKind::View(v)) = model.get(view).map(|e| &e.kind) else {
         return Ok(0);
@@ -3834,7 +3839,7 @@ pub fn tag_objects(doc: &mut Document, view: ElementId) -> Result<usize, creabim
         })
         .collect();
     let scale = v.scale / 100.0;
-    let mut tx = Transaction::new("Tag furniture and fixtures");
+    let mut tx = Transaction::new("Tag fixtures");
     let mut n = 0;
     for e in model.iter() {
         let ElementKind::Object(o) = &e.kind else {
@@ -3846,6 +3851,9 @@ pub fn tag_objects(doc: &mut Document, view: ElementId) -> Result<usize, creabim
         let Some(t) = creabim_core::objects::type_of(model, e) else {
             continue;
         };
+        if !t.category.is_services() {
+            continue;
+        }
         let offset = match t.mount {
             creabim_core::objects::Mount::Wall => o.facing() * (t.size().y / 2.0 + 0.45 * scale),
             _ => {
@@ -4723,5 +4731,36 @@ mod tests {
         let xray = creabim_geom::section::view_drawing_with(doc.model(), elev, true).unwrap();
         let under = under_pointer(&mut state, &doc, elev, kind, &xray, p, 0.02, 0.1);
         assert!(under.contains(&slab) && under.contains(&wall));
+    }
+
+    #[test]
+    fn tag_fixtures_tags_services_fixtures_once_and_leaves_furniture() {
+        let mut doc = Document::from_model(creabim_core::sample::furnished_house());
+        let plan = doc
+            .model()
+            .iter()
+            .find(|e| e.name == "Ground Floor plan")
+            .unwrap()
+            .id;
+        let n = tag_fixtures(&mut doc, plan).unwrap();
+        assert!(
+            n > 10,
+            "the ground floor has its sockets, switches and lights"
+        );
+        let model = doc.model();
+        for e in model.iter() {
+            let ElementKind::Tag(t) = &e.kind else {
+                continue;
+            };
+            if t.view != plan {
+                continue;
+            }
+            let host = model.get(t.host).unwrap();
+            if let Some(ty) = creabim_core::objects::type_of(model, host) {
+                assert!(ty.category.is_services(), "{} is not a fixture", host.name);
+            }
+        }
+        // a second run finds nothing left to tag
+        assert_eq!(tag_fixtures(&mut doc, plan).unwrap(), 0);
     }
 }

@@ -3426,16 +3426,16 @@ impl CreaBimApp {
                     }
                     if matches!(v.kind, ViewKind::Plan { .. })
                         && ui
-                            .button("Tag objects")
+                            .button("Tag fixtures")
                             .on_hover_text(
-                                "Tag every piece of furniture and every fixture on this plan with its type's mark",
+                                "Tag every socket, switch, light, drain, radiator and other fixture on this plan with its type's mark",
                             )
                             .clicked()
                     {
-                        let r = planview::tag_objects(&mut self.doc, id);
+                        let r = planview::tag_fixtures(&mut self.doc, id);
                         self.status = match r {
-                            Ok(0) => "Every object here is tagged already.".into(),
-                            Ok(n) => format!("Tagged {n} objects. Drag a tag to move it."),
+                            Ok(0) => "Every fixture here is tagged already.".into(),
+                            Ok(n) => format!("Tagged {n} fixtures. Drag a tag to move it."),
                             Err(e) => format!("Couldn't do that: {e}"),
                         };
                     }

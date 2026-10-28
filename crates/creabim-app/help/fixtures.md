@@ -58,7 +58,7 @@ A fixture's symbol is drawn in full even when it is above the cut height. Ceilin
 
 ## Tags and schedules
 
-- **Tag objects** in the top bar of a plan tags every piece of furniture and every fixture on it with its type's **mark**: E01, E02… for electrical types, L for lighting, P for plumbing, M for heating and ventilation, S for sanitary ware, K for kitchen and F for furniture. See [Tags](tags).
+- **Tag fixtures** in the top bar of a plan tags every electrical, lighting, plumbing and heating or ventilation fixture on it with its type's **mark**: E01, E02… for electrical types, L for lighting, P for plumbing, M for heating and ventilation, S for sanitary ware, K for kitchen and F for furniture. Furniture, kitchen units and sanitary ware are left out so the plan stays readable; tag those one by one with the **Tag** tool. See [Tags](tags).
 - A **Fixtures** schedule counts every fixture by type and level, under a heading for each category, with its mark, mounting height and IFC class. A **Furniture** schedule does the same for furniture. See [Schedules](schedules).
 
 ## IFC
