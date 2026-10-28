@@ -1,6 +1,6 @@
 //! Schedules: tables of doors, windows, walls or slabs read live from the
-//! model. The same table is drawn on sheets, edited in the app and
-//! exported as CSV.
+//! model, and counts of furniture and fixtures. The same table is drawn on
+//! sheets, edited in the app and exported as CSV.
 
 use crate::paper::Anchor;
 use crate::plan::{Pen, PlanItem, PlanView};
@@ -55,6 +55,9 @@ pub struct Schedule {
     pub rows: Vec<Row>,
     /// The last row: counts and sums.
     pub totals: Vec<String>,
+    /// How many elements it lists (for furniture and fixtures, how many
+    /// objects its counts add up to).
+    pub listed: usize,
 }
 
 fn col(title: &'static str, field: Option<Field>, width: f64, numeric: bool) -> Column {
@@ -145,7 +148,13 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
             .map_or(0.0, |l| l.elevation)
     };
     let mut rows: Vec<(f64, String, Row)> = Vec::new();
+    let mut listed = None;
     let (columns, totals) = match category {
+        ScheduleCategory::Furniture | ScheduleCategory::Fixtures => {
+            let (columns, totals, n) = object_rows(model, category, by_type, &mut rows);
+            listed = Some(n);
+            (columns, totals)
+        }
         ScheduleCategory::Doors | ScheduleCategory::Windows => {
             let kind = if category == ScheduleCategory::Doors {
                 OpeningKind::Door
@@ -442,12 +451,183 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
             c.width *= 1.4;
         }
     }
+    let listed = listed.unwrap_or_else(|| rows.iter().filter(|r| !r.group).count());
     Schedule {
         category,
         columns,
         rows,
         totals,
+        listed,
     }
+}
+
+/// Is a placed object listed in the furniture schedule, rather than the
+/// fixtures one? Those IFC calls furniture are.
+pub fn is_furniture(t: &creabim_core::ObjectType) -> bool {
+    matches!(
+        t.ifc.normalized().class.as_str(),
+        "IfcFurniture" | "IfcSystemFurnitureElement"
+    )
+}
+
+/// How high an object is mounted, as a schedule reads it.
+fn mounting(units: &creabim_core::Units, hung: bool, offset: f64) -> String {
+    match (hung, offset.abs() < 1e-6) {
+        (true, true) => "At the ceiling".into(),
+        (true, false) => format!("{} below ceiling", units.dimension(offset)),
+        (false, true) => "On the floor".into(),
+        (false, false) => format!("{} above floor", units.dimension(offset)),
+    }
+}
+
+/// The rows of a furniture or fixture schedule: with `by_type` one row an
+/// object (the caller groups them by type), else one row for each type on
+/// each level with how many there are, under a heading for each category.
+/// Returns the columns, the totals and how many objects are listed.
+fn object_rows(
+    model: &Model,
+    category: ScheduleCategory,
+    by_type: bool,
+    rows: &mut Vec<(f64, String, Row)>,
+) -> (Vec<Column>, Vec<String>, usize) {
+    use creabim_core::objects::{self, ObjectCategory};
+    let units = model.units();
+    let marks = creabim_core::marks::object_marks(model);
+    let level_name = |l: ElementId| model.get(l).map(|e| e.name.clone()).unwrap_or_default();
+    let elevation = |l: ElementId| model.level(l).map_or(0.0, |l| l.elevation);
+    let furniture = category == ScheduleCategory::Furniture;
+    // (category, type, its element, the object, its element)
+    let mut found = vec![];
+    for e in model.iter() {
+        let ElementKind::Object(o) = &e.kind else {
+            continue;
+        };
+        let Some(r) = &e.of_type else { continue };
+        let Some(t) = objects::type_of_id(model, r.id) else {
+            continue;
+        };
+        if is_furniture(t) != furniture {
+            continue;
+        }
+        found.push((t, r.id, o, e));
+    }
+    let ifc = |t: &creabim_core::ObjectType| {
+        let k = t.ifc.normalized();
+        format!("{} {}", k.class, k.predefined)
+    };
+    let mark = |id: ElementId| marks.get(&id).cloned().unwrap_or_default();
+    let n = found.len();
+    if by_type {
+        let columns = vec![
+            col("Mark", None, 16.0, false),
+            col("Level", None, 28.0, false),
+            col("Mounting", None, 34.0, false),
+            col("IFC", None, 50.0, false),
+        ];
+        for (t, tid, o, e) in found {
+            rows.push((
+                elevation(o.level),
+                mark(tid),
+                Row {
+                    id: e.id,
+                    group: false,
+                    cells: vec![
+                        mark(tid),
+                        level_name(o.level),
+                        mounting(&units, t.mount == objects::Mount::Ceiling, o.offset),
+                        ifc(t),
+                    ],
+                },
+            ));
+        }
+        let totals = vec![
+            format!("{n} objects"),
+            String::new(),
+            String::new(),
+            String::new(),
+        ];
+        return (columns, totals, n);
+    }
+    let columns = vec![
+        col("Mark", None, 16.0, false),
+        col("Type", None, 44.0, false),
+        col("Level", None, 28.0, false),
+        col("Mounting", None, 34.0, false),
+        col("IFC", None, 50.0, false),
+        col("Count", None, 14.0, true),
+    ];
+    // one line a type and level: category, mark, level, then the line
+    let mut lines: Vec<(usize, String, f64, ElementId, ElementId, Vec<f64>)> = vec![];
+    for (t, tid, o, _) in &found {
+        let c = ObjectCategory::ALL
+            .iter()
+            .position(|c| *c == t.category)
+            .unwrap_or(0);
+        match lines.iter_mut().find(|l| l.3 == *tid && l.4 == o.level) {
+            Some(l) => l.5.push(o.offset),
+            None => lines.push((
+                c,
+                mark(*tid),
+                elevation(o.level),
+                *tid,
+                o.level,
+                vec![o.offset],
+            )),
+        }
+    }
+    lines.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then(a.2.total_cmp(&b.2))
+    });
+    let mut out: Vec<Row> = vec![];
+    for group in lines.chunk_by(|a, b| a.0 == b.0) {
+        let count: usize = group.iter().map(|l| l.5.len()).sum();
+        let mut cells = vec![String::new(); columns.len()];
+        cells[0] = format!("{} ({count})", ObjectCategory::ALL[group[0].0].label());
+        out.push(Row {
+            id: ElementId::NIL,
+            cells,
+            group: true,
+        });
+        for (_, m, _, tid, level, offsets) in group {
+            let Some(t) = objects::type_of_id(model, *tid) else {
+                continue;
+            };
+            let same = offsets.iter().all(|v| (v - offsets[0]).abs() < 1e-6);
+            let hung = t.mount == objects::Mount::Ceiling;
+            out.push(Row {
+                id: *tid,
+                group: false,
+                cells: vec![
+                    m.clone(),
+                    model.get(*tid).map(|e| e.name.clone()).unwrap_or_default(),
+                    level_name(*level),
+                    if same {
+                        mounting(&units, hung, offsets[0])
+                    } else {
+                        "Varies".into()
+                    },
+                    ifc(t),
+                    offsets.len().to_string(),
+                ],
+            });
+        }
+    }
+    // in this order: the shared sort below keeps it
+    for (i, r) in out.into_iter().enumerate() {
+        rows.push((0.0, format!("{i:06}"), r));
+    }
+    let what = if furniture { "pieces" } else { "fixtures" };
+    let totals = vec![
+        format!("{n} {what}"),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        n.to_string(),
+    ];
+    (columns, totals, n)
 }
 
 pub const ROW: f64 = 6.0;
@@ -677,6 +857,81 @@ mod tests {
         // an untyped project keeps its old table
         let plain = schedule(&sample_house(), ScheduleCategory::Walls);
         assert!(plain.columns.iter().all(|c| c.title != "Type"));
+    }
+
+    #[test]
+    fn furniture_and_fixtures_are_counted_by_type_and_level() {
+        let m = creabim_core::sample::furnished_house();
+        let s = schedule(&m, ScheduleCategory::Fixtures);
+        let titles: Vec<&str> = s.columns.iter().map(|c| c.title).collect();
+        assert_eq!(
+            titles,
+            ["Mark", "Type", "Level", "Mounting", "IFC", "Count"]
+        );
+        // a heading for each category, in catalogue order
+        let headings: Vec<&str> = s
+            .rows
+            .iter()
+            .filter(|r| r.group)
+            .map(|r| r.cells[0].split(" (").next().unwrap())
+            .collect();
+        assert_eq!(
+            headings,
+            [
+                "Bathroom",
+                "Kitchen",
+                "Electrical",
+                "Lighting",
+                "Plumbing",
+                "Heating and ventilation"
+            ]
+        );
+        let line = |ty: &str, level: &str| {
+            s.rows
+                .iter()
+                .find(|r| !r.group && r.cells[1] == ty && r.cells[2] == level)
+                .unwrap_or_else(|| panic!("{ty} on {level}"))
+        };
+        let sockets = line("Double socket", "Ground Floor");
+        assert_eq!(sockets.cells[5], "5");
+        assert!(sockets.cells[0].starts_with('E'), "{:?}", sockets.cells);
+        assert_eq!(sockets.cells[3], "300 above floor");
+        assert_eq!(sockets.cells[4], "IfcOutlet POWEROUTLET");
+        assert_eq!(line("Double socket", "First Floor").cells[5], "3");
+        let lights = line("Recessed downlight", "Ground Floor");
+        assert_eq!(
+            (lights.cells[3].as_str(), lights.cells[5].as_str()),
+            ("At the ceiling", "3")
+        );
+        assert!(lights.cells[0].starts_with('L'));
+        // the counts add up to every fixture, and furniture is apart
+        let counted: usize = s
+            .rows
+            .iter()
+            .filter(|r| !r.group)
+            .map(|r| r.cells[5].parse::<usize>().unwrap())
+            .sum();
+        assert_eq!(counted, s.listed);
+        assert_eq!(s.totals[5], s.listed.to_string());
+        let f = schedule(&m, ScheduleCategory::Furniture);
+        let objects = m
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Object(_)))
+            .count();
+        assert_eq!(f.listed + s.listed, objects);
+        assert!(f
+            .rows
+            .iter()
+            .all(|r| r.group || r.cells[4].starts_with("IfcFurniture")));
+        // grouped by type instead: one row an object, under its type
+        let by = schedule_by(&m, ScheduleCategory::Fixtures, true);
+        assert_eq!(by.rows.iter().filter(|r| !r.group).count(), s.listed);
+        assert!(by
+            .rows
+            .iter()
+            .any(|r| r.group && r.cells[0] == "Double socket (8)"));
+        assert_eq!(by.totals.len(), by.columns.len());
+        assert!(to_csv(&s).starts_with("Mark,Type,Level,Mounting,IFC,Count"));
     }
 
     #[test]

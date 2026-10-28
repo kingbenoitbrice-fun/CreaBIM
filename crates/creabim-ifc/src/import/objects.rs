@@ -1,9 +1,11 @@
-//! Furniture and fixtures: an IfcFurnitureType, IfcSanitaryTerminalType,
-//! IfcElectricApplianceType or IfcSystemFurnitureElementType with a body
-//! among its representation maps becomes an object type, each item of the
-//! body a part in the material its style belongs to, a 'FootPrint' map its
-//! plan symbol; the products of such a type become objects placed where
-//! the file has them.
+//! Furniture and fixtures: a type of one of the classes objects can be
+//! (IfcFurnitureType, IfcSanitaryTerminalType, IfcOutletType,
+//! IfcLightFixtureType, IfcSpaceHeaterType, IfcAirTerminalType...; see
+//! [`objects::IFC_CLASSES`]) with a body among its representation maps
+//! becomes an object type, each item of the body a part in the material its
+//! style belongs to, a 'FootPrint' map its plan symbol; the products of
+//! such a type become objects placed where the file has them, those hung
+//! from the ceiling measured down from the ceiling over them.
 
 use super::{material_from, Importer};
 use creabim_core::objects::{self, IfcKind, ObjectPart, SymbolItem};
@@ -144,6 +146,24 @@ impl Importer<'_> {
             .map(|(p, t)| (*p, *t))
             .collect();
         ids.sort_unstable();
+        // the levels and slabs read so far, for the ceilings objects hang from
+        let ceilings = creabim_core::Model::from_elements(
+            self.level_elems.iter().cloned().chain(
+                self.wall_elems
+                    .iter()
+                    .filter(|e| matches!(e.kind, ElementKind::Slab(_)))
+                    .map(|e| {
+                        let mut e = e.clone();
+                        if let ElementKind::Slab(s) = &mut e.kind {
+                            s.material = None;
+                            s.assembly = None;
+                        }
+                        e.of_type = None;
+                        e
+                    }),
+            ),
+        )
+        .unwrap_or_default();
         for (id, t) in ids {
             if self.done.contains(&id) {
                 continue;
@@ -163,6 +183,16 @@ impl Importer<'_> {
             let (lid, elev) = self.level_for(id, at.z);
             let mut o = objects::Object::new(lid, at.truncate(), rotation);
             o.offset = at.z - elev;
+            let hung = self.type_elems.iter().find_map(|e| match &e.kind {
+                ElementKind::ElementType(creabim_core::ElementType {
+                    params: creabim_core::TypeParams::Object(t),
+                    ..
+                }) if e.id == type_id && t.mount == objects::Mount::Ceiling => Some(t),
+                _ => None,
+            });
+            if let Some(t) = hung {
+                o.offset = objects::offset_for(&ceilings, &o, t, at.z);
+            }
             let eid = self.new_id(e);
             self.other_elems.push(Element {
                 id: eid,

@@ -13,6 +13,8 @@ use crate::{EditMesh, Hatch, Material};
 use glam::{DVec2, DVec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
+mod services;
+
 // ---- outlines and solids ----
 
 /// A rounded rectangle centred on `c`, anticlockwise, `k` segments per
@@ -233,6 +235,8 @@ struct Build {
     parts: Vec<ObjectPart>,
     materials: Vec<Option<Look>>,
     symbol: Vec<SymbolItem>,
+    /// The height it is placed at (see [`ObjectType::offset`]).
+    offset: f64,
 }
 
 impl Build {
@@ -241,7 +245,15 @@ impl Build {
             parts: vec![],
             materials: vec![],
             symbol: vec![],
+            offset: 0.0,
         }
+    }
+
+    /// Placed at `h`: above the floor to its underside, or for objects
+    /// hung from the ceiling, below it to their top.
+    fn at(&mut self, h: f64) -> &mut Self {
+        self.offset = h;
+        self
     }
 
     /// A part; `plan` draws its outline in the plan symbol.
@@ -287,6 +299,7 @@ impl Build {
                 category,
                 ifc: IfcKind::new(ifc.0, ifc.1),
                 mount,
+                offset: std::mem::take(&mut self.offset),
                 parts: std::mem::take(&mut self.parts),
                 symbol: std::mem::take(&mut self.symbol),
                 catalogue: Some(key),
@@ -1227,6 +1240,9 @@ pub fn starters() -> Vec<CatalogueObject> {
         bedside(),
         desk(),
     ]
+    .into_iter()
+    .chain(services::starters())
+    .collect()
 }
 
 /// The starter object with this key.
@@ -1272,7 +1288,13 @@ mod tests {
             }
             let (lo, hi) = c.object.bounds();
             assert!(lo.z >= -1e-9 && hi.y <= 1e-9, "{}: {lo} {hi}", c.name);
-            assert!(hi.x > 0.0 && lo.x < 0.0 && lo.y < -0.1, "{}", c.name);
+            // sockets and switches stand a few millimetres off their wall
+            let depth = if c.object.category.is_services() {
+                0.005
+            } else {
+                0.1
+            };
+            assert!(hi.x > 0.0 && lo.x < 0.0 && lo.y < -depth, "{}", c.name);
             assert!(!c.object.plan_symbol().is_empty());
             let k = c.object.ifc.normalized();
             assert_eq!(k, c.object.ifc, "{}: a predefined type IFC knows", c.name);

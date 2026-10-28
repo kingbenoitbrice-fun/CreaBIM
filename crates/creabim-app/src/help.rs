@@ -70,6 +70,7 @@ pub const PAGES: &[(&str, &str, &str)] = &[
     page!("Building the model", "sketches"),
     page!("Building the model", "grids"),
     page!("Building the model", "furniture"),
+    page!("Building the model", "fixtures"),
     page!("Views and drawings", "views"),
     page!("Views and drawings", "sections"),
     page!("Views and drawings", "visibility"),

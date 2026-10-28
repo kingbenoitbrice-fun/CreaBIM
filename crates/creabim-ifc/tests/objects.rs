@@ -53,6 +53,33 @@ fn furnished_house_round_trips_through_ifc() {
         ".WASHHANDBASIN.",
         ".SOFA.",
         ".BED.",
+        // building services, with their types
+        "IFCOUTLETTYPE(",
+        "IFCOUTLET(",
+        ".POWEROUTLET.",
+        "IFCSWITCHINGDEVICETYPE(",
+        ".TOGGLESWITCH.",
+        "IFCLIGHTFIXTURETYPE(",
+        "IFCLIGHTFIXTURE(",
+        ".POINTSOURCE.",
+        "IFCELECTRICDISTRIBUTIONBOARDTYPE(",
+        ".CONSUMERUNIT.",
+        "IFCSENSORTYPE(",
+        ".SMOKESENSOR.",
+        "IFCWASTETERMINALTYPE(",
+        ".FLOORWASTE.",
+        "IFCBOILERTYPE(",
+        "IFCVALVETYPE(",
+        ".FAUCET.",
+        "IFCSPACEHEATERTYPE(",
+        ".RADIATOR.",
+        "IFCAIRTERMINALTYPE(",
+        ".DIFFUSER.",
+        ".GRILLE.",
+        "IFCUNITARYEQUIPMENTTYPE(",
+        ".SPLITSYSTEM.",
+        "IFCFANTYPE(",
+        "IFCFAN(",
     ] {
         assert!(ifc.contains(class), "{class}");
     }
@@ -77,6 +104,7 @@ fn furnished_house_round_trips_through_ifc() {
             (b.category, b.mount, &b.ifc),
             "{name}"
         );
+        assert!((a.offset - b.offset).abs() < 1e-9, "{name}");
         assert_eq!(a.catalogue, b.catalogue, "{name}");
         assert!((a.size() - b.size()).length() < 1e-6, "{name}");
         for (pa, pb) in a.parts.iter().zip(&b.parts) {
@@ -113,4 +141,40 @@ fn furnished_house_round_trips_through_ifc() {
         ifc.matches("IFCMAPPEDITEM(").count()
     );
     let _ = objects::IFC_CLASSES;
+}
+
+#[test]
+fn lights_hang_from_the_ceiling_in_ifc_too() {
+    let model = furnished_house();
+    let ifc = export_ifc4(&model, &ExportOptions::default());
+    let back = import_ifc(&ifc).unwrap().model;
+    // each object stands at the same height in the file as in the model,
+    // a pendant just under the first floor's slab
+    let z = |m: &Model, name: &str| {
+        let mut v: Vec<i64> = m
+            .iter()
+            .filter(|e| e.name.starts_with(name) && matches!(e.kind, ElementKind::Object(_)))
+            .map(|e| (objects::base_z(m, e).unwrap() * 1000.0).round() as i64)
+            .collect();
+        v.sort();
+        v
+    };
+    for name in [
+        "Ceiling light",
+        "Recessed downlight",
+        "Double socket",
+        "Smoke detector",
+    ] {
+        assert!(!z(&model, name).is_empty(), "{name}");
+        assert_eq!(z(&model, name), z(&back, name), "{name}");
+    }
+    let pendant = back
+        .iter()
+        .find(|e| e.name.starts_with("Ceiling light") && matches!(e.kind, ElementKind::Object(_)))
+        .unwrap();
+    assert!(objects::hung(&back, pendant));
+    let ElementKind::Object(o) = &pendant.kind else {
+        unreachable!()
+    };
+    assert!(o.offset.abs() < 1e-9, "{}", o.offset);
 }

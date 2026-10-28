@@ -218,6 +218,15 @@ pub fn centre(model: &Model, id: ElementId) -> Option<DVec3> {
             let c = mesh.vertices.iter().copied().sum::<DVec3>() / n;
             c + m.origin + DVec3::Z * m.level.map_or(0.0, elevation)
         }
+        // furniture and fixtures: the middle of their parts
+        ElementKind::Object(_) => {
+            let mut pts = creabim_core::objects::model_parts(model, e)
+                .into_iter()
+                .flat_map(|(m, _)| m.vertices);
+            let first = pts.next()?;
+            let (lo, hi) = pts.fold((first, first), |(lo, hi), v| (lo.min(v), hi.max(v)));
+            (lo + hi) / 2.0
+        }
         // columns, beams, roofs, stairs and railings: the middle of their shape
         k if creabim_core::members::is_member(k) => {
             let (mesh, _) = crate::members::member_mesh(model, e)?;
@@ -261,6 +270,11 @@ pub fn tag_text(model: &Model, id: ElementId) -> (String, bool) {
             format!("{} {:.0}°", with_material(r.thickness), r.pitch),
             false,
         ),
+        // furniture and fixtures: their type's mark, in a circle like doors
+        ElementKind::Object(_) => match creabim_core::marks::object_mark(model, e) {
+            Some(m) => (m, true),
+            None => (e.name.clone(), false),
+        },
         ElementKind::Footing(f) => (
             match f.kind {
                 creabim_core::FootingKind::Strip => format!(

@@ -111,6 +111,7 @@ pub fn object(
             category,
             ifc,
             mount,
+            offset: 0.0,
             parts,
             symbol: vec![],
             catalogue: Some(key.to_string()),
@@ -175,6 +176,59 @@ pub fn guess(words: &str) -> (ObjectCategory, IfcKind, Mount) {
             "DISHWASHER",
             Mount::Wall,
         )
+    } else if has(&["socket", "outlet", "receptacle"]) {
+        (C::Electrical, "IfcOutlet", "POWEROUTLET", Mount::Wall)
+    } else if has(&["switch"]) {
+        (
+            C::Electrical,
+            "IfcSwitchingDevice",
+            "TOGGLESWITCH",
+            Mount::Wall,
+        )
+    } else if has(&["consumer unit", "distribution board", "fuse box", "fusebox"]) {
+        (
+            C::Electrical,
+            "IfcElectricDistributionBoard",
+            "CONSUMERUNIT",
+            Mount::Wall,
+        )
+    } else if has(&["smoke", "detector", "alarm"]) {
+        (C::Electrical, "IfcSensor", "SMOKESENSOR", Mount::Ceiling)
+    } else if has(&[
+        "pendant",
+        "downlight",
+        "spotlight",
+        "chandelier",
+        "ceiling light",
+        "ceiling lamp",
+    ]) {
+        (
+            C::Lighting,
+            "IfcLightFixture",
+            "POINTSOURCE",
+            Mount::Ceiling,
+        )
+    } else if has(&["wall light", "wall lamp", "sconce"]) {
+        (
+            C::Lighting,
+            "IfcLightFixture",
+            "DIRECTIONSOURCE",
+            Mount::Wall,
+        )
+    } else if has(&["drain", "gully"]) {
+        (C::Plumbing, "IfcWasteTerminal", "FLOORWASTE", Mount::Floor)
+    } else if has(&["boiler", "water heater"]) {
+        (C::Plumbing, "IfcBoiler", "WATER", Mount::Wall)
+    } else if has(&["tap", "faucet", "valve"]) {
+        (C::Plumbing, "IfcValve", "FAUCET", Mount::Wall)
+    } else if has(&["radiator", "heater", "convector"]) {
+        (C::Hvac, "IfcSpaceHeater", "RADIATOR", Mount::Wall)
+    } else if has(&["diffuser", "grille", "vent"]) {
+        (C::Hvac, "IfcAirTerminal", "DIFFUSER", Mount::Ceiling)
+    } else if has(&["air conditioner", "air conditioning", "ac unit", "split"]) {
+        (C::Hvac, "IfcUnitaryEquipment", "SPLITSYSTEM", Mount::Wall)
+    } else if has(&["fan"]) {
+        (C::Hvac, "IfcFan", "PROPELLORAXIAL", Mount::Wall)
     } else if has(&["sofa", "couch", "settee"]) {
         (C::Living, "IfcFurniture", "SOFA", Mount::Wall)
     } else if has(&["armchair", "chair", "stool", "seat"]) {
@@ -267,6 +321,22 @@ mod tests {
         // words, not letters inside them
         assert_eq!(guess("Floor lamp").1, IfcKind::default());
         assert_eq!(guess("Floor lamp").0, ObjectCategory::Living);
+        // building services
+        let (c, k, m) = guess("Double socket outlet");
+        assert_eq!(
+            (c, k.class.as_str(), m),
+            (ObjectCategory::Electrical, "IfcOutlet", Mount::Wall)
+        );
+        let (c, k, m) = guess("Pendant_light");
+        assert_eq!(
+            (c, k.predefined.as_str(), m),
+            (ObjectCategory::Lighting, "POINTSOURCE", Mount::Ceiling)
+        );
+        assert_eq!(
+            guess("Consumer unit").1.class,
+            "IfcElectricDistributionBoard"
+        );
+        assert_eq!(guess("Radiators").1.class, "IfcSpaceHeater");
         assert_eq!(guess("Kitchen_Sink.001").1.predefined, "SINK");
         assert_eq!(guess("Dining chairs").1.predefined, "CHAIR");
     }

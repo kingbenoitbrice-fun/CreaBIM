@@ -2,13 +2,15 @@
 //! the pointer is. An object that stands against a wall (a WC, a kitchen
 //! unit, a bed) turns its back to the nearest wall face within reach and
 //! sits on it; anything else, or with no wall near, stands where clicked,
-//! turned as set in the tool bar. The plan and the 3D view show its symbol
-//! under the pointer before the click.
+//! turned as set in the tool bar, and what hangs from the ceiling (a
+//! light, a diffuser) is centred where clicked. Each goes in at its type's
+//! height: a socket 300 mm up, a switch 1100 mm. The plan and the 3D view
+//! show its symbol under the pointer before the click.
 
 use crate::planview::PlanState;
 use crate::selection::Selection;
 use creabim_core::objects::{self, CatalogueObject, Mount, Object};
-use creabim_core::{Document, ElementId, Model, ModelError};
+use creabim_core::{Document, ElementId, ElementKind, Model, ModelError};
 use eframe::egui::{self, Color32, Pos2, Stroke};
 use glam::{DVec2, DVec3};
 
@@ -42,7 +44,11 @@ pub fn placement(
             return (at, rotation, true);
         }
     }
-    (p, set.rotation.rem_euclid(360.0), false)
+    let rotation = set.rotation.rem_euclid(360.0);
+    if c.object.mount == Mount::Ceiling {
+        return (objects::centred(&c.object, p, rotation), rotation, false);
+    }
+    (p, rotation, false)
 }
 
 /// A click with the Object tool.
@@ -65,7 +71,12 @@ pub fn click(
         .filter(|t| objects::type_of_id(doc.model(), *t).is_some());
     let (tx, id) = match own {
         Some(t) => {
-            let e = objects::instance(t, &c.name, level, at, rotation);
+            let mut e = objects::instance(t, &c.name, level, at, rotation);
+            if let (ElementKind::Object(o), Some(ty)) =
+                (&mut e.kind, objects::type_of_id(doc.model(), t))
+            {
+                o.offset = ty.offset;
+            }
             let id = e.id;
             (
                 creabim_core::Transaction::new(format!("Place {}", c.name)).insert(e),
@@ -106,7 +117,10 @@ pub fn preview(
     };
     let (at, rotation, walled) = placement(model, level, p, c, &state.objects);
     let z = model.level(level).map_or(0.0, |l| l.elevation);
-    let o = Object::new(level, at, rotation);
+    let mut o = Object::new(level, at, rotation);
+    o.offset = c.object.offset;
+    // its box where it will stand: up a wall, or under the ceiling
+    let base = objects::base_z_of(model, &o, &c.object) - z;
     let stroke = Stroke::new(1.5, Color32::from_rgb(230, 120, 30));
     let thin = Stroke::new(1.0, Color32::from_rgb(230, 120, 30));
     let line = |pts: &[DVec3], s: Stroke| {
@@ -134,12 +148,12 @@ pub fn preview(
         DVec2::new(lo.x, hi.y),
         DVec2::new(lo.x, lo.y),
     ];
-    let base: Vec<DVec3> = corners.iter().map(|q| on(*q, lo.z)).collect();
-    line(&base, stroke);
+    let bottom: Vec<DVec3> = corners.iter().map(|q| on(*q, base + lo.z)).collect();
+    line(&bottom, stroke);
     if boxed {
-        let top: Vec<DVec3> = corners.iter().map(|q| on(*q, hi.z)).collect();
+        let top: Vec<DVec3> = corners.iter().map(|q| on(*q, base + hi.z)).collect();
         line(&top, thin);
-        for (a, b) in base.iter().zip(&top).take(4) {
+        for (a, b) in bottom.iter().zip(&top).take(4) {
             line(&[*a, *b], thin);
         }
     }
@@ -147,7 +161,7 @@ pub fn preview(
     let front = on(DVec2::new(0.0, lo.y), 0.0);
     let ahead = front + o.facing().extend(0.0) * 0.25;
     line(&[front, ahead], stroke);
-    if let Some(s) = project(on(DVec2::new(hi.x, lo.y), hi.z.max(0.0))) {
+    if let Some(s) = project(on(DVec2::new(hi.x, lo.y), (base + hi.z).max(0.0))) {
         painter.text(
             s + egui::Vec2::new(10.0, -10.0),
             egui::Align2::LEFT_BOTTOM,
@@ -215,7 +229,6 @@ pub fn set_option(state: &mut PlanState, key: &str, v: f64) {
 mod tests {
     use super::*;
     use creabim_core::sample::sample_house;
-    use creabim_core::ElementKind;
 
     fn ground(doc: &Document) -> ElementId {
         doc.model()
@@ -290,5 +303,39 @@ mod tests {
         assert_eq!(st.objects.rotation, 180.0);
         set_option(&mut st, "object.rotation", -90.0);
         assert_eq!(st.objects.rotation, 270.0);
+    }
+
+    #[test]
+    fn fixtures_go_in_at_their_height_and_lights_where_clicked() {
+        let mut doc = Document::from_model(sample_house());
+        let level = ground(&doc);
+        let mut st = PlanState::default();
+        let mut sel = Selection::default();
+        // a switch backs onto the south wall, 1100 mm up
+        st.objects.current = creabim_core::catalogue::starter("starter/switch-1-gang");
+        click(&mut doc, level, DVec2::new(3.0, 0.4), &mut st, &mut sel).unwrap();
+        let e = doc.model().get(sel.active.unwrap()).unwrap();
+        let ElementKind::Object(o) = &e.kind else {
+            panic!("an object")
+        };
+        assert!((o.offset - 1.1).abs() < 1e-9 && (o.position.y - 0.15).abs() < 1e-9);
+        // a second one of the project's own type takes the type's height too
+        st.objects.project_type = e.of_type.as_ref().map(|t| t.id);
+        click(&mut doc, level, DVec2::new(4.0, 0.4), &mut st, &mut sel).unwrap();
+        let ElementKind::Object(o) = &doc.model().get(sel.active.unwrap()).unwrap().kind else {
+            panic!()
+        };
+        assert!((o.offset - 1.1).abs() < 1e-9);
+        // a downlight hangs under the ceiling, its middle where clicked,
+        // even next to a wall
+        st.objects.project_type = None;
+        st.objects.current = creabim_core::catalogue::starter("starter/downlight");
+        let p = DVec2::new(3.0, 0.4);
+        click(&mut doc, level, p, &mut st, &mut sel).unwrap();
+        let m = doc.model();
+        let e = m.get(sel.active.unwrap()).unwrap();
+        let c = creabim_geom::annotate::centre(m, e.id).unwrap();
+        assert!((c.truncate() - p).length() < 1e-9, "{c}");
+        assert!(c.z > 2.7 && c.z < 2.75, "{c}");
     }
 }

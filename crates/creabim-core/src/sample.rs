@@ -721,7 +721,8 @@ pub fn typed_house() -> Model {
 }
 
 /// The sample house furnished from the starter catalogue: a living room
-/// and a kitchen downstairs, a bedroom and a bathroom upstairs.
+/// and a kitchen downstairs, a bedroom and a bathroom upstairs, with their
+/// sockets, switches, lights, radiators, ventilation and plumbing points.
 pub fn furnished_house() -> Model {
     let mut doc = Document::from_model(sample_house());
     let level = |name: &str| {
@@ -765,10 +766,56 @@ pub fn furnished_house() -> Model {
         ("wc", f, DVec2::new(8.3, 0.4), None),
         ("washbasin", f, DVec2::new(7.1, 0.4), None),
         ("shower", f, DVec2::new(9.4, 5.6), None),
+        // services downstairs: the board and switches by the front door
+        ("consumer-unit", g, DVec2::new(3.3, 0.3), None),
+        ("switch-2-gang", g, DVec2::new(2.85, 0.3), None),
+        ("switch-1-gang", g, DVec2::new(5.85, 3.3), None),
+        ("switch-1-gang", g, DVec2::new(6.15, 4.6), None),
+        ("socket-double", g, DVec2::new(0.3, 1.2), None),
+        ("socket-double", g, DVec2::new(0.3, 4.8), None),
+        ("socket-double", g, DVec2::new(4.5, 0.3), None),
+        ("socket-double", g, DVec2::new(5.3, 5.7), None),
+        ("socket-double", g, DVec2::new(6.15, 1.5), None),
+        ("socket-single", g, DVec2::new(6.15, 5.2), None),
+        ("ceiling-light", g, DVec2::new(3.0, 2.0), Some(0.0)),
+        ("ceiling-light", g, DVec2::new(7.4, 3.4), Some(0.0)),
+        ("downlight", g, DVec2::new(8.9, 1.0), Some(0.0)),
+        ("downlight", g, DVec2::new(8.9, 2.2), Some(0.0)),
+        ("downlight", g, DVec2::new(8.9, 3.4), Some(0.0)),
+        ("smoke-detector", g, DVec2::new(4.6, 3.0), Some(0.0)),
+        ("radiator", g, DVec2::new(7.1, 0.3), None),
+        ("radiator", g, DVec2::new(2.9, 5.7), None),
+        ("radiator", g, DVec2::new(7.9, 5.7), None),
+        ("boiler", g, DVec2::new(9.35, 5.7), None),
+        ("extract-fan", g, DVec2::new(9.6, 4.7), None),
+        ("split-ac", g, DVec2::new(4.0, 5.7), None),
+        ("outside-tap", g, DVec2::new(10.3, 5.0), None),
+        // and upstairs
+        ("switch-1-gang", f, DVec2::new(5.0, 0.3), None),
+        ("socket-double", f, DVec2::new(0.85, 5.7), None),
+        ("socket-double", f, DVec2::new(4.15, 5.7), None),
+        ("socket-double", f, DVec2::new(0.3, 4.0), None),
+        ("wall-light", f, DVec2::new(1.4, 5.7), None),
+        ("wall-light", f, DVec2::new(3.6, 5.7), None),
+        ("ceiling-light", f, DVec2::new(3.5, 2.5), Some(0.0)),
+        ("downlight", f, DVec2::new(8.3, 1.2), Some(0.0)),
+        ("downlight", f, DVec2::new(8.3, 3.6), Some(0.0)),
+        ("smoke-detector", f, DVec2::new(4.6, 4.2), Some(0.0)),
+        ("supply-diffuser", f, DVec2::new(1.6, 2.0), Some(0.0)),
+        ("extract-grille", f, DVec2::new(8.0, 2.4), Some(0.0)),
+        ("floor-drain", f, DVec2::new(8.6, 4.4), Some(0.0)),
+        ("radiator", f, DVec2::new(2.1, 0.3), None),
+        ("radiator", f, DVec2::new(7.9, 5.7), None),
+        ("extract-fan", f, DVec2::new(9.6, 4.2), None),
+        ("split-ac", f, DVec2::new(0.3, 3.0), None),
     ];
     for (key, lvl, at, turn) in plan {
         let c = crate::catalogue::starter(&format!("starter/{key}")).expect("a starter");
         let (p, r) = match turn {
+            // lights and diffusers by their middle
+            Some(r) if c.object.mount == crate::objects::Mount::Ceiling => {
+                (crate::objects::centred(&c.object, *at, *r), *r)
+            }
             Some(r) => (*at, *r),
             None => crate::objects::against_wall(doc.model(), *lvl, *at, 0.8)
                 .expect("a wall near the point"),

@@ -240,7 +240,7 @@ fn main() -> ExitCode {
                 .into_iter()
                 .find(|c| c.label().eq_ignore_ascii_case(category))
                 .ok_or_else(|| {
-                    format!("no schedule of {category:?}; try doors, windows, walls or slabs")
+                    format!("no schedule of {category:?}; try doors, windows, walls, slabs, furniture or fixtures")
                 })?;
             let csv = creabim_geom::schedule::to_csv(&creabim_geom::schedule::schedule(&m, cat));
             match rest {

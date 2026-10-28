@@ -1331,16 +1331,47 @@ pub enum ScheduleCategory {
     Slabs,
     /// Columns and beams.
     Structure,
+    /// Placed objects that are furniture in IFC (IfcFurniture,
+    /// IfcSystemFurnitureElement), counted by type and level.
+    Furniture,
+    /// Every other placed object (sanitary ware, appliances, electrical,
+    /// lighting, plumbing, heating and ventilation), counted by type and
+    /// level.
+    Fixtures,
 }
 
 impl ScheduleCategory {
-    pub const ALL: [ScheduleCategory; 5] = [
+    pub const ALL: [ScheduleCategory; 7] = [
         ScheduleCategory::Doors,
         ScheduleCategory::Windows,
         ScheduleCategory::Walls,
         ScheduleCategory::Slabs,
         ScheduleCategory::Structure,
+        ScheduleCategory::Furniture,
+        ScheduleCategory::Fixtures,
     ];
+
+    /// The name of a new schedule of it: "Door Schedule".
+    pub fn schedule_name(self) -> String {
+        let one = match self {
+            ScheduleCategory::Doors => "Door",
+            ScheduleCategory::Windows => "Window",
+            ScheduleCategory::Walls => "Wall",
+            ScheduleCategory::Slabs => "Slab",
+            ScheduleCategory::Structure => "Column and beam",
+            ScheduleCategory::Furniture => "Furniture",
+            ScheduleCategory::Fixtures => "Fixture",
+        };
+        format!("{one} Schedule")
+    }
+
+    /// Does it list placed objects, counted by type?
+    pub fn is_objects(self) -> bool {
+        matches!(
+            self,
+            ScheduleCategory::Furniture | ScheduleCategory::Fixtures
+        )
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -1349,6 +1380,8 @@ impl ScheduleCategory {
             ScheduleCategory::Walls => "Walls",
             ScheduleCategory::Slabs => "Slabs",
             ScheduleCategory::Structure => "Columns and beams",
+            ScheduleCategory::Furniture => "Furniture",
+            ScheduleCategory::Fixtures => "Fixtures",
         }
     }
 }
