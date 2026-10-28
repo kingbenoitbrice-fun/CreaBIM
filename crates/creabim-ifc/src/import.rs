@@ -208,6 +208,9 @@ struct Storey {
     elevation: f64,
 }
 
+/// A native wall and the holes cut through its body.
+type WallPart = (Wall, Vec<brep::Void>);
+
 /// A vertical prism: a plan outline between two heights, in world coordinates.
 pub(crate) struct Prism {
     pub footprint: Vec<DVec2>,
@@ -1429,7 +1432,7 @@ impl<'a> Importer<'a> {
         id: u64,
         e: &Entity,
         world: &DMat4,
-    ) -> Option<Result<Vec<(Wall, Vec<brep::Void>)>, String>> {
+    ) -> Option<Result<Vec<WallPart>, String>> {
         let pts = self.axis_polyline(e, world)?;
         if pts.len() < 3 || remove_collinear(&pts).len() < 3 {
             return None;

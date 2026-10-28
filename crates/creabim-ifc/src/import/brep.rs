@@ -272,7 +272,7 @@ fn band_walls(
         }
     }
     let t = smax - smin;
-    if !(t > 2e-3) {
+    if t.is_nan() || t <= 2e-3 {
         return Err("has no band of material along its axis".into());
     }
     let reach = smin.abs().max(smax.abs()) + 2e-3;
@@ -311,8 +311,7 @@ fn band_walls(
     let k = segs.len();
     let mut out = vec![];
     let mut volume = 0.0;
-    for i in 0..k {
-        let (a, b) = segs[i];
+    for (i, &(a, b)) in segs.iter().enumerate() {
         let (_, _, nn, _) = frame(segs[i]);
         let start = if closed || i > 0 {
             meet((i + k - 1) % k, i).unwrap_or(a + nn * c)
