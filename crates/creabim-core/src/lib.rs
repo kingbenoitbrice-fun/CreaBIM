@@ -31,6 +31,7 @@ pub mod pushpull;
 pub mod sample;
 pub mod sketch;
 pub mod slab;
+pub mod starter;
 pub mod titleblock;
 pub mod transform;
 pub mod types;
