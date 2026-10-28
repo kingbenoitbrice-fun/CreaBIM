@@ -14,7 +14,7 @@
 //! an outline of its own. Fixtures hung from the ceiling hang from it, and
 //! walls can attach their tops to its underside (see [`crate::walls`]).
 
-use crate::{ElementId, ElementKind, Model};
+use crate::{Element, ElementId, ElementKind, Model};
 use glam::DVec2;
 use serde::{Deserialize, Serialize};
 
@@ -536,6 +536,120 @@ pub fn next_number(model: &Model, level: ElementId) -> String {
     format!("{}.01", here - ground)
 }
 
+/// Whether a note reads like a room label: a name, then its area on the
+/// next line ("LIVING\n37.2 m²").
+fn room_label(text: &str) -> Option<&str> {
+    let mut lines = text.lines().map(str::trim);
+    let name = lines.next().filter(|l| !l.is_empty())?;
+    let area = lines.next()?;
+    let number = area
+        .strip_suffix("m²")
+        .or_else(|| area.strip_suffix("m2"))?;
+    number.trim().replace(',', ".").parse::<f64>().ok()?;
+    lines.next().is_none().then_some(name)
+}
+
+/// "PRIMARY BEDROOM" as a name: "Primary Bedroom".
+fn title_case(name: &str) -> String {
+    if name.chars().any(char::is_lowercase) {
+        return name.to_string();
+    }
+    let mut out = String::with_capacity(name.len());
+    let mut start = true;
+    for c in name.chars() {
+        if start {
+            out.extend(c.to_uppercase());
+        } else {
+            out.extend(c.to_lowercase());
+        }
+        start = !c.is_alphanumeric();
+    }
+    out
+}
+
+/// Turns the room labels written as notes in plans (a name over an area,
+/// the way a project made before rooms existed wrote them) into rooms with
+/// tags in their place, wherever the walls close the label off. Labels the
+/// walls don't close off are left as notes and named in the second list.
+pub fn from_notes(model: &Model) -> (crate::Transaction, Vec<String>) {
+    let mut tx = crate::Transaction::new("Rooms from room notes");
+    let mut skipped = Vec::new();
+    let mut numbers: std::collections::HashMap<ElementId, String> = Default::default();
+    let mut placed: Vec<(ElementId, Vec<DVec2>)> = Vec::new();
+    for e in model.iter() {
+        let ElementKind::Note(n) = &e.kind else {
+            continue;
+        };
+        let Some(name) = room_label(&n.text) else {
+            continue;
+        };
+        let Some(ElementKind::View(v)) = model.get(n.view).map(|v| &v.kind) else {
+            continue;
+        };
+        let crate::ViewKind::Plan { level, .. } = v.kind else {
+            continue;
+        };
+        // where the label's lines are centred: across its widest line, half
+        // a line below its first
+        let look = crate::text_style(model, n.style, n.color);
+        let mm = v.scale / 1000.0;
+        let widest = n.text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f64;
+        let middle = n.at + DVec2::new(widest * 0.6 * look.size * mm / 2.0, -0.75 * look.size * mm);
+        let Some((at, shape)) = [middle, n.at]
+            .into_iter()
+            .find_map(|p| enclosed(model, level, p).map(|s| (p, s)))
+        else {
+            skipped.push(name.to_string());
+            continue;
+        };
+        // a room already there (or made from another label) keeps it
+        let taken = model.iter().any(|x| match &x.kind {
+            ElementKind::Room(r) => {
+                r.level == level
+                    && outline(model, x.id).is_some_and(|o| crate::polygon::contains(&o, at))
+            }
+            _ => false,
+        }) || placed
+            .iter()
+            .any(|(l, o)| *l == level && crate::polygon::contains(o, at));
+        if taken {
+            skipped.push(name.to_string());
+            continue;
+        }
+        let number = match numbers.get(&level) {
+            Some(last) => bump(last),
+            None => next_number(model, level),
+        };
+        numbers.insert(level, number.clone());
+        let mut r = Room::new(level, at);
+        r.number = number;
+        let room = Element::new(title_case(name), ElementKind::Room(r));
+        let mut tag = crate::Tag::new(n.view, room.id, middle - at);
+        tag.style = n.style;
+        tag.color = n.color;
+        placed.push((level, shape.outline));
+        tx = tx
+            .insert(room.clone())
+            .insert(Element::new("Room tag", ElementKind::Tag(tag)))
+            .remove_cascade(model, e.id);
+    }
+    (tx, skipped)
+}
+
+/// The number after `number`: its trailing digits counted up.
+fn bump(number: &str) -> String {
+    let digits = number
+        .chars()
+        .rev()
+        .take_while(char::is_ascii_digit)
+        .count();
+    let (head, tail) = number.split_at(number.len() - digits);
+    match tail.parse::<u32>() {
+        Ok(n) => format!("{head}{:0digits$}", n + 1),
+        Err(_) => format!("{number}.1"),
+    }
+}
+
 /// Rooms on `level` whose point another room's outline already holds:
 /// two rooms placed in the same space.
 pub fn overlapping(model: &Model) -> Vec<(ElementId, ElementId)> {
@@ -695,6 +809,73 @@ mod tests {
         doc.commit(Transaction::new("room").insert(Element::new("A", ElementKind::Room(r))))
             .unwrap();
         assert_eq!(next_number(doc.model(), l), "0.10");
+    }
+
+    #[test]
+    fn room_notes_become_rooms_with_tags() {
+        let m = crate::starter::starter_house();
+        let rooms: Vec<ElementId> = m
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Room(_)))
+            .map(|e| e.id)
+            .collect();
+        let mut doc = crate::Document::from_model(m.clone());
+        doc.commit(crate::Transaction::new("No rooms").remove_all_cascade(&m, &rooms))
+            .unwrap();
+        let plan = doc
+            .model()
+            .iter()
+            .find(|e| e.name == "Ground Floor plan")
+            .unwrap()
+            .id;
+        let note = |at: DVec2, text: &str| {
+            Element::new("Note", ElementKind::Note(crate::Note::new(plan, at, text)))
+        };
+        doc.commit(
+            crate::Transaction::new("Labels")
+                .insert(note(DVec2::new(1.5, 3.5), "STUDY\n19.9 m²"))
+                .insert(note(DVec2::new(1.2, 3.0), "SECOND STUDY\n19.9 m²"))
+                .insert(note(DVec2::new(9.7, 1.3), "STORE\n4.0 m²"))
+                .insert(note(DVec2::new(-20.0, -20.0), "GARDEN\n100 m²"))
+                .insert(note(DVec2::new(5.0, 1.7), "just a note")),
+        )
+        .unwrap();
+        let (tx, skipped) = from_notes(doc.model());
+        doc.commit(tx).unwrap();
+        let m = doc.model();
+        let made: Vec<(&str, &Room)> = m
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::Room(r) => Some((e.name.as_str(), r)),
+                _ => None,
+            })
+            .collect();
+        // the study once; a second label in it, and one outside, stay notes
+        assert_eq!(made.len(), 2, "{made:?}");
+        assert_eq!(made[0].0, "Study");
+        assert_eq!(
+            (made[0].1.number.as_str(), made[1].1.number.as_str()),
+            ("0.01", "0.02")
+        );
+        assert_eq!(
+            skipped,
+            vec!["SECOND STUDY".to_string(), "GARDEN".to_string()]
+        );
+        let tags = m
+            .iter()
+            .filter(|e| matches!(&e.kind, ElementKind::Tag(t) if model_room(m, t.host)))
+            .count();
+        assert_eq!(tags, 2);
+        assert!(m
+            .iter()
+            .any(|e| matches!(&e.kind, ElementKind::Note(n) if n.text == "just a note")));
+        assert!(!m
+            .iter()
+            .any(|e| matches!(&e.kind, ElementKind::Note(n) if n.text.starts_with("STUDY"))));
+    }
+
+    fn model_room(m: &Model, id: ElementId) -> bool {
+        matches!(m.get(id).map(|e| &e.kind), Some(ElementKind::Room(_)))
     }
 
     #[test]

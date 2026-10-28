@@ -1502,8 +1502,17 @@ fn rooms_and_ceilings(b: &mut Builder) {
     let (g, f) = (b.id("Ground Floor"), b.id("First Floor"));
     let loggia = polygon::rectangle(v(-H, 5.6 + H), v(4.0 - H, 9.6 + H));
     // (level, number, name, its point, a drawn outline, occupancy, floor finish)
+    type Entry<'a> = (
+        ElementId,
+        &'a str,
+        &'a str,
+        DVec2,
+        Vec<DVec2>,
+        &'a str,
+        &'a str,
+    );
     #[rustfmt::skip]
-    let list: Vec<(ElementId, &str, &str, DVec2, Vec<DVec2>, &str, &str)> = vec![
+    let list: Vec<Entry> = vec![
         (g, "0.01", "Study", v(2.0, 3.5), vec![], "Study", "Oak boards"),
         (g, "0.02", "Hall", v(5.0, 1.7), vec![], "Circulation", "Slate tiles"),
         (g, "0.03", "WC", v(7.95, 0.75), vec![], "Sanitary", "Ceramic tiles"),

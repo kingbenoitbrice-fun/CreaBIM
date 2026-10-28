@@ -173,6 +173,39 @@ pub fn objects_in_openings(model: &Model) -> Vec<Clash> {
     out
 }
 
+/// Each clash as a line of a report: "Boiler (Utility) is in door D09's
+/// swing", naming the object, its level and the door or window's mark.
+pub fn report(model: &Model, clashes: &[Clash]) -> Vec<String> {
+    let marks = crate::marks::marks(model);
+    clashes
+        .iter()
+        .map(|c| {
+            let name = model.get(c.object).map_or("?", |e| e.name.as_str());
+            let level = match model.get(c.object).map(|e| &e.kind) {
+                Some(ElementKind::Object(o)) => model.get(o.level).map_or("", |l| l.name.as_str()),
+                _ => "",
+            };
+            let kind = match model.get(c.opening).map(|e| &e.kind) {
+                Some(ElementKind::Opening(o)) => match o.kind {
+                    OpeningKind::Door => "door",
+                    OpeningKind::Window => "window",
+                    _ => "opening",
+                },
+                _ => "opening",
+            };
+            let mark = marks
+                .get(&c.opening)
+                .cloned()
+                .unwrap_or_else(|| model.get(c.opening).map_or("?".into(), |e| e.name.clone()));
+            let what = match c.blocks {
+                Blocks::Opening => format!("stands in {kind} {mark}"),
+                Blocks::Swing => format!("is in {kind} {mark}'s swing"),
+            };
+            format!("{name} ({level}) {what}")
+        })
+        .collect()
+}
+
 /// The stretches along `wall` (distances from its start) that an object
 /// spanning heights `z` must keep clear of: its doors and windows at those
 /// heights, and their jambs.
