@@ -114,6 +114,8 @@ impl Element {
                 .chain(self.of_type.as_ref().map(|t| t.id))
                 .collect(),
             ElementKind::Sketch(s) => s.level.into_iter().collect(),
+            // a footing goes with the wall or column it is under
+            ElementKind::Footing(f) => std::iter::once(f.level).chain(f.host).collect(),
             ElementKind::Cut(c) => vec![c.target, c.cutter],
             ElementKind::Guide(g) => g.level.into_iter().collect(),
             ElementKind::Railing(r) => std::iter::once(r.level)
@@ -161,6 +163,7 @@ impl Element {
             ElementKind::Roof(_) => "IfcRoof",
             ElementKind::Stair(_) => "IfcStair",
             ElementKind::Railing(_) => "IfcRailing",
+            ElementKind::Footing(_) => "IfcFooting",
         }
     }
 
@@ -308,6 +311,7 @@ impl Element {
             ElementKind::ElementType(t) => t.validate(),
             ElementKind::Shaft(s) => s.validate(),
             ElementKind::Object(o) => o.validate(),
+            ElementKind::Footing(f) => f.validate(),
             ElementKind::Sketch(s) => s.check(),
             ElementKind::Cut(c) => {
                 if c.target == c.cutter {
@@ -373,6 +377,8 @@ pub enum ElementKind {
     /// Furniture or a fixture: an instance of an object type, which holds
     /// its shape.
     Object(crate::objects::Object),
+    /// A strip footing under a wall or a pad footing under a column.
+    Footing(crate::footing::Footing),
 }
 
 impl ElementKind {
@@ -409,6 +415,7 @@ impl ElementKind {
             ElementKind::ElementType(_) => "ElementType",
             ElementKind::Shaft(_) => "Shaft",
             ElementKind::Object(_) => "Object",
+            ElementKind::Footing(_) => "Footing",
         }
     }
 }

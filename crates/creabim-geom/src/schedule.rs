@@ -351,6 +351,19 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
                         format!("{} × {}", mm(b.width), mm(b.depth)),
                         b.length(),
                     ),
+                    ElementKind::Footing(f) => match f.kind {
+                        creabim_core::FootingKind::Strip => (
+                            "Strip footing",
+                            format!("{} × {}", mm(f.width), mm(f.thickness)),
+                            f.strip_length(model),
+                        ),
+                        // a pad's length is its longer side
+                        creabim_core::FootingKind::Pad => (
+                            "Pad footing",
+                            format!("{} × {} × {}", mm(f.width), mm(f.length), mm(f.thickness)),
+                            f.width.max(f.length),
+                        ),
+                    },
                     _ => continue,
                 };
                 total += length;

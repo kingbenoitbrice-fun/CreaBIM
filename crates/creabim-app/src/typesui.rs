@@ -44,7 +44,7 @@ pub(super) enum TypeAsk {
 }
 
 /// The groups of the Types window, in order: (heading, category, curtain).
-const GROUPS: [(&str, TypeCategory, bool); 9] = [
+const GROUPS: [(&str, TypeCategory, bool); 10] = [
     ("Walls", TypeCategory::Wall, false),
     ("Curtain walls", TypeCategory::Wall, true),
     ("Doors", TypeCategory::Door, false),
@@ -53,6 +53,7 @@ const GROUPS: [(&str, TypeCategory, bool); 9] = [
     ("Roofs", TypeCategory::Roof, false),
     ("Columns", TypeCategory::Column, false),
     ("Beams", TypeCategory::Beam, false),
+    ("Footings", TypeCategory::Footing, false),
     ("Objects", TypeCategory::Object, false),
 ];
 
@@ -66,6 +67,7 @@ pub(super) fn category_of_tool(tool: Tool) -> Option<TypeCategory> {
         Tool::Roof => TypeCategory::Roof,
         Tool::Column => TypeCategory::Column,
         Tool::Beam => TypeCategory::Beam,
+        Tool::Footing => TypeCategory::Footing,
         _ => return None,
     })
 }
@@ -390,6 +392,23 @@ pub(super) fn type_fields(ui: &mut egui::Ui, model: &Model, t: &mut ElementType)
                 label = "Type depth";
             }
             if material_pick(ui, model, "beam", &mut b.material) {
+                label = "Type material";
+            }
+        }
+        TypeParams::Footing(f) => {
+            ui.label(egui::RichText::new(f.kind.label()).weak());
+            if len_field(ui, "Width", &mut f.width, 0.1, 10.0) {
+                label = "Type width";
+            }
+            if f.kind == creabim_core::FootingKind::Pad
+                && len_field(ui, "Length", &mut f.length, 0.1, 10.0)
+            {
+                label = "Type length";
+            }
+            if len_field(ui, "Thickness", &mut f.thickness, 0.05, 5.0) {
+                label = "Type thickness";
+            }
+            if material_pick(ui, model, "footing", &mut f.material) {
                 label = "Type material";
             }
         }

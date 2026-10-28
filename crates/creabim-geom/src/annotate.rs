@@ -275,6 +275,22 @@ pub fn tag_text(model: &Model, id: ElementId) -> (String, bool) {
             Some(m) => (m, true),
             None => (e.name.clone(), false),
         },
+        ElementKind::Footing(f) => (
+            match f.kind {
+                creabim_core::FootingKind::Strip => format!(
+                    "{} × {}",
+                    units.dimension(f.width),
+                    units.dimension(f.thickness)
+                ),
+                creabim_core::FootingKind::Pad => format!(
+                    "{} × {} × {}",
+                    units.dimension(f.width),
+                    units.dimension(f.length),
+                    units.dimension(f.thickness)
+                ),
+            },
+            false,
+        ),
         _ => (e.name.clone(), false),
     }
 }

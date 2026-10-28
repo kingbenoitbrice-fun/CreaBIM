@@ -54,6 +54,8 @@ pub enum Tool {
     Roof,
     Stair,
     Railing,
+    /// A strip footing under a wall or a pad footing under a column.
+    Footing,
     Level,
     Align,
     /// A piece of furniture or a fixture from the catalogue.
@@ -61,7 +63,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 28] = [
+    pub const ALL: [Tool; 29] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
@@ -75,6 +77,7 @@ impl Tool {
         Tool::Roof,
         Tool::Stair,
         Tool::Railing,
+        Tool::Footing,
         Tool::Object,
         Tool::Section,
         Tool::Elevation,
@@ -124,6 +127,7 @@ impl Tool {
             Tool::Roof => "Roof",
             Tool::Stair => "Stair",
             Tool::Railing => "Railing",
+            Tool::Footing => "Footing",
             Tool::Level => "Level",
             Tool::Align => "Align",
             Tool::Object => "Object",
@@ -157,6 +161,7 @@ impl Tool {
             Tool::Roof => "Draw the roof's outline like a slab (1–4: Polygon, Rectangle, Fill room, From sketch). Pick Flat, Mono-pitch, Gable or Hip in the bar first.",
             Tool::Stair => "Click where the stair starts, then click the way it climbs. It rises to the next level in equal risers.",
             Tool::Railing => "Click inside a stair to rail both its sides, or click the points of a path; click the last point again to finish.",
+            Tool::Footing => "Strip: click a wall to put a strip footing under it, or click two points for one on its own. Pad: click a column to put a pad under it, or click anywhere for one on its own. Pick Strip or Pad, and the size, in the top bar.",
             Tool::Level => "In a section or elevation, click where the level line starts (its height), then where it ends; its floor plan is made with it. In other views the Levels window opens to add, rename and move levels.",
             Tool::Align => "Click a reference line (a wall face, slab edge, guide or grid line), then the edge of what to align: it turns parallel and moves flush. In Extend mode a wall, beam or grid line end stretches to the reference instead; in Stretch mode the face moves and the rest stays. Centre lines (dashed purple) can be picked too, both ways. In 3D, click a face, edge, corner, centre line or grid line, then a face.",
             Tool::Object => "Click to place the object picked in the Catalogue window. Sinks, WCs, kitchen units, beds and sofas back onto the nearest wall; Space turns the next one a quarter.",
@@ -1377,7 +1382,8 @@ pub fn show(
             | Tool::Grid
             | Tool::Beam
             | Tool::Stair
-            | Tool::Railing => {
+            | Tool::Railing
+            | Tool::Footing => {
                 let level = match kind {
                     PaneKind::Plan { level } => Some(level),
                     _ => None,
@@ -1911,7 +1917,7 @@ fn plan_click(
         Tool::Slab | Tool::Roof | Tool::Shaft => {
             crate::slabtool::click(doc, level, p, state, selection)
         }
-        Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing => {
+        Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing | Tool::Footing => {
             crate::memberstool::click(doc, level, tool, p, state, selection)
         }
         Tool::Object => crate::objecttool::click(doc, level, p, state, selection),

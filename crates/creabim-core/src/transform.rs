@@ -324,7 +324,8 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
         | ElementKind::Beam(_)
         | ElementKind::Roof(_)
         | ElementKind::Stair(_)
-        | ElementKind::Railing(_) => crate::members::transform(model, &mut out.kind, t)?,
+        | ElementKind::Railing(_)
+        | ElementKind::Footing(_) => crate::members::transform(model, &mut out.kind, t)?,
         // a crop box stays square to the axes: it only moves
         ElementKind::CropBox(c) => match t {
             Xform::Move(d) => {

@@ -14,6 +14,7 @@ pub mod curtain;
 pub mod document;
 pub mod editmesh;
 pub mod element;
+pub mod footing;
 pub mod grids;
 pub mod id;
 pub mod joins;
@@ -53,6 +54,7 @@ pub use element::{
     Source, Tag, Underlay, View, ViewKind, ViewStyle, Viewport, Wall, Workplane,
 };
 pub use element::{LocationLine, WallTop};
+pub use footing::{Footing, FootingKind};
 pub use id::ElementId;
 pub use joins::{wall_joins, Gap, WallEnds};
 pub use marks::{marks, material_of};

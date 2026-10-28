@@ -35,6 +35,8 @@ mod editui;
 mod gridvis;
 #[path = "helpui.rs"]
 mod helpui;
+#[path = "levelcopy.rs"]
+mod levelcopy;
 #[path = "levelsui.rs"]
 mod levelsui;
 #[path = "materials.rs"]
@@ -174,6 +176,8 @@ pub struct CreaBimApp {
     catalogue: objectsui::CatalogueUi,
     /// The Levels manager and the Project units dialog.
     levels: levelsui::LevelsUi,
+    /// The Copy to levels and Move to level windows.
+    level_copy: levelcopy::LevelCopyUi,
     /// The annotation styles and sheet templates windows.
     drafting: drafting::DraftingUi,
     /// Orbit about the selection rather than the middle of the view.
@@ -250,6 +254,7 @@ impl CreaBimApp {
             types: Default::default(),
             catalogue: Default::default(),
             levels: Default::default(),
+            level_copy: Default::default(),
             drafting: Default::default(),
             orbit_selection: false,
             rect_3d: None,
@@ -2802,7 +2807,7 @@ impl CreaBimApp {
                     (Tool::Slab | Tool::Roof | Tool::Shaft, _) => {
                         self.plan.status.take().unwrap_or_default()
                     }
-                    (Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing | Tool::Object, _) => self
+                    (Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing | Tool::Footing | Tool::Object, _) => self
                         .plan
                         .status
                         .take()
@@ -4780,7 +4785,8 @@ impl CreaBimApp {
             | ElementKind::Beam(_)
             | ElementKind::Roof(_)
             | ElementKind::Stair(_)
-            | ElementKind::Railing(_)) => {
+            | ElementKind::Railing(_)
+            | ElementKind::Footing(_)) => {
                 if let ElementKind::Roof(r) = k {
                     if self.assembly_combo(ui, creabim_core::AssemblyUse::Roof, &mut r.assembly) {
                         label = "Roof assembly";
@@ -5073,6 +5079,7 @@ impl eframe::App for CreaBimApp {
         self.types_window(&ctx);
         self.catalogue_window(&ctx);
         self.levels_window(&ctx);
+        self.level_copy_window(&ctx);
         self.styles_window(&ctx);
         self.templates_window(&ctx);
         self.units_window(&ctx);
@@ -5330,6 +5337,7 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Object(_) => "object",
         ElementKind::ElementType(_) => "type",
         ElementKind::Shaft(_) => "shaft",
+        ElementKind::Footing(_) => "footing",
     }
 }
 

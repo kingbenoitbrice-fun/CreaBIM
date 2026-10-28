@@ -42,6 +42,8 @@ pub enum Param {
     Frame,
     Profile,
     Depth,
+    /// A pad footing's side along its own y axis.
+    Length,
 }
 
 impl Param {
@@ -58,6 +60,7 @@ impl Param {
             Param::Frame => "Frame and panes",
             Param::Profile => "Profile",
             Param::Depth => "Depth",
+            Param::Length => "Length",
         }
     }
 }
@@ -89,13 +92,15 @@ pub enum TypeCategory {
     Roof,
     Column,
     Beam,
+    /// Strip and pad footings.
+    Footing,
     /// Furniture and fixtures, placed from the catalogue (not drawn with a
     /// tool, so not in [`TypeCategory::ALL`]).
     Object,
 }
 
 impl TypeCategory {
-    pub const ALL: [TypeCategory; 7] = [
+    pub const ALL: [TypeCategory; 8] = [
         TypeCategory::Wall,
         TypeCategory::Door,
         TypeCategory::Window,
@@ -103,6 +108,7 @@ impl TypeCategory {
         TypeCategory::Roof,
         TypeCategory::Column,
         TypeCategory::Beam,
+        TypeCategory::Footing,
     ];
 
     pub fn label(self) -> &'static str {
@@ -114,6 +120,7 @@ impl TypeCategory {
             TypeCategory::Roof => "Roofs",
             TypeCategory::Column => "Columns",
             TypeCategory::Beam => "Beams",
+            TypeCategory::Footing => "Footings",
             TypeCategory::Object => "Objects",
         }
     }
@@ -127,6 +134,7 @@ impl TypeCategory {
             TypeCategory::Roof => "roof",
             TypeCategory::Column => "column",
             TypeCategory::Beam => "beam",
+            TypeCategory::Footing => "footing",
             TypeCategory::Object => "object",
         }
     }
@@ -145,6 +153,7 @@ impl TypeCategory {
             ElementKind::Roof(_) => TypeCategory::Roof,
             ElementKind::Column(_) => TypeCategory::Column,
             ElementKind::Beam(_) => TypeCategory::Beam,
+            ElementKind::Footing(_) => TypeCategory::Footing,
             ElementKind::Object(_) => TypeCategory::Object,
             _ => return None,
         })
@@ -172,6 +181,12 @@ impl TypeCategory {
             }
             TypeCategory::Column => &[Param::Profile, Param::Material],
             TypeCategory::Beam => &[Param::Width, Param::Depth, Param::Material],
+            TypeCategory::Footing => &[
+                Param::Width,
+                Param::Length,
+                Param::Thickness,
+                Param::Material,
+            ],
             // an object's shape is its type's alone
             TypeCategory::Object => &[],
         }
@@ -235,6 +250,18 @@ pub struct BeamType {
     pub material: Option<ElementId>,
 }
 
+/// What footings of a type share. A strip type's `length` is not used.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FootingType {
+    pub kind: crate::FootingKind,
+    pub width: f64,
+    #[serde(default)]
+    pub length: f64,
+    pub thickness: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<ElementId>,
+}
+
 /// A type's parameters, by category.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TypeParams {
@@ -246,6 +273,7 @@ pub enum TypeParams {
     Column(ColumnType),
     Beam(BeamType),
     Object(crate::objects::ObjectType),
+    Footing(FootingType),
 }
 
 /// An element type. The element's name is the type's name.
@@ -274,6 +302,7 @@ impl ElementType {
             TypeParams::Column(_) => TypeCategory::Column,
             TypeParams::Beam(_) => TypeCategory::Beam,
             TypeParams::Object(_) => TypeCategory::Object,
+            TypeParams::Footing(_) => TypeCategory::Footing,
         }
     }
 
@@ -301,6 +330,7 @@ impl ElementType {
             TypeParams::Roof(_) => "IfcRoofType",
             TypeParams::Column(_) => "IfcColumnType",
             TypeParams::Beam(_) => "IfcBeamType",
+            TypeParams::Footing(_) => "IfcFootingType",
             TypeParams::Object(o) => o.ifc.type_class(),
         }
     }
@@ -312,6 +342,7 @@ impl ElementType {
             TypeParams::Slab(s) | TypeParams::Roof(s) => s.material,
             TypeParams::Column(c) => c.material,
             TypeParams::Beam(b) => b.material,
+            TypeParams::Footing(f) => f.material,
             TypeParams::Object(o) => o.materials().first().copied(),
         }
     }
@@ -364,6 +395,14 @@ impl ElementType {
                 positive(b.depth, "beam depth")
             }
             TypeParams::Object(o) => o.validate(),
+            TypeParams::Footing(f) => {
+                positive(f.width, "footing width")?;
+                positive(f.thickness, "footing thickness")?;
+                if f.kind == crate::FootingKind::Pad {
+                    positive(f.length, "footing length")?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -398,6 +437,17 @@ impl ElementType {
             }
             TypeParams::Column(c) => c.profile.label_in(&u),
             TypeParams::Beam(b) => format!("{} × {}", d(b.width), d(b.depth)),
+            TypeParams::Footing(f) => match f.kind {
+                crate::FootingKind::Strip => {
+                    format!("strip {} wide, {} thick", d(f.width), d(f.thickness))
+                }
+                crate::FootingKind::Pad => format!(
+                    "pad {} × {}, {} thick",
+                    d(f.width),
+                    d(f.length),
+                    d(f.thickness)
+                ),
+            },
             TypeParams::Object(o) => o.summary(model),
         }
     }
@@ -435,6 +485,8 @@ pub fn fits(params: &TypeParams, kind: &ElementKind) -> bool {
             | (TypeParams::Beam(_), ElementKind::Beam(_))
             | (TypeParams::Object(_), ElementKind::Object(_))
     ) || matches!((params, kind),
+        (TypeParams::Footing(t), ElementKind::Footing(f)) if t.kind == f.kind)
+        || matches!((params, kind),
         (TypeParams::Door(_), ElementKind::Opening(o)) if o.kind == OpeningKind::Door)
         || matches!((params, kind),
         (TypeParams::Window(_), ElementKind::Opening(o)) if o.kind == OpeningKind::Window)
@@ -484,6 +536,13 @@ pub fn from_instance(e: &Element) -> Option<TypeParams> {
             width: b.width,
             depth: b.depth,
             material: b.material,
+        }),
+        ElementKind::Footing(f) => TypeParams::Footing(FootingType {
+            kind: f.kind,
+            width: f.width,
+            length: f.length,
+            thickness: f.thickness,
+            material: f.material,
         }),
         _ => return None,
     })
@@ -543,6 +602,15 @@ pub fn differences(params: &TypeParams, kind: &ElementKind) -> Vec<Param> {
             flag(Param::Width, !near(t.width, b.width));
             flag(Param::Depth, !near(t.depth, b.depth));
             flag(Param::Material, t.material != b.material);
+        }
+        (TypeParams::Footing(t), ElementKind::Footing(f)) => {
+            flag(Param::Width, !near(t.width, f.width));
+            flag(
+                Param::Length,
+                f.kind == crate::FootingKind::Pad && !near(t.length, f.length),
+            );
+            flag(Param::Thickness, !near(t.thickness, f.thickness));
+            flag(Param::Material, t.material != f.material);
         }
         _ => {}
     }
@@ -637,6 +705,20 @@ pub fn apply(model: &Model, params: &TypeParams, e: &mut Element, keep: &[Param]
             }
             if set(Param::Material) {
                 b.material = t.material;
+            }
+        }
+        (TypeParams::Footing(t), ElementKind::Footing(f)) => {
+            if set(Param::Width) {
+                f.width = t.width;
+            }
+            if set(Param::Length) && f.kind == crate::FootingKind::Pad {
+                f.length = t.length;
+            }
+            if set(Param::Thickness) {
+                f.thickness = t.thickness;
+            }
+            if set(Param::Material) {
+                f.material = t.material;
             }
         }
         _ => return,
@@ -1065,7 +1147,37 @@ pub const STARTERS: &[Starter] = &[
             material: None,
         })
     }),
+    (
+        "Strip footing 600 × 300",
+        "A concrete strip under a wall",
+        |_| footing(crate::FootingKind::Strip, 0.6, 0.0, 0.3),
+    ),
+    (
+        "Strip footing 900 × 400",
+        "A wider strip, for heavier walls",
+        |_| footing(crate::FootingKind::Strip, 0.9, 0.0, 0.4),
+    ),
+    (
+        "Pad footing 1200 × 1200 × 400",
+        "A square pad under a column",
+        |_| footing(crate::FootingKind::Pad, 1.2, 1.2, 0.4),
+    ),
+    (
+        "Pad footing 1800 × 1800 × 500",
+        "A larger pad, for heavier columns",
+        |_| footing(crate::FootingKind::Pad, 1.8, 1.8, 0.5),
+    ),
 ];
+
+fn footing(kind: crate::FootingKind, width: f64, length: f64, thickness: f64) -> TypeParams {
+    TypeParams::Footing(FootingType {
+        kind,
+        width,
+        length,
+        thickness,
+        material: None,
+    })
+}
 
 /// Add the starter types the model doesn't have yet (by name), with the
 /// starter assemblies they are built of. Returns the transaction and the
