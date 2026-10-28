@@ -13,6 +13,9 @@ pub enum Pen {
     Projection,
     /// Symbols such as door swings: light line.
     Symbol,
+    /// Small things seen below the cut, furniture and fixtures: the
+    /// lightest line.
+    Fine,
     /// Grid lines: dashed.
     Grid,
     /// Construction guides: shown while working, never printed.
@@ -315,6 +318,42 @@ fn boxes_overlap(a: &[DVec2], b: &[DVec2]) -> bool {
     alo.x < bhi.x - eps && blo.x < ahi.x - eps && alo.y < bhi.y - eps && blo.y < ahi.y - eps
 }
 
+/// The stretches of segment `a` → `b` running strictly inside `poly`, as
+/// distances along it.
+fn inside_spans(a: DVec2, b: DVec2, poly: &[DVec2], eps: f64) -> Vec<(f64, f64)> {
+    let len = a.distance(b);
+    if len < eps || poly.len() < 3 {
+        return vec![];
+    }
+    let d = (b - a) / len;
+    let mut ts = vec![0.0, len];
+    let n = poly.len();
+    for i in 0..n {
+        let (p, q) = (poly[i], poly[(i + 1) % n]);
+        let e = q - p;
+        let den = d.perp_dot(e);
+        if den.abs() < 1e-12 {
+            continue;
+        }
+        // a + d t = p + e s
+        let t = (p - a).perp_dot(e) / den;
+        let s = (p - a).perp_dot(d) / den;
+        if (-1e-9..=1.0 + 1e-9).contains(&s) && t > 0.0 && t < len {
+            ts.push(t);
+        }
+    }
+    ts.sort_by(|x, y| x.total_cmp(y));
+    ts.dedup_by(|x, y| (*x - *y).abs() < eps);
+    ts.windows(2)
+        .filter(|w| w[1] > w[0] + eps)
+        .filter(|w| {
+            let m = a + d * ((w[0] + w[1]) / 2.0);
+            point_in(m, poly) && edge_distance(m, poly) > eps
+        })
+        .map(|w| (w[0], w[1]))
+        .collect()
+}
+
 /// Turn cut polygons into fills plus outlines, leaving out outline segments
 /// shared with a neighbouring cut so joined elements read as one mass.
 pub fn clean_up_cuts(model: &Model, items: &mut Vec<PlanItem>) {
@@ -414,6 +453,12 @@ pub fn clean_up_pieces(model: &Model, items: &mut Vec<PlanItem>, layers: Vec<Cut
                             }
                         }
                     }
+                }
+                // where two of the same overlap (footings lapped at a
+                // corner), the edges running inside the other are merged
+                // away too, leaving one outline round both
+                if same {
+                    covered.extend(inside_spans(a, b, &other.points, eps));
                 }
             }
             // split the edge where any of that changes, and draw each part
@@ -548,6 +593,13 @@ pub enum PlanItem {
         points: Vec<DVec2>,
         rgb: [f32; 3],
     },
+    /// The footprint of something below the cut, filled flat in a light
+    /// tint (sRGB, 0..1) under the linework, with no outline.
+    Shade {
+        id: ElementId,
+        points: Vec<DVec2>,
+        rgb: [f32; 3],
+    },
     /// Shaded surfaces as an image spanning `lo`..`hi`, drawn only inside `clip`.
     Image {
         id: ElementId,
@@ -561,7 +613,8 @@ pub enum PlanItem {
 /// Is a label short enough to sit in a bubble, as grid and section marks
 /// do (level datums and longer text are plain)?
 pub fn is_bubble(text: &str) -> bool {
-    !text.contains(' ') && (1..=5).contains(&text.chars().count())
+    // a roof pitch (35°, 1:60) is short too, but plain
+    !text.contains([' ', '°', ':']) && (1..=5).contains(&text.chars().count())
 }
 
 /// A bubble's radius for `text`, in units of the bubble for one or two
@@ -583,6 +636,7 @@ impl PlanItem {
             | PlanItem::Tag { id, .. }
             | PlanItem::Annotation { id, .. }
             | PlanItem::Tint { id, .. }
+            | PlanItem::Shade { id, .. }
             | PlanItem::Image { id, .. } => *id,
         }
     }
@@ -594,7 +648,8 @@ impl PlanItem {
         match self {
             PlanItem::Polygon { points, .. }
             | PlanItem::Fill { points, .. }
-            | PlanItem::Tint { points, .. } => pts.extend(points.iter().copied()),
+            | PlanItem::Tint { points, .. }
+            | PlanItem::Shade { points, .. } => pts.extend(points.iter().copied()),
             PlanItem::Line {
                 pen: Pen::Guide, ..
             } => {}
@@ -766,7 +821,26 @@ fn footing_cut_at(
 }
 
 pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
+    plan_view_with(
+        model,
+        level,
+        cut_height,
+        &creabim_core::PlanGraphics::default(),
+    )
+}
+
+/// [`plan_view`] with a view's graphics: what lies wholly below the cut
+/// tinted, and the stair from the level below seen through its well, as
+/// far down as the view depth.
+pub fn plan_view_with(
+    model: &Model,
+    level: ElementId,
+    cut_height: f64,
+    graphics: &creabim_core::PlanGraphics,
+) -> PlanView {
     let mut items = Vec::new();
+    // tinted footprints, drawn under everything else
+    let mut shades: Vec<PlanItem> = Vec::new();
     let joins = creabim_core::wall_joins(model);
     let cuts = crate::scene::cuts(model);
     let cutters: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.1).collect();
@@ -952,6 +1026,7 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
             }
             ElementKind::Object(o) if o.level == level => {
                 items.extend(crate::objects::object_plan(model, e, cut_height));
+                shades.extend(crate::objects::object_shade(model, e, cut_height, graphics));
             }
             k if on_level && creabim_core::members::is_member(k) => {
                 items.extend(crate::members::member_plan(model, e, cut_height));
@@ -980,7 +1055,19 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                 // the level its top reaches too, whose floor it cuts
                 let z = model.level(level).map_or(0.0, |l| l.elevation);
                 let (z0, z1) = sh.span(model);
-                if z0 - 1e-6 <= z && z <= z1 + 1e-6 {
+                if (z - z0).abs() < 1e-6 && stair_in(model, level, &sh.boundary) {
+                    // a stair well where its stair starts: no floor is
+                    // open here, the edge of the floor above is dashed
+                    let n = sh.boundary.len();
+                    for i in 0..n {
+                        items.push(PlanItem::Line {
+                            id: e.id,
+                            pen: Pen::Hidden,
+                            a: sh.boundary[i],
+                            b: sh.boundary[(i + 1) % n],
+                        });
+                    }
+                } else if z0 - 1e-6 <= z && z <= z1 + 1e-6 {
                     items.extend(hole_marks(e.id, &sh.boundary, Pen::Symbol));
                 }
             }
@@ -1020,9 +1107,196 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
         let scene = crate::scene::build_scene(model);
         for item in scene.iter().filter(|i| sliced.contains(&i.id)) {
             sliced_plan(model, item, z, &mut items);
+            // an imported mesh wholly below the cut: its footprint tinted
+            if matches!(
+                model.get(item.id).map(|e| &e.kind),
+                Some(ElementKind::FreeMesh(_))
+            ) {
+                shades.extend(mesh_shade(item, z, graphics));
+            }
         }
     }
-    PlanView { items }
+    items.extend(stairs_beyond(model, level, graphics));
+    shades.append(&mut items);
+    PlanView { items: shades }
+}
+
+/// Does a stair standing on `level` start inside `outline`?
+fn stair_in(model: &Model, level: ElementId, outline: &[DVec2]) -> bool {
+    model.iter().any(|e| match &e.kind {
+        ElementKind::Stair(s) => s.level == level && point_in(s.start, outline),
+        _ => false,
+    })
+}
+
+/// The footprint of a mesh lying wholly below `z`, as the faces it shows
+/// from above, tinted. Very large meshes are tinted as their hull.
+fn mesh_shade(
+    item: &crate::scene::SceneItem,
+    z: f64,
+    graphics: &creabim_core::PlanGraphics,
+) -> Vec<PlanItem> {
+    let Some(rgb) = graphics.below_tint(item.color) else {
+        return vec![];
+    };
+    let m = &item.mesh;
+    let p = |i: u32| glam::Vec3::from(m.positions[i as usize]).as_dvec3();
+    if m.positions.is_empty() || m.positions.iter().any(|q| q[2] as f64 >= z - 1e-6) {
+        return vec![];
+    }
+    let tris = m.indices.chunks(3).filter(|t| t.len() == 3);
+    if m.indices.len() / 3 > 4000 {
+        let pts: Vec<DVec2> = m
+            .positions
+            .iter()
+            .map(|q| DVec2::new(q[0] as f64, q[1] as f64))
+            .collect();
+        let hull = creabim_core::objects::hull(&pts);
+        return vec![PlanItem::Shade {
+            id: item.id,
+            points: hull,
+            rgb,
+        }];
+    }
+    tris.filter_map(|t| {
+        let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+        let (a, b, c) = (a.truncate(), b.truncate(), c.truncate());
+        // faces turned up, seen from above
+        ((b - a).perp_dot(c - a) > 1e-9).then(|| PlanItem::Shade {
+            id: item.id,
+            points: vec![a, b, c],
+            rgb,
+        })
+    })
+    .collect()
+}
+
+/// Stairs climbing from a level below up to `level`, seen through the
+/// holes in its floor (a stair well, a void): their treads, sides and
+/// landing in projection, clipped to the holes, with the walking line, an
+/// arrow and DN where it reaches this floor. What lies deeper than the
+/// view depth is left out.
+fn stairs_beyond(
+    model: &Model,
+    level: ElementId,
+    graphics: &creabim_core::PlanGraphics,
+) -> Vec<PlanItem> {
+    let Some(here) = model.level(level).map(|l| l.elevation) else {
+        return vec![];
+    };
+    let below = model
+        .levels()
+        .map(|(_, l)| l.elevation)
+        .filter(|z| *z < here - 1e-6)
+        .reduce(f64::max);
+    let bottom = here - graphics.depth(here, below);
+    // the floor's holes: shafts reaching up to it and holes in its slabs
+    let mut holes: Vec<Vec<DVec2>> = Vec::new();
+    for e in model.iter() {
+        match &e.kind {
+            ElementKind::Shaft(sh) => {
+                let (z0, z1) = sh.span(model);
+                if z0 < here - 1e-6 && here <= z1 + 1e-6 {
+                    holes.push(sh.boundary.clone());
+                }
+            }
+            ElementKind::Slab(s) if s.level == level => {
+                holes.extend(creabim_core::slab::holes_of(model, e));
+            }
+            _ => {}
+        }
+    }
+    if holes.is_empty() {
+        return vec![];
+    }
+    let mut out = Vec::new();
+    for e in model.iter() {
+        let ElementKind::Stair(s) = &e.kind else {
+            continue;
+        };
+        let base = s.base(model);
+        let rise = s.rise(model);
+        // it arrives at this floor from below
+        if base >= here - 1e-6 || (base + rise - here).abs() > 0.05 {
+            continue;
+        }
+        let mut lines: Vec<(Pen, DVec2, DVec2)> = Vec::new();
+        crate::members::stair_lines(s, rise, &mut |pen, a, b, z| {
+            if base + z >= bottom - 1e-6 {
+                lines.push((pen, a, b));
+            }
+        });
+        for (pen, a, b) in lines {
+            for (p, q) in clip_to_holes(a, b, &holes) {
+                out.push(PlanItem::Line {
+                    id: e.id,
+                    pen,
+                    a: p,
+                    b: q,
+                });
+            }
+        }
+        let lay = s.layout(rise);
+        if let Some(f) = lay.flights.last() {
+            let top = f.end(s.tread);
+            if holes.iter().any(|h| point_in(top, h)) {
+                out.push(PlanItem::Label {
+                    id: e.id,
+                    at: top + f.dir * 0.35,
+                    text: "DN".into(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The parts of `a` → `b` inside any of `holes`.
+fn clip_to_holes(a: DVec2, b: DVec2, holes: &[Vec<DVec2>]) -> Vec<(DVec2, DVec2)> {
+    let len = a.distance(b);
+    if len < 1e-9 {
+        return vec![];
+    }
+    let d = (b - a) / len;
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for h in holes {
+        let mut ts = vec![0.0, len];
+        let n = h.len();
+        for i in 0..n {
+            let (p, q) = (h[i], h[(i + 1) % n]);
+            let e = q - p;
+            let den = d.perp_dot(e);
+            if den.abs() < 1e-12 {
+                continue;
+            }
+            let t = (p - a).perp_dot(e) / den;
+            let s = (p - a).perp_dot(d) / den;
+            if (0.0..=1.0).contains(&s) && t > 0.0 && t < len {
+                ts.push(t);
+            }
+        }
+        ts.sort_by(|x, y| x.total_cmp(y));
+        for w in ts.windows(2) {
+            // on or inside the hole's edge
+            let m = a + d * ((w[0] + w[1]) / 2.0);
+            if w[1] > w[0] + 1e-9 && (point_in(m, h) || edge_distance(m, h) < 1e-6) {
+                out.push((w[0], w[1]));
+            }
+        }
+    }
+    out.sort_by(|x, y| x.0.total_cmp(&y.0));
+    // join what touches, so overlapping holes give one line
+    let mut joined: Vec<(f64, f64)> = Vec::new();
+    for (lo, hi) in out {
+        match joined.last_mut() {
+            Some(last) if lo <= last.1 + 1e-9 => last.1 = last.1.max(hi),
+            _ => joined.push((lo, hi)),
+        }
+    }
+    joined
+        .into_iter()
+        .map(|(lo, hi)| (a + d * lo, a + d * hi))
+        .collect()
 }
 
 /// The plan of `level` as an underlay: its linework (cut outlines,
@@ -1088,27 +1362,181 @@ pub fn hole_marks(id: ElementId, hole: &[DVec2], pen: Pen) -> Vec<PlanItem> {
         pen,
         points: hole.to_vec(),
     }];
-    let n = hole.len();
-    if n >= 4 {
-        // the two diagonals of its box, kept inside it
-        let lo = hole.iter().copied().reduce(DVec2::min).unwrap_or_default();
-        let hi = hole.iter().copied().reduce(DVec2::max).unwrap_or_default();
-        let far = |p: DVec2| {
-            hole.iter()
+    for (a, b) in hole_cross(hole) {
+        out.push(PlanItem::Line {
+            id,
+            pen: Pen::Fine,
+            a,
+            b,
+        });
+    }
+    out
+}
+
+/// The cross drawn in a hole: corner to corner of each convex piece of
+/// it, so an L-shaped stair well has a cross in each leg and no line
+/// leaves the opening.
+pub fn hole_cross(hole: &[DVec2]) -> Vec<(DVec2, DVec2)> {
+    let mut out = Vec::new();
+    for piece in convex_pieces(hole) {
+        if piece.len() < 4 {
+            continue;
+        }
+        // the corners nearest the corners of its box: in a convex piece
+        // the lines between them stay inside it
+        let lo = piece.iter().copied().reduce(DVec2::min).unwrap_or_default();
+        let hi = piece.iter().copied().reduce(DVec2::max).unwrap_or_default();
+        let near = |p: DVec2| {
+            piece
+                .iter()
                 .copied()
                 .min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)))
                 .unwrap_or(p)
         };
         for (a, b) in [(lo, hi), (DVec2::new(lo.x, hi.y), DVec2::new(hi.x, lo.y))] {
-            out.push(PlanItem::Line {
-                id,
-                pen: Pen::Symbol,
-                a: far(a),
-                b: far(b),
-            });
+            let (a, b) = (near(a), near(b));
+            if a.distance(b) > 1e-6 {
+                out.push((a, b));
+            }
         }
     }
     out
+}
+
+/// A polygon split into convex pieces: itself when convex, rectangles
+/// when its sides all run along x and y, otherwise its triangles merged
+/// while they stay convex (Hertel and Mehlhorn).
+pub fn convex_pieces(poly: &[DVec2]) -> Vec<Vec<DVec2>> {
+    let mut poly = poly.to_vec();
+    poly.dedup_by(|a, b| a.distance(*b) < 1e-9);
+    if poly.len() > 1 && poly[0].distance(poly[poly.len() - 1]) < 1e-9 {
+        poly.pop();
+    }
+    if poly.len() < 3 || is_convex(&poly) {
+        return vec![poly];
+    }
+    let n = poly.len();
+    let square = (0..n).all(|i| {
+        let e = poly[(i + 1) % n] - poly[i];
+        e.x.abs() < 1e-9 || e.y.abs() < 1e-9
+    });
+    if square {
+        return rectangles(&poly);
+    }
+    let mut pieces: Vec<Vec<DVec2>> = creabim_core::polygon::triangulate(&poly)
+        .into_iter()
+        .map(|t| t.iter().map(|i| poly[*i]).collect())
+        .collect();
+    // merge neighbours across a shared side while the result is convex
+    let mut merged = true;
+    while merged {
+        merged = false;
+        'outer: for i in 0..pieces.len() {
+            for j in i + 1..pieces.len() {
+                if let Some(m) = join_pieces(&pieces[i], &pieces[j]) {
+                    if is_convex(&m) {
+                        pieces[i] = m;
+                        pieces.remove(j);
+                        merged = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+    pieces
+}
+
+/// Two polygons sharing a side, as one (none when they share none).
+fn join_pieces(a: &[DVec2], b: &[DVec2]) -> Option<Vec<DVec2>> {
+    let close = |p: DVec2, q: DVec2| p.distance(q) < 1e-9;
+    let (na, nb) = (a.len(), b.len());
+    for i in 0..na {
+        let (p, q) = (a[i], a[(i + 1) % na]);
+        for j in 0..nb {
+            if close(b[j], q) && close(b[(j + 1) % nb], p) {
+                // a from q round to p, then b from p round to q
+                let mut out: Vec<DVec2> = (0..na).map(|k| a[(i + 1 + k) % na]).collect();
+                out.extend((1..nb - 1).map(|k| b[(j + 1 + k) % nb]));
+                // drop corners left in a straight line
+                let m = out.len();
+                let keep: Vec<DVec2> = (0..m)
+                    .filter(|k| {
+                        let (u, v, w) = (out[(k + m - 1) % m], out[*k], out[(k + 1) % m]);
+                        (v - u).perp_dot(w - v).abs() > 1e-12
+                    })
+                    .map(|k| out[k])
+                    .collect();
+                return Some(keep);
+            }
+        }
+    }
+    None
+}
+
+/// A polygon with sides along x and y as rectangles: the cells between
+/// its corner lines, merged into bands across and then down.
+fn rectangles(poly: &[DVec2]) -> Vec<Vec<DVec2>> {
+    let sorted = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.total_cmp(b));
+        v.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        v
+    };
+    let xs = sorted(poly.iter().map(|p| p.x).collect());
+    let ys = sorted(poly.iter().map(|p| p.y).collect());
+    // each row of cells as runs [x0, x1) inside the polygon
+    let mut rows: Vec<Vec<(usize, usize)>> = Vec::new();
+    for j in 0..ys.len().saturating_sub(1) {
+        let y = (ys[j] + ys[j + 1]) / 2.0;
+        let mut runs = Vec::new();
+        let mut start: Option<usize> = None;
+        for i in 0..xs.len() - 1 {
+            let inside = point_in(DVec2::new((xs[i] + xs[i + 1]) / 2.0, y), poly);
+            match (inside, start) {
+                (true, None) => start = Some(i),
+                (false, Some(s)) => {
+                    runs.push((s, i));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(s) = start {
+            runs.push((s, xs.len() - 1));
+        }
+        rows.push(runs);
+    }
+    // runs repeated row on row make one rectangle
+    let mut out = Vec::new();
+    let mut open: Vec<((usize, usize), usize)> = Vec::new();
+    for (j, runs) in rows.iter().enumerate() {
+        let mut next = Vec::new();
+        for (run, from) in open.drain(..) {
+            if runs.contains(&run) {
+                next.push((run, from));
+            } else {
+                out.push((run, from, j));
+            }
+        }
+        for run in runs {
+            if !next.iter().any(|(r, _)| r == run) {
+                next.push((*run, j));
+            }
+        }
+        open = next;
+    }
+    out.extend(open.into_iter().map(|(run, from)| (run, from, rows.len())));
+    out.into_iter()
+        .map(|((i0, i1), j0, j1)| {
+            let (x0, x1, y0, y1) = (xs[i0], xs[i1], ys[j0], ys[j1]);
+            vec![
+                DVec2::new(x0, y0),
+                DVec2::new(x1, y0),
+                DVec2::new(x1, y1),
+                DVec2::new(x0, y1),
+            ]
+        })
+        .collect()
 }
 
 /// Is this the linework of an underlay (drawn faintly, never picked)?

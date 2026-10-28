@@ -7,10 +7,11 @@ use crate::plan::{Pen, PlanItem};
 use creabim_core::objects::{self, SymbolItem};
 use creabim_core::{Element, ElementKind, Model};
 
-/// An object's plan symbol, turned and placed. Objects hung above the cut
-/// plane (wall cupboards) are drawn dashed, as things overhead are; the
-/// symbols of building services (a light, a socket, a diffuser) are drawn
-/// in full wherever they are, as services drawings show them.
+/// An object's plan symbol, turned and placed, in the fine pen of small
+/// things. Objects hung above the cut plane (wall cupboards) are drawn
+/// dashed, as things overhead are; the symbols of building services (a
+/// light, a socket, a diffuser) are drawn in full wherever they are, as
+/// services drawings show them.
 pub fn object_plan(model: &Model, e: &Element, cut_height: f64) -> Vec<PlanItem> {
     let ElementKind::Object(o) = &e.kind else {
         return vec![];
@@ -24,7 +25,7 @@ pub fn object_plan(model: &Model, e: &Element, cut_height: f64) -> Vec<PlanItem>
     let pen = if above && !t.category.is_services() {
         Pen::Hidden
     } else {
-        Pen::Projection
+        Pen::Fine
     };
     t.plan_symbol()
         .into_iter()
@@ -42,6 +43,49 @@ pub fn object_plan(model: &Model, e: &Element, cut_height: f64) -> Vec<PlanItem>
             },
         })
         .collect()
+}
+
+/// The footprint of an object wholly below the cut (furniture, a bath, a
+/// kitchen run) filled in a light tint of each part's material, under
+/// its symbol. Building services and what the cut passes through or
+/// hangs above it are left plain.
+pub fn object_shade(
+    model: &Model,
+    e: &Element,
+    cut_height: f64,
+    graphics: &creabim_core::PlanGraphics,
+) -> Vec<PlanItem> {
+    let ElementKind::Object(o) = &e.kind else {
+        return vec![];
+    };
+    let Some(t) = objects::type_of(model, e) else {
+        return vec![];
+    };
+    let floor = model.level(o.level).map_or(0.0, |l| l.elevation);
+    let (_, hi) = t.bounds();
+    if t.category.is_services() || objects::base_z_of(model, o, t) - floor + hi.z > cut_height {
+        return vec![];
+    }
+    let mut out = Vec::new();
+    for (mesh, material) in objects::model_parts(model, e) {
+        let rgb = match material.and_then(|m| model.get(m)).map(|m| &m.kind) {
+            Some(ElementKind::Material(m)) => m.color,
+            _ => [0.8, 0.78, 0.74],
+        };
+        let Some(rgb) = graphics.below_tint(rgb) else {
+            return vec![];
+        };
+        let pts: Vec<glam::DVec2> = mesh.vertices.iter().map(|v| v.truncate()).collect();
+        let points = objects::hull(&pts);
+        if points.len() >= 3 {
+            out.push(PlanItem::Shade {
+                id: e.id,
+                points,
+                rgb,
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]

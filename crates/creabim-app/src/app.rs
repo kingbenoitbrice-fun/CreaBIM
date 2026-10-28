@@ -1415,6 +1415,7 @@ impl CreaBimApp {
                         | PlanItem::Tag { .. }
                         | PlanItem::Annotation { .. }
                         | PlanItem::Tint { .. }
+                        | PlanItem::Shade { .. }
                         | PlanItem::Image { .. } => {}
                     }
                 }

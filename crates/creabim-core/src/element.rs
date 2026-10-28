@@ -1254,6 +1254,12 @@ pub struct View {
     /// inside a wall or a slab.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden_in_colour: bool,
+    /// A plan's line weights, below-cut fill and view depth.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::graphics::PlanGraphics::is_default"
+    )]
+    pub graphics: crate::graphics::PlanGraphics,
 }
 
 /// What a plan shows faintly under its own level (Revit's underlay).
@@ -1428,6 +1434,7 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            graphics: Default::default(),
         }
     }
 
@@ -1446,6 +1453,7 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            graphics: Default::default(),
         }
     }
 }
@@ -1461,6 +1469,7 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            graphics: Default::default(),
         }
     }
 
@@ -1477,6 +1486,7 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            graphics: Default::default(),
         }
     }
 

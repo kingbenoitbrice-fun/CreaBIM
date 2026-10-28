@@ -3391,6 +3391,10 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
             let fill = crate::annotate::color32(c).gamma_multiply_u8(a);
             fill_polygon(painter, xf, points, fill);
         }
+        PlanItem::Shade { points, rgb, .. } => {
+            let c = if selected { [0.98, 0.85, 0.70] } else { *rgb };
+            fill_polygon(painter, xf, points, crate::annotate::color32(c));
+        }
         PlanItem::Image {
             raster,
             lo,
@@ -3473,7 +3477,9 @@ pub fn draw_hover(painter: &egui::Painter, xf: &Xf, items: &[PlanItem], id: Elem
     let wash = hoverpick::HOVER.gamma_multiply(0.16);
     for it in items.iter().filter(|it| it.id() == id) {
         match it {
-            PlanItem::Fill { points, .. } | PlanItem::Tint { points, .. } => {
+            PlanItem::Fill { points, .. }
+            | PlanItem::Tint { points, .. }
+            | PlanItem::Shade { points, .. } => {
                 fill_polygon(painter, xf, points, wash);
             }
             PlanItem::Polygon { points, .. } => {
@@ -4251,7 +4257,9 @@ pub fn hit_all(items: &[PlanItem], p: DVec2, tol: f64, mm: f64) -> Vec<ElementId
     }
     for it in items.iter().rev() {
         match it {
-            PlanItem::Fill { id, points, .. } | PlanItem::Tint { id, points, .. }
+            PlanItem::Fill { id, points, .. }
+            | PlanItem::Tint { id, points, .. }
+            | PlanItem::Shade { id, points, .. }
                 if point_in_polygon(p, points) =>
             {
                 found(*id)
