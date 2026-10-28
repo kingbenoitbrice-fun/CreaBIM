@@ -490,7 +490,12 @@ impl CreaBimApp {
         }
         let mut items = vec![
             Item::new("new.empty", "New empty project").icon("file-plus"),
-            Item::new("new.sample", "New sample house").icon("house"),
+            Item::new("new.sample", "New starter house")
+                .icon("house")
+                .hint("The house CreaBIM opens with: two storeys, a kitchen wing, furnished, with plans, sections, elevations, schedules and sheets"),
+            Item::new("new.simple", "New simple sample house")
+                .icon("house")
+                .hint("A plain box house with two floors, a few openings and four sheets"),
             Item::new("new.layered", "New layered sample house")
                 .icon("house")
                 .hint("Walls, floors and a roof built from layered assemblies, the upper walls attached to the roof"),
@@ -1028,8 +1033,12 @@ impl CreaBimApp {
                         .into();
             }
             "new.sample" => {
+                self.load_model(creabim_core::starter::starter_house());
+                self.status = STARTER_LOADED.into();
+            }
+            "new.simple" => {
                 self.load_model(sample_house());
-                self.status = "Loaded the sample house.".into();
+                self.status = "Loaded the simple sample house.".into();
             }
             "new.buried" => {
                 self.load_model(creabim_core::sample::sample_with_buried_beam().0);
