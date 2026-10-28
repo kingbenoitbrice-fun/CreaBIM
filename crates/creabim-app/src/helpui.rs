@@ -97,6 +97,45 @@ impl CreaBimApp {
         h.open = true;
     }
 
+    /// A small ? beside a heading in Properties: it opens a few lines from
+    /// the page `link` and a link to read the rest in the Help panel.
+    pub(super) fn quick_help_button(&mut self, ui: &mut egui::Ui, link: &str, title: &str) {
+        let lines = help::quick(link);
+        if lines.is_empty() {
+            return;
+        }
+        let r = ui
+            .add(
+                egui::Button::new(egui::RichText::new("?").size(11.0).strong())
+                    .small()
+                    .corner_radius(8.0)
+                    .min_size(egui::vec2(16.0, 16.0)),
+            )
+            .on_hover_text(format!(
+                "About {}: a few lines, and its page in the guide",
+                title.to_lowercase()
+            ));
+        let mut read = false;
+        egui::Popup::from_toggle_button_response(&r)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_max_width(300.0);
+                ui.label(egui::RichText::new(title).strong());
+                ui.add_space(2.0);
+                for l in &lines {
+                    ui.label(help::plain(l));
+                }
+                ui.add_space(4.0);
+                if ui.link("Read more in the guide →").clicked() {
+                    read = true;
+                    ui.close();
+                }
+            });
+        if read {
+            self.open_help(link);
+        }
+    }
+
     /// The Help menu's actions and the Help panel's buttons. Returns false
     /// for any other action.
     pub(super) fn help_action(&mut self, head: &str, arg: &str) -> bool {

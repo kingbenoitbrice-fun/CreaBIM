@@ -45,6 +45,8 @@ mod materials;
 mod objectsui;
 #[path = "shell.rs"]
 mod shell;
+#[path = "typepreview.rs"]
+mod typepreview;
 #[path = "typesui.rs"]
 mod typesui;
 #[path = "wallsui.rs"]
@@ -172,6 +174,8 @@ pub struct CreaBimApp {
     asm: assemblies::AssembliesUi,
     /// The Types window.
     types: typesui::TypesUi,
+    /// A type opened on its own, and the type Show in model lights.
+    type_preview: typepreview::TypePreview,
     /// The Catalogue window and the user's own catalogue.
     catalogue: objectsui::CatalogueUi,
     /// The Levels manager and the Project units dialog.
@@ -253,6 +257,7 @@ impl CreaBimApp {
             mat: Default::default(),
             asm: Default::default(),
             types: Default::default(),
+            type_preview: Default::default(),
             catalogue: Default::default(),
             levels: Default::default(),
             level_copy: Default::default(),
@@ -1165,17 +1170,22 @@ impl CreaBimApp {
         let xray = self.shell.settings.xray;
         let mode = self.shell.settings.render_3d;
         let edge_colour = [0.10, 0.10, 0.11];
+        // a type shown in the model: its instances lit as if selected, the
+        // rest see-through when asked
+        let spot = &self.plan.spotlight;
+        let ghost = self.plan.spotlight_ghost && !spot.is_empty();
         for item in &self.scene {
-            let selected = self.selection.contains(item.id);
+            let selected = self.selection.contains(item.id) || spot.contains(&item.id);
             // X-ray: what holds others turns see-through with its edges
             // drawn; the framing that sits in it stays solid
-            let xrayed = xray
-                && !selected
-                && !self
-                    .doc
-                    .model()
-                    .get(item.id)
-                    .is_some_and(|e| is_framing(&e.kind));
+            let xrayed = !selected
+                && (ghost
+                    || xray
+                        && !self
+                            .doc
+                            .model()
+                            .get(item.id)
+                            .is_some_and(|e| is_framing(&e.kind)));
             if item.ghost {
                 // cutters show as their outline only
                 let c = if selected {
@@ -3740,11 +3750,18 @@ impl CreaBimApp {
             if let Some(gridvis::VisTarget::View(v)) = self.vis_target(false) {
                 ui.add_space(8.0);
                 let name = self.doc.model().get(v).map_or("", |e| e.name.as_str());
-                ui.label(egui::RichText::new(format!("View: {name}")).strong());
+                let name = name.to_string();
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("View: {name}")).strong());
+                    self.quick_help_button(ui, "visibility", "What a view shows");
+                });
                 self.visibility_panel(ui, gridvis::VisTarget::View(v));
             }
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("3D view").strong());
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("3D view").strong());
+                self.quick_help_button(ui, "navigate", "The 3D view");
+            });
             self.visibility_panel(ui, gridvis::VisTarget::Window3d);
             ui.add_space(8.0);
             self.crop_list(ui, self.crop_owner());
@@ -3788,7 +3805,15 @@ impl CreaBimApp {
         // an object is what its type says: a basin an IfcSanitaryTerminal
         let class = creabim_core::objects::type_of(self.doc.model(), &e)
             .map_or_else(|| e.ifc_class().to_string(), |t| t.ifc.class.clone());
-        ui.label(egui::RichText::new(class).weak());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(class).weak());
+            // what this kind of element is, and its page in the guide
+            let page = crate::help::element_page(&e.kind);
+            let title = crate::help::text(page.split('#').next().unwrap_or(page))
+                .map(crate::help::title)
+                .unwrap_or("This element");
+            self.quick_help_button(ui, page, title);
+        });
         let mut name = e.name.clone();
         if matches!(e.kind, ElementKind::Level(_)) {
             // a level is renamed with the plans named after it, once typed
@@ -3846,6 +3871,8 @@ impl CreaBimApp {
         let mut new_style = false;
         let mut show_visibility = false;
         let mut object_type = false;
+        // a placed view's new scale: (its view, the scale)
+        let mut rescale: Option<(ElementId, f64)> = None;
         match &mut edited.kind {
             ElementKind::Level(l) => {
                 if num(ui, "Elevation", &mut l.elevation, -100.0, 1000.0) {
@@ -4079,19 +4106,10 @@ impl CreaBimApp {
                 }
             }
             ElementKind::View(v) => {
-                ui.horizontal(|ui| {
-                    ui.label("Scale 1:");
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut v.scale)
-                                .speed(1.0)
-                                .range(1.0..=5000.0),
-                        )
-                        .changed()
-                    {
-                        label = "View scale"
-                    }
-                });
+                // on its sheets too, each viewport round its centre
+                if let Some(s) = sheetview::scale_picker(ui, id, v.scale) {
+                    rescale = Some((id, s));
+                }
                 match &mut v.kind {
                     ViewKind::Plan { cut_height, level } => {
                         if num(ui, "Cut height", cut_height, 0.1, 50.0) {
@@ -4213,6 +4231,17 @@ impl CreaBimApp {
                     .map(|e| e.name.clone())
                     .unwrap_or_default();
                 ui.label(format!("Shows {view_name}"));
+                // its scale is the view's: a new one redraws it at that
+                // size, round the viewport's centre
+                let view = vp.view;
+                let scale = self.view(view).and_then(|v| {
+                    (!matches!(v.kind, ViewKind::Schedule { .. })).then_some(v.scale)
+                });
+                if let Some(scale) = scale {
+                    if let Some(s) = sheetview::scale_picker(ui, id, scale) {
+                        rescale = Some((view, s));
+                    }
+                }
                 let mm = |ui: &mut egui::Ui, text: &str, v: &mut f64| {
                     ui.horizontal(|ui| {
                         ui.label(text);
@@ -4863,6 +4892,9 @@ impl CreaBimApp {
         if object_type {
             self.object_type_section(ui, id);
         }
+        if let Some((view, scale)) = rescale {
+            self.set_view_scale(view, scale);
+        }
         if new_style {
             self.status = "New text style: set its font, size and colour below.".into();
         }
@@ -4936,6 +4968,7 @@ impl eframe::App for CreaBimApp {
         crate::units::set(self.doc.model().units());
         self.shortcuts(&ctx);
         self.keep_edit_mode();
+        self.refresh_spotlight();
         let dropped: Vec<String> = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -5074,10 +5107,18 @@ impl eframe::App for CreaBimApp {
         if std::mem::take(&mut self.plan.want_catalogue) {
             self.catalogue.open = true;
         }
+        // a box dragged with the Footing tool: footings under all it took
+        let hosts = std::mem::take(&mut self.plan.want_footings);
+        if !hosts.is_empty() {
+            self.selection.clear();
+            self.selection.extend(hosts, false);
+            self.footings_under_selection();
+        }
         self.open_view_menu();
         self.materials_window(&ctx);
         self.assemblies_window(&ctx);
         self.types_window(&ctx);
+        self.type_preview_window(&ctx);
         self.catalogue_window(&ctx);
         self.levels_window(&ctx);
         self.level_copy_window(&ctx);

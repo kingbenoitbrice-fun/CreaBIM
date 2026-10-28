@@ -325,6 +325,13 @@ pub struct PlanState {
     /// The Object tool was used with nothing picked: the app opens the
     /// Catalogue window.
     pub want_catalogue: bool,
+    /// Walls or columns a box dragged with the Footing tool took: the app
+    /// puts footings under them all, in one step.
+    pub want_footings: Vec<ElementId>,
+    /// Elements shown as if selected without being so (a type's instances,
+    /// from its Show in model), and whether the rest is drawn faint.
+    pub spotlight: Vec<ElementId>,
+    pub spotlight_ghost: bool,
     /// The points clicked so far for a chain of walls (or beams, grid
     /// lines...), on a level, for alignment tracking.
     pub chain: (Option<ElementId>, Vec<DVec2>),
@@ -422,6 +429,9 @@ impl Default for PlanState {
             want_levels: false,
             objects: Default::default(),
             want_catalogue: false,
+            want_footings: vec![],
+            spotlight: vec![],
+            spotlight_ghost: false,
             chain: (None, vec![]),
             rested: (None, vec![]),
             rest: None,
@@ -662,9 +672,17 @@ pub fn show(
         fill_polygon(&painter, &xf, points, fill);
     }
     let xray = state.xray.contains(&view);
+    // a type's instances shown in the model: drawn as selected, the rest
+    // faint when asked
+    let ghost = state.spotlight_ghost && !state.spotlight.is_empty();
+    let mut faint = painter.clone();
+    faint.set_opacity(0.22);
     for item in &plan.items {
-        let selected = selection.contains(item.id());
-        if xray {
+        let lit = state.spotlight.contains(&item.id());
+        let selected = selection.contains(item.id()) || lit;
+        if ghost && !selected {
+            draw_item(&faint, &xf, item, false, mm);
+        } else if xray {
             draw_item_xray(&painter, &xf, item, selected, mm, doc.model());
         } else {
             draw_item(&painter, &xf, item, selected, mm);
@@ -1189,13 +1207,19 @@ pub fn show(
         }
     }
 
-    // drag on empty paper to select with a box
-    if tool == Tool::Select && matches!(kind, PaneKind::Plan { .. } | PaneKind::Section { .. }) {
+    // drag on empty paper to select with a box; with the Footing tool, a
+    // box anywhere on a plan puts footings under the walls (Strip) or the
+    // columns (Pad) it takes, as Revit's multiple selection does
+    let footing_box =
+        tool == Tool::Footing && matches!(kind, PaneKind::Plan { .. }) && state.pending.is_none();
+    if (tool == Tool::Select && matches!(kind, PaneKind::Plan { .. } | PaneKind::Section { .. }))
+        || footing_box
+    {
         if response.drag_started_by(egui::PointerButton::Primary) {
             let origin = ui.input(|i| i.pointer.press_origin());
             if let Some(p0) = origin {
                 let on_item = hit_test(&plan.items, xf.to_world(p0), 6.0 / scale as f64, mm);
-                if on_item.is_none() {
+                if on_item.is_none() || footing_box {
                     state.boxsel = Some(p0);
                 }
             }
@@ -1217,7 +1241,28 @@ pub fn show(
                 let ids = boxsel::pick(p0, now, parts)
                     .into_iter()
                     .filter(|id| box_selectable(doc, *id));
-                selection.extend(ids, shift);
+                if footing_box {
+                    let pad = crate::memberstool::footing_kind(doc.model(), state)
+                        == creabim_core::FootingKind::Pad;
+                    let hosts: Vec<ElementId> = ids
+                        .filter(|id| match doc.model().get(*id).map(|e| &e.kind) {
+                            Some(ElementKind::Wall(w)) => !pad && w.curtain.is_none(),
+                            Some(ElementKind::Column(_)) => pad,
+                            _ => false,
+                        })
+                        .collect();
+                    if hosts.is_empty() {
+                        state.status = Some(if pad {
+                            "The box took no columns: drag it over the columns to put pads under."
+                        } else {
+                            "The box took no walls: drag it over the walls to put strips under."
+                        }
+                        .into());
+                    }
+                    state.want_footings = hosts;
+                } else {
+                    selection.extend(ids, shift);
+                }
                 state.boxsel = None;
             }
             return None;

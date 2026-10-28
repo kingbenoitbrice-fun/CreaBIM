@@ -802,9 +802,19 @@ impl CreaBimApp {
                 asks.push(TypeAsk::SelectInstances(id));
             }
         });
-        if ui.button("Open in the Types window").clicked() {
-            self.open_types(Some(id));
-        }
+        self.show_in_model_ui(ui, id);
+        ui.horizontal(|ui| {
+            if ui
+                .button("Open preview")
+                .on_hover_text("The type on its own, in 3D, plan and section, beside its values (or double-click it in the project browser)")
+                .clicked()
+            {
+                self.open_type_preview(id);
+            }
+            if ui.button("Types window").clicked() {
+                self.open_types(Some(id));
+            }
+        });
         if !label.is_empty() {
             asks.push(TypeAsk::Edit(id, label, t));
         }

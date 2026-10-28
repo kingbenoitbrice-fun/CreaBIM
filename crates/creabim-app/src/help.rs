@@ -266,6 +266,133 @@ pub fn element_page(kind: &ElementKind) -> &'static str {
     }
 }
 
+/// A few lines from a page (`page` or `page#heading`) for a quick-help
+/// popover: its first paragraph, cut to two sentences, or the first steps
+/// of its first list; both when a short paragraph leads into a list. Links
+/// become their words; `code` and **bold** are kept for the popover to
+/// draw.
+pub fn quick(link: &str) -> Vec<String> {
+    let (id, anchor) = link.split_once('#').unwrap_or((link, ""));
+    let Some(md) = text(id) else { return vec![] };
+    let mut lines = md.lines();
+    if !anchor.is_empty() {
+        // to the heading
+        for l in lines.by_ref() {
+            let t = l.trim_start_matches('#');
+            if l.starts_with("##") && slug(t) == anchor {
+                break;
+            }
+        }
+    }
+    let mut out: Vec<String> = vec![];
+    let mut para = String::new();
+    let mut steps = 0;
+    let item = |l: &str| -> Option<String> {
+        let t = l.strip_prefix("- ").or_else(|| l.strip_prefix("* "));
+        let t = t.or_else(|| {
+            let (n, rest) = l.split_once(". ")?;
+            n.chars().all(|c| c.is_ascii_digit()).then_some(rest)
+        })?;
+        Some(t.to_string())
+    };
+    for l in lines {
+        let t = l.trim_end();
+        if t.is_empty() || t.starts_with('#') {
+            if !para.is_empty() {
+                // a short paragraph leads into what follows
+                let short = para.chars().count() < 110;
+                out.push(sentences(&std::mem::take(&mut para), 2));
+                if !short {
+                    break;
+                }
+            } else if steps > 0 {
+                break;
+            }
+            // a heading after the lines taken ends them; the page's title
+            // and a heading the page opens with don't
+            if t.starts_with('#') && !out.is_empty() {
+                break;
+            }
+            continue;
+        }
+        if t.starts_with("![") || t.starts_with("<!--") || t.starts_with('|') || t.starts_with('>')
+        {
+            continue;
+        }
+        if let Some(i) = item(t) {
+            if !para.is_empty() {
+                out.push(sentences(&std::mem::take(&mut para), 2));
+            }
+            steps += 1;
+            if steps <= 3 {
+                out.push(unlink(&i));
+            }
+            continue;
+        }
+        if l.starts_with(' ') {
+            // a list item's next line, or one under it
+            if steps > 0 && steps <= 3 && !l.trim_start().starts_with(['-', '*']) {
+                if let Some(last) = out.last_mut() {
+                    last.push(' ');
+                    last.push_str(&unlink(l.trim()));
+                }
+            }
+            continue;
+        }
+        if steps > 0 {
+            break;
+        }
+        if !para.is_empty() {
+            para.push(' ');
+        }
+        para.push_str(&unlink(t));
+    }
+    if !para.is_empty() {
+        out.push(sentences(&para, 2));
+    }
+    out.truncate(4);
+    out
+}
+
+/// The first `n` sentences of `s`.
+fn sentences(s: &str, n: usize) -> String {
+    let mut ends = 0;
+    for (i, c) in s.char_indices() {
+        if matches!(c, '.' | '!' | '?') && s[i + 1..].starts_with(' ') {
+            ends += 1;
+            if ends == n {
+                return s[..=i].to_string();
+            }
+        }
+    }
+    s.to_string()
+}
+
+/// `[words](link)` as its words, pictures left out.
+fn unlink(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find('[') {
+        let Some(j) = rest[i..].find("](") else { break };
+        let Some(k) = rest[i + j..].find(')') else {
+            break;
+        };
+        let image = rest[..i].ends_with('!');
+        out.push_str(&rest[..if image { i - 1 } else { i }]);
+        if !image {
+            out.push_str(&rest[i + 1..i + j]);
+        }
+        rest = &rest[i + j + k + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A quick-help line without its marks, for egui.
+pub fn plain(line: &str) -> String {
+    line.replace("**", "").replace('`', "").replace('*', "")
+}
+
 /// A key or a mouse action that isn't on a menu, and what it does.
 pub struct Binding {
     /// As it is shown: `Ctrl+K`, `Shift+D`, `1–4`, `Shift+right-click`.
@@ -599,6 +726,38 @@ mod tests {
         for t in Tool::ALL {
             assert!(exists(tool_page(t)), "{:?}: {}", t, tool_page(t));
         }
+    }
+
+    #[test]
+    fn every_tool_has_a_few_lines_of_quick_help() {
+        for t in Tool::ALL {
+            let q = quick(tool_page(t));
+            assert!(!q.is_empty() && q.len() <= 4, "{t:?}: {q:?}");
+            for l in &q {
+                assert!(l.chars().count() < 420, "{t:?}: {l}");
+                assert!(!l.contains("](") && !l.starts_with('#'), "{t:?}: {l}");
+            }
+        }
+    }
+
+    #[test]
+    fn quick_help_is_the_first_paragraph_or_the_first_steps() {
+        // a page that opens with a paragraph
+        let q = quick("footings");
+        assert!(q[0].starts_with("A **footing** is the foundation"), "{q:?}");
+        assert_eq!(q.len(), 1, "two sentences of a long paragraph: {q:?}");
+        // a page that opens with steps: the first three
+        let q = quick("walls");
+        assert_eq!(q.len(), 3, "{q:?}");
+        assert!(q[0].contains("**Wall** tool"), "{q:?}");
+        // a heading of a page, links as their words
+        let q = quick("holes#shafts");
+        assert!(q[0].starts_with("A **shaft** is a vertical hole"), "{q:?}");
+        assert_eq!(
+            unlink("See [walls](walls#joins) ![x](img/a.jpg)here."),
+            "See walls here."
+        );
+        assert_eq!(sentences("One. Two. Three.", 2), "One. Two.");
     }
 
     #[test]
