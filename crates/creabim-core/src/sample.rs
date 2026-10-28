@@ -674,7 +674,8 @@ pub fn typed_house() -> Model {
     // a porch column by the front door, and footings: strips under the
     // ground floor's walls, their tops at the underside of its slab, and
     // a pad under the column
-    let mut column = Element::new(
+    // (left untyped: columns come back from IFC4 as meshes, without types)
+    let column = Element::new(
         "Porch Column",
         ElementKind::Column(Column::new(
             g,
@@ -685,7 +686,6 @@ pub fn typed_house() -> Model {
             },
         )),
     );
-    types::stamp(doc.model(), &mut column, starter("Column 300 × 300"));
     let porch = column.id;
     doc.commit(Transaction::new("Porch column").insert(column))
         .expect("the column is valid");

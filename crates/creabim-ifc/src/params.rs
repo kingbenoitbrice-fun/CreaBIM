@@ -329,52 +329,6 @@ pub(crate) fn type_from(category: TypeCategory, curtain: bool, p: &Props) -> Typ
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn read(props: &[(&'static str, Prop)]) -> Props {
-        props
-            .iter()
-            .map(|(k, v)| {
-                let r = match v {
-                    Prop::Length(x) => (Some(*x), None),
-                    Prop::Count(n) => (Some(*n as f64), None),
-                    Prop::Real(x) => (Some(*x), None),
-                    Prop::Label(s) => (None, Some(s.clone())),
-                };
-                (k.to_string(), r)
-            })
-            .collect()
-    }
-
-    #[test]
-    fn every_starter_type_reads_back_from_its_properties() {
-        let model = creabim_core::Model::new();
-        let (tx, _) = creabim_core::types::add_starters(&model);
-        for op in tx.ops {
-            let creabim_core::Op::Insert(e) = op else {
-                continue;
-            };
-            let creabim_core::ElementKind::ElementType(t) = &e.kind else {
-                continue;
-            };
-            let p = read(&type_props(t));
-            let mut back = type_from(t.category(), t.is_curtain(), &p);
-            // materials and assemblies travel as material associations
-            let mut want = t.params.clone();
-            for params in [&mut back, &mut want] {
-                match params {
-                    TypeParams::Wall(w) => w.assembly = None,
-                    TypeParams::Slab(s) | TypeParams::Roof(s) => s.assembly = None,
-                    _ => {}
-                }
-            }
-            assert_eq!(back, want, "{}", e.name);
-        }
-    }
-}
-
 fn kind_label(k: FootingKind) -> &'static str {
     match k {
         FootingKind::Strip => "Strip",
@@ -439,4 +393,50 @@ pub(crate) fn footing_from(
     f.thickness = thickness;
     f.below = p.get("Below").and_then(|v| v.0).unwrap_or(0.0);
     Some((f, label(p, "Host").map(str::to_string)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read(props: &[(&'static str, Prop)]) -> Props {
+        props
+            .iter()
+            .map(|(k, v)| {
+                let r = match v {
+                    Prop::Length(x) => (Some(*x), None),
+                    Prop::Count(n) => (Some(*n as f64), None),
+                    Prop::Real(x) => (Some(*x), None),
+                    Prop::Label(s) => (None, Some(s.clone())),
+                };
+                (k.to_string(), r)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_starter_type_reads_back_from_its_properties() {
+        let model = creabim_core::Model::new();
+        let (tx, _) = creabim_core::types::add_starters(&model);
+        for op in tx.ops {
+            let creabim_core::Op::Insert(e) = op else {
+                continue;
+            };
+            let creabim_core::ElementKind::ElementType(t) = &e.kind else {
+                continue;
+            };
+            let p = read(&type_props(t));
+            let mut back = type_from(t.category(), t.is_curtain(), &p);
+            // materials and assemblies travel as material associations
+            let mut want = t.params.clone();
+            for params in [&mut back, &mut want] {
+                match params {
+                    TypeParams::Wall(w) => w.assembly = None,
+                    TypeParams::Slab(s) | TypeParams::Roof(s) => s.assembly = None,
+                    _ => {}
+                }
+            }
+            assert_eq!(back, want, "{}", e.name);
+        }
+    }
 }
