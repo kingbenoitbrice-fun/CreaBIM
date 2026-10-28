@@ -311,11 +311,28 @@ fn save_import(r: ImportResult, out: &str) -> Result<(), String> {
     for w in &r.warnings {
         eprintln!("warning: {w}");
     }
+    if !r.details.is_empty() {
+        eprintln!("details, element by element:");
+        for d in &r.details {
+            eprintln!("  {d}");
+        }
+    }
+    // native elements and meshes apart: "13 IfcWall (6 meshes)"
     let mut counts = std::collections::BTreeMap::new();
     for e in r.model.iter() {
-        *counts.entry(e.ifc_class().to_string()).or_insert(0) += 1;
+        let c: &mut (usize, usize) = counts.entry(e.ifc_class().to_string()).or_default();
+        c.0 += 1;
+        c.1 += usize::from(matches!(e.kind, creabim_core::ElementKind::FreeMesh(_)));
     }
-    let summary: Vec<String> = counts.iter().map(|(c, n)| format!("{n} {c}")).collect();
+    let summary: Vec<String> = counts
+        .iter()
+        .map(|(c, (n, meshes))| match meshes {
+            0 => format!("{n} {c}"),
+            m if m == n => format!("{n} {c} (meshes)"),
+            1 => format!("{n} {c} (1 mesh)"),
+            m => format!("{n} {c} ({m} meshes)"),
+        })
+        .collect();
     eprintln!("imported {} ({})", r.schema, summary.join(", "));
     if is_json(out) {
         std::fs::write(out, r.model.to_json()).map_err(|e| e.to_string())

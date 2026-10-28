@@ -26,6 +26,8 @@ pub(crate) enum Prop {
     Count(i64),
     Real(f64),
     Label(String),
+    /// Text of any length (a label is at most 255 characters).
+    Text(String),
 }
 
 impl Prop {
@@ -36,6 +38,7 @@ impl Prop {
             Prop::Count(n) => format!("IFCINTEGER({n})"),
             Prop::Real(v) => format!("IFCREAL({})", real(*v)),
             Prop::Label(s) => format!("IFCLABEL({})", string(s)),
+            Prop::Text(s) => format!("IFCTEXT({})", string(s)),
         }
     }
 }
@@ -406,7 +409,7 @@ mod tests {
                     Prop::Length(x) => (Some(*x), None),
                     Prop::Count(n) => (Some(*n as f64), None),
                     Prop::Real(x) => (Some(*x), None),
-                    Prop::Label(s) => (None, Some(s.clone())),
+                    Prop::Label(s) | Prop::Text(s) => (None, Some(s.clone())),
                 };
                 (k.to_string(), r)
             })
