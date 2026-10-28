@@ -107,6 +107,7 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Roof => "tent",
         Tool::Stair => "stair",
         Tool::Railing => "fence",
+        Tool::Footing => "footing",
         Tool::Level => "level",
         Tool::Align => "align-tool",
         Tool::Object => "sofa",
@@ -128,6 +129,7 @@ fn tool_group(t: Tool) -> u8 {
         | Tool::Roof
         | Tool::Stair
         | Tool::Railing
+        | Tool::Footing
         | Tool::Object => 1,
         Tool::Section | Tool::Elevation => 2,
         Tool::Dimension
@@ -361,6 +363,7 @@ impl CreaBimApp {
                         n => format!("{n} selected"),
                     }));
                     items.extend(self.wall_menu_items());
+                    items.extend(self.level_menu_items());
                     for group in [
                         &[
                             Command::Move,
@@ -589,6 +592,17 @@ impl CreaBimApp {
             &[Command::Hide, Command::Isolate, Command::ShowAll],
         ] {
             items.extend(group.iter().map(|c| self.cmd_item(*c)));
+            if group.contains(&Command::Paste) {
+                items.push(
+                    Item::sub("Paste aligned to level", self.paste_level_items())
+                        .icon("copy-levels"),
+                );
+            }
+            items.push(Item::Separator);
+        }
+        let levels = self.level_menu_items();
+        if !levels.is_empty() {
+            items.extend(levels);
             items.push(Item::Separator);
         }
         items.push(align_item());
@@ -1212,6 +1226,7 @@ impl CreaBimApp {
             _ if self.crop_action(head, arg) => {}
             _ if self.help_action(head, arg) => {}
             _ if self.wall_action(head, arg) => {}
+            _ if self.level_action(head, arg) => {}
             _ => {
                 if !self.materials_action(head, arg) && !self.drafting_action(head, arg) {
                     self.grid_vis_action(head, arg);

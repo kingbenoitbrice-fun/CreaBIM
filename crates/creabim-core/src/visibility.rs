@@ -36,6 +36,8 @@ pub enum Category {
     Railings,
     /// Furniture and fixtures from the catalogue.
     Objects,
+    /// Strip and pad footings.
+    Footings,
     /// A category from a newer CreaBIM, kept so older versions still read
     /// the file.
     #[serde(other)]
@@ -43,7 +45,7 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 20] = [
+    pub const ALL: [Category; 21] = [
         Category::Walls,
         Category::Slabs,
         Category::Doors,
@@ -64,6 +66,7 @@ impl Category {
         Category::Stairs,
         Category::Railings,
         Category::Objects,
+        Category::Footings,
     ];
 
     pub fn label(self) -> &'static str {
@@ -88,6 +91,7 @@ impl Category {
             Category::Stairs => "Stairs",
             Category::Railings => "Railings",
             Category::Objects => "Furniture and fixtures",
+            Category::Footings => "Footings",
             Category::Other => "Other",
         }
     }
@@ -122,6 +126,7 @@ impl Category {
             ElementKind::Stair(_) => Category::Stairs,
             ElementKind::Railing(_) => Category::Railings,
             ElementKind::Object(_) => Category::Objects,
+            ElementKind::Footing(_) => Category::Footings,
             _ => return None,
         })
     }

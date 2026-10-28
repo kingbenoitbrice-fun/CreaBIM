@@ -1,4 +1,6 @@
-use crate::params::{curtain_props, type_props, Prop, CURTAIN_PSET, TYPE_PSET};
+use crate::params::{
+    curtain_props, footing_props, type_props, Prop, CURTAIN_PSET, FOOTING_PSET, TYPE_PSET,
+};
 use crate::step::{list, point2, point3, real, string, Ref, StepWriter};
 use creabim_core::{Element, ElementId, ElementKind, Model, OpeningKind};
 use glam::{DVec2, DVec3};
@@ -581,6 +583,12 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let r = product(&mut c, class, e, pl, shape, tail);
                 of_type(e, r);
                 contained.entry(level).or_default().push(r);
+                if let ElementKind::Footing(f) = k {
+                    // its own values, so CreaBIM reads it back as a footing
+                    let host = f.host.filter(|h| model.get(*h).is_some());
+                    let props = footing_props(f, host.map(|h| h.ifc_guid()));
+                    c.pset_on(&[r], FOOTING_PSET, &props);
+                }
                 if let ElementKind::Roof(roof) = k {
                     // the mesh has its holes already; say so for other tools
                     let vt = roof.vertical_thickness();
@@ -906,6 +914,10 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             P::Roof(_) => ("IFCROOFTYPE", ",.NOTDEFINED."),
             P::Column(_) => ("IFCCOLUMNTYPE", ",.COLUMN."),
             P::Beam(_) => ("IFCBEAMTYPE", ",.BEAM."),
+            P::Footing(f) => match f.kind {
+                creabim_core::FootingKind::Strip => ("IFCFOOTINGTYPE", ",.STRIP_FOOTING."),
+                creabim_core::FootingKind::Pad => ("IFCFOOTINGTYPE", ",.PAD_FOOTING."),
+            },
             P::Object(_) => unreachable!("object types are written above"),
         };
         let tr = c.w.add(class, format!("{head}{tail}"));
@@ -1294,6 +1306,10 @@ fn member_entity(k: &ElementKind) -> (&'static str, &'static str) {
         ),
         ElementKind::Stair(s) if s.landing.is_some() => ("IFCSTAIR", ",$,.QUARTER_TURN_STAIR."),
         ElementKind::Stair(_) => ("IFCSTAIR", ",$,.STRAIGHT_RUN_STAIR."),
+        ElementKind::Footing(f) => match f.kind {
+            creabim_core::FootingKind::Strip => ("IFCFOOTING", ",$,.STRIP_FOOTING."),
+            creabim_core::FootingKind::Pad => ("IFCFOOTING", ",$,.PAD_FOOTING."),
+        },
         _ => ("IFCRAILING", ",$,.GUARDRAIL."),
     }
 }

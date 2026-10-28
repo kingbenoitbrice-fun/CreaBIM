@@ -284,7 +284,8 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             | ElementKind::Beam(_)
             | ElementKind::Roof(_)
             | ElementKind::Stair(_)
-            | ElementKind::Railing(_) => match crate::members::member_mesh(model, e) {
+            | ElementKind::Railing(_)
+            | ElementKind::Footing(_) => match crate::members::member_mesh(model, e) {
                 Some(m) => m,
                 None => continue,
             },
