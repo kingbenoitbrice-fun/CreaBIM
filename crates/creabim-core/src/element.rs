@@ -116,6 +116,11 @@ impl Element {
             ElementKind::Sketch(s) => s.level.into_iter().collect(),
             // a footing goes with the wall or column it is under
             ElementKind::Footing(f) => std::iter::once(f.level).chain(f.host).collect(),
+            ElementKind::Room(r) => vec![r.level],
+            ElementKind::RoomSeparator(s) => vec![s.level],
+            // a ceiling's room is soft: without it the ceiling has no
+            // outline to show until it is given one
+            ElementKind::Ceiling(c) => vec![c.level],
             ElementKind::Cut(c) => vec![c.target, c.cutter],
             ElementKind::Guide(g) => g.level.into_iter().collect(),
             ElementKind::Railing(r) => std::iter::once(r.level)
@@ -164,6 +169,9 @@ impl Element {
             ElementKind::Stair(_) => "IfcStair",
             ElementKind::Railing(_) => "IfcRailing",
             ElementKind::Footing(_) => "IfcFooting",
+            ElementKind::Room(_) => "IfcSpace",
+            ElementKind::RoomSeparator(_) => "IfcVirtualElement",
+            ElementKind::Ceiling(_) => "IfcCovering",
         }
     }
 
@@ -312,6 +320,9 @@ impl Element {
             ElementKind::Shaft(s) => s.validate(),
             ElementKind::Object(o) => o.validate(),
             ElementKind::Footing(f) => f.validate(),
+            ElementKind::Room(r) => r.validate(),
+            ElementKind::RoomSeparator(s) => s.validate(),
+            ElementKind::Ceiling(c) => c.validate(),
             ElementKind::Sketch(s) => s.check(),
             ElementKind::Cut(c) => {
                 if c.target == c.cutter {
@@ -379,6 +390,13 @@ pub enum ElementKind {
     Object(crate::objects::Object),
     /// A strip footing under a wall or a pad footing under a column.
     Footing(crate::footing::Footing),
+    /// A room (IfcSpace): the space the walls close off round a point, or
+    /// an outline drawn for it.
+    Room(crate::room::Room),
+    /// A line that closes rooms off where there is no wall.
+    RoomSeparator(crate::room::Separator),
+    /// A ceiling (IfcCovering CEILING) over a room or an outline.
+    Ceiling(crate::room::Ceiling),
 }
 
 impl ElementKind {
@@ -416,6 +434,9 @@ impl ElementKind {
             ElementKind::Shaft(_) => "Shaft",
             ElementKind::Object(_) => "Object",
             ElementKind::Footing(_) => "Footing",
+            ElementKind::Room(_) => "Room",
+            ElementKind::RoomSeparator(_) => "RoomSeparator",
+            ElementKind::Ceiling(_) => "Ceiling",
         }
     }
 }
