@@ -237,7 +237,8 @@ pub fn copy_to_levels(
     targets: &[ElementId],
 ) -> (Transaction, Vec<ElementId>) {
     let set = movable(model, ids);
-    let originals: Vec<Element> = set.iter().filter_map(|i| model.get(*i).cloned()).collect();
+    let mut originals: Vec<Element> = set.iter().filter_map(|i| model.get(*i).cloned()).collect();
+    hosts_first(&mut originals);
     let n = targets
         .iter()
         .filter(|t| model.level(**t).is_some())
@@ -311,13 +312,26 @@ pub fn move_to_level(model: &Model, ids: &[ElementId], to: ElementId) -> Transac
 /// `copies` (fresh, not in the model yet) set on level `to` from wherever
 /// they were: paste aligned to a level.
 pub fn paste_onto(model: &Model, copies: Vec<Element>, to: ElementId) -> Vec<Element> {
-    copies
+    let mut out: Vec<Element> = copies
         .into_iter()
         .map(|c| match base_level(&c.kind) {
             Some(from) if from != to => rebase(model, &c, from, to),
             _ => c,
         })
-        .collect()
+        .collect();
+    hosts_first(&mut out);
+    out
+}
+
+/// Order elements to insert so each comes after what it is in or under:
+/// walls and columns before their doors, windows and footings, and both
+/// before the booleans that cut them.
+fn hosts_first(v: &mut [Element]) {
+    v.sort_by_key(|e| match e.kind {
+        ElementKind::Opening(_) | ElementKind::Footing(_) => 1,
+        ElementKind::Cut(_) => 2,
+        _ => 0,
+    });
 }
 
 /// A new level, and with `plan` a floor plan of it.
@@ -644,6 +658,44 @@ mod tests {
             .filter(|e| f(&e.kind) && base_level(&e.kind) == Some(level))
             .map(|e| e.id)
             .collect()
+    }
+
+    #[test]
+    fn a_whole_typed_floor_copies_up_with_its_slab_shaft_and_tags() {
+        let mut doc = Document::from_model(crate::sample::typed_house());
+        let f = named(doc.model(), "First Floor");
+        let (tx, l2, _) = add(doc.model(), "Level 2", 6.0, 3.0, true);
+        doc.commit(tx).unwrap();
+        let (tx, l3, _) = add(doc.model(), "Level 3", 9.0, 3.0, true);
+        doc.commit(tx).unwrap();
+        let (tx, l4, _) = add(doc.model(), "Level 4", 12.0, 3.0, true);
+        doc.commit(tx).unwrap();
+        // everything a box round the first floor plan picks
+        let mut all: Vec<ElementId> = doc
+            .model()
+            .iter()
+            .filter(|e| {
+                base_level(&e.kind) == Some(f)
+                    || matches!(
+                        &e.kind,
+                        ElementKind::Opening(_)
+                            | ElementKind::Tag(_)
+                            | ElementKind::Shaft(_)
+                            | ElementKind::Grid(_)
+                    )
+            })
+            .map(|e| e.id)
+            .collect();
+        // windows first, as a box round the plan may list them
+        all.sort_by_key(|id| {
+            !matches!(
+                doc.model().get(*id).map(|e| &e.kind),
+                Some(ElementKind::Opening(_))
+            )
+        });
+        let (tx, ids) = copy_to_levels(doc.model(), &all, &[l2, l3, l4]);
+        assert!(!ids.is_empty());
+        doc.commit(tx).unwrap();
     }
 
     #[test]

@@ -444,6 +444,42 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_typed_floor_copies_to_new_levels() {
+        let mut app = CreaBimApp::blank(None);
+        let ctx = egui::Context::default();
+        app.run_action(&ctx, "new.typed");
+        for _ in 0..3 {
+            app.run_action(&ctx, "level.add");
+        }
+        let f = level(&app, "First Floor");
+        let model = app.doc.model();
+        // all a box round the first floor plan can take
+        let mut pick: Vec<ElementId> = vec![];
+        for it in creabim_geom::plan_view(model, f, 1.2).items {
+            if crate::planview::box_selectable(&app.doc, it.id()) && !pick.contains(&it.id()) {
+                pick.push(it.id());
+            }
+        }
+        for e in model.iter() {
+            if matches!(e.kind, ElementKind::Tag(_)) {
+                pick.push(e.id);
+            }
+        }
+        let targets: Vec<ElementId> = ["Level 2", "Level 3", "Level 4"]
+            .iter()
+            .map(|n| level(&app, n))
+            .collect();
+        app.selection.clear();
+        app.selection.extend(pick, false);
+        app.copy_to_levels(&targets);
+        assert!(app.status.starts_with("Copied"), "{}", app.status);
+        // walls, windows, slab and shaft on each level
+        for l in &targets {
+            assert_eq!(walls_on(&app, *l).len(), 4);
+        }
+    }
+
+    #[test]
     fn footings_go_under_the_selected_walls_and_columns() {
         let mut app = app();
         let ctx = egui::Context::default();
