@@ -1338,7 +1338,8 @@ fn spaces(
             "IFCSHAPEREPRESENTATION",
             format!("{},'Axis','Curve2D',({line})", c.axis),
         );
-        let shape = c.w.add("IFCPRODUCTDEFINITIONSHAPE", format!("$,$,({axis})"));
+        let shape =
+            c.w.add("IFCPRODUCTDEFINITIONSHAPE", format!("$,$,({axis})"));
         let r = product(c, "IFCVIRTUALELEMENT", e, pl, shape, ",$");
         separators.insert(e.id, r);
         contained.entry(s.level).or_default().push(r);

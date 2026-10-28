@@ -405,7 +405,7 @@ pub(crate) fn room_props(r: &creabim_core::Room) -> Vec<(&'static str, Prop)> {
     let mut out = vec![
         ("PointX", Prop::Length(r.at.x)),
         ("PointY", Prop::Length(r.at.y)),
-        ("Drawn", Prop::Bool(r.is_drawn())),
+        ("Drawn", Prop::Count(r.is_drawn() as i64)),
     ];
     if let Some(h) = r.height {
         out.push(("Height", Prop::Length(h)));
@@ -417,7 +417,10 @@ pub(crate) fn room_props(r: &creabim_core::Room) -> Vec<(&'static str, Prop)> {
 }
 
 /// A ceiling's own values: the room it follows and its tile grid.
-pub(crate) fn ceiling_props(c: &creabim_core::Ceiling, room: Option<String>) -> Vec<(&'static str, Prop)> {
+pub(crate) fn ceiling_props(
+    c: &creabim_core::Ceiling,
+    room: Option<String>,
+) -> Vec<(&'static str, Prop)> {
     let mut out = vec![("Height", Prop::Length(c.height))];
     if c.grid > 0.0 {
         out.push(("Grid", Prop::Length(c.grid)));
@@ -431,7 +434,9 @@ pub(crate) fn ceiling_props(c: &creabim_core::Ceiling, room: Option<String>) -> 
 /// A room's point, whether it was drawn, its own height and department,
 /// read back.
 pub(crate) fn room_from(p: &Props) -> (Option<glam::DVec2>, bool, Option<f64>, String) {
-    let at = len(p, "PointX").zip(len(p, "PointY")).map(|(x, y)| glam::DVec2::new(x, y));
+    let at = len(p, "PointX")
+        .zip(len(p, "PointY"))
+        .map(|(x, y)| glam::DVec2::new(x, y));
     let drawn = p.get("Drawn").and_then(|v| v.0).is_none_or(|v| v != 0.0);
     let height = len(p, "Height").filter(|h| *h > 0.0);
     let department = label(p, "Department").unwrap_or("").to_string();

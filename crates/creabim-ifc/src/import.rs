@@ -21,6 +21,7 @@ use glam::{DMat4, DVec2, DVec3};
 use std::collections::{HashMap, HashSet};
 
 mod objects;
+mod spaces;
 
 /// A model read from a file, with what could not be brought across.
 #[derive(Debug)]
@@ -315,6 +316,7 @@ impl<'a> Importer<'a> {
         for &id in self.ids("IFCFOOTING") {
             self.import_footing(id);
         }
+        self.import_spaces();
         let mut rest: Vec<u64> = self
             .f
             .entities
@@ -357,12 +359,6 @@ impl<'a> Importer<'a> {
                 creabim_core::AssemblyUse::Wall
             };
             self.layer_set(set, usage);
-        }
-        let spaces = self.ids("IFCSPACE").len();
-        if spaces > 0 {
-            self.g.warnings.add(format!(
-                "{spaces} spaces were not imported (CreaBIM has no rooms yet)"
-            ));
         }
         self.out = [
             std::mem::take(&mut self.material_elems),
