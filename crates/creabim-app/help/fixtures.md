@@ -2,7 +2,7 @@
 
 Building services fixtures are [objects](furniture) like furniture: you pick them in the Catalogue window and place them with the Object tool. Each one has a 3D shape, the plan symbol services drawings use for it, a usual mounting height and its IFC class. Pipes, ducts and cables between them are not modelled yet.
 
-To see a full set, open *File › New furnished sample house*.
+To see a full set, open the [starter house](starter-house), or *File › New furnished sample house*.
 
 ## What there is
 

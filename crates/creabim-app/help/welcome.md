@@ -15,6 +15,7 @@ If a word here is new, the page [BIM words explained](glossary) has short defini
 
 ## Where to start
 
+- [The starter house](starter-house) is the project CreaBIM opens on: what is in it and things to try.
 - [Getting started: a first house](start) walks you through a small project, one step at a time.
 - [The window at a glance](interface) names the parts of the screen.
 - [Moving around the views](navigate) shows how to orbit, pan and zoom.

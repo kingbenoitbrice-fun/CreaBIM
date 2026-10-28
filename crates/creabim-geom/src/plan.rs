@@ -748,6 +748,23 @@ pub fn sketch_items(
     out
 }
 
+/// Does the plan of `level`, cut `cut_height` above it, pass through
+/// footing `f`? A foundation level under the ground floor shows the
+/// footings its plane cuts, whatever level their walls stand on.
+fn footing_cut_at(
+    model: &Model,
+    f: &creabim_core::Footing,
+    level: ElementId,
+    cut_height: f64,
+) -> bool {
+    let Some(l) = model.level(level) else {
+        return false;
+    };
+    let z = l.elevation + cut_height;
+    let top = f.top(model);
+    top - f.thickness < z && z < top
+}
+
 pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
     let mut items = Vec::new();
     let joins = creabim_core::wall_joins(model);
@@ -946,6 +963,17 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                     pen: Pen::Cut,
                     points: c.outline(),
                 });
+            }
+            // a footing under a wall or column of a level above, which this
+            // plan's plane cuts through: the plan of a foundation level
+            ElementKind::Footing(f) if footing_cut_at(model, f, level, cut_height) => {
+                for piece in creabim_core::footing::outlines(model, e, None) {
+                    items.push(PlanItem::Polygon {
+                        id: e.id,
+                        pen: Pen::Cut,
+                        points: piece,
+                    });
+                }
             }
             ElementKind::Shaft(sh) => {
                 // on every plan it passes through, crossed, to pick it by:
@@ -1423,5 +1451,40 @@ fn section_marker(
             at: mid - look * 0.6,
             text: tag,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cut_footings(model: &Model, level: &str, cut: f64) -> usize {
+        let level = model
+            .iter()
+            .find(|e| e.name == level && matches!(e.kind, ElementKind::Level(_)))
+            .unwrap()
+            .id;
+        let footings: std::collections::HashSet<ElementId> = plan_view(model, level, cut)
+            .items
+            .iter()
+            .map(|it| it.id())
+            .filter(|id| {
+                matches!(
+                    model.get(*id).map(|e| &e.kind),
+                    Some(ElementKind::Footing(_))
+                )
+            })
+            .collect();
+        footings.len()
+    }
+
+    #[test]
+    fn a_foundation_level_plan_cuts_the_footings_under_the_floor_above() {
+        let m = creabim_core::starter::starter_house();
+        // 0.25 above the foundation level is 0.55 below the ground floor:
+        // inside every footing (top -0.35, 0.45 deep)
+        assert_eq!(cut_footings(&m, "Foundation", 0.25), 16);
+        // a cut above their tops passes none of them
+        assert_eq!(cut_footings(&m, "Foundation", 0.6), 0);
     }
 }

@@ -2,9 +2,25 @@
 
 CreaBIM is an open-source, BIM-native architectural modeler: one model for freeform concept design and permit drawings, with Blender-style modeling, live 2D views and native IFC.
 
-![CreaBIM showing the sample house in 3D beside its generated ground-floor plan](docs/screenshot.png)
+![CreaBIM with the starter house's garden side in 3D beside its ground-floor plan](docs/screenshot.png)
 
-**Status: Phase 1 in progress (everyday editing: multiple selection, copy and paste, sketch constraints).** It proves the core architecture end to end. It is not yet a tool for real projects.
+**Status: Phase 1 in progress.** The core architecture works end to end, from modelling to permit sheets and IFC. It is not yet a tool for real projects.
+
+## The starter house
+
+CreaBIM opens on the **Maple Lane House**, a contemporary two-storey family house with a kitchen wing, built to show what the program does and to be taken apart:
+
+- three levels (foundation, ground and first floor) and a structural grid;
+- layered walls in render and timber cladding, joined at every corner and tee, with typed doors and windows (some flipped), a curtain wall that cuts its host and a plain wall opening;
+- floors with a riser hole and a stair shaft, an L-shaped stair with railings, a slate gable roof, a green flat roof and a zinc canopy;
+- a steel column rising through both floors, terrace posts, steel beams, and concrete strip and pad footings;
+- more than a hundred catalogue pieces of furniture and services fixtures;
+- room names and areas, tags on every door and window, chains of dimensions;
+- eleven sheets with a filled-in title block: cover, ground, first floor, foundation and roof plans, two sections, four elevations, schedules and 3D views.
+
+![The ground-floor plan sheet of the starter house](docs/screenshot-sheet.png)
+
+*File → New starter house* brings it back; *File → New simple sample house* opens the smaller house the tests use. The [Help](crates/creabim-app/help/starter-house.md) has a tour of it.
 
 ## What works today
 
@@ -14,10 +30,11 @@ CreaBIM is an open-source, BIM-native architectural modeler: one model for freef
 - **Sheets with live views:** place plans, sections, elevations and 3D views on A0 to A4 sheets with a title block. Views on a sheet are generated from the current model, so they never go stale. Drag a view to move it; double-click it to work on the model right there, with the same tools as the view itself (orbit a 3D view by dragging). *File → Export sheets as PDF* writes every sheet as a vector PDF page.
 - **Clean joins and materials:** wall corners are mitred and walls meeting another wall's side are trimmed to its face, in 3D, plans, sections and IFC. Walls cut through the slabs that sit in them. Each material has its own hatch pattern and colour, used for cut faces, shaded views and 3D, and exported to IFC.
 - **Dimensions and tags:** draw dimensions that snap to wall corners, openings and levels. They stay attached, so moving a door updates its dimensions. Tag doors and windows with their marks (D01, W01) and walls with their material and thickness, one at a time or all at once.
-- **Schedules:** door, window, wall and slab schedules are views too. Edit sizes and materials right in the table, place them on sheets and export them as CSV.
+- **Schedules:** door, window, wall, slab, structure, furniture and fixture schedules are views too. Edit sizes and materials right in the table, place them on sheets and export them as CSV.
 - **Shaded and cropped views:** 3D views and elevations can be shaded in material colours, on screen, on sheets and in the PDF. Crop any view on a sheet by dragging its crop frame.
 - **Sections and elevations generated from the model:** cut walls, slabs and openings are drawn heavy; what lies beyond is projected with hidden lines removed. Level datums are labelled. Section and elevation marks appear in plans. Draw new ones with the *Section* and *Elevation* tools, in plans or inside another section, and drag a selected section line by its ends or middle. Walls, doors, windows, slabs and masses can be drawn in sections and elevations too. Progress screenshots are in [docs/evolution](docs/evolution).
-- **BIM elements:** levels, grids, walls, slabs, doors and windows. Doors and windows are hosted by walls and cut real openings.
+- **BIM elements:** levels, grids, walls, curtain walls, slabs, roofs, stairs, railings, shafts, columns, beams and footings. Doors, windows and openings are hosted by walls and cut real openings. Walls, slabs and roofs can be layered assemblies, and most elements can share types.
+- **Furniture and fixtures:** a catalogue of furniture and electrical, plumbing and HVAC fixtures, each with a 3D shape, a plan symbol and its IFC class, listed in their own schedules.
 - **Freeform meshes:** add a mass, click a face in 3D and extrude (E), taper, move or subdivide it (Catmull-Clark). Give any mesh an IFC class such as `IfcRoof` and it exports as that.
 - **Modifier stack:** give a mass array, mirror, solidify and subdivision modifiers. They change its shape without touching its mesh, so you can turn them off, reorder them or change their values at any time, and apply the top one to make it permanent. Faces stay clickable through the modifiers.
 - **Sketches on workplanes:** the Sketch tool draws lines on any face in 3D, on a level in a plan, or on the section plane in a section, with lines, arcs (A) and circles (C). Length, equal, parallel, perpendicular, horizontal, vertical, coincident and radius constraints drive its shape. A closed sketch extrudes (E) into a mass; an open one into a surface that Solidify thickens.
@@ -50,7 +67,8 @@ On Linux the app also needs a Vulkan or GL driver and `libxkbcommon-x11` at runt
 ### Command line
 
 ```sh
-cargo run -p creabim-cli -- sample house.creabim.json            # write the sample house
+cargo run -p creabim-cli -- sample house.creabim.json            # write the starter house
+cargo run -p creabim-cli -- sample-simple simple.creabim.json    # write the simple sample house
 cargo run -p creabim-cli -- save-db house.creabim.json house.creabim  # convert to a SQLite project file
 # every command that reads a model accepts a .creabim or a .creabim.json file
 cargo run -p creabim-cli -- ifc house.creabim.json house.ifc     # export IFC4
@@ -62,7 +80,7 @@ cargo run -p creabim-cli -- fcstd house.creabim house.FCStd      # FreeCAD docum
 cargo run -p creabim-cli -- link house.creabim garden.blend out.creabim  # bring in a .blend or .FCStd
 cargo run -p creabim-cli -- plan house.creabim.json "Ground Floor" gf.svg
 cargo run -p creabim-cli -- views house.creabim.json             # list plans, sections, elevations
-cargo run -p creabim-cli -- view house.creabim.json "Section A" a.svg
+cargo run -p creabim-cli -- view house.creabim.json "Section A-A" a.svg
 cargo run -p creabim-cli -- sheets house.creabim.json            # list sheets
 cargo run -p creabim-cli -- pdf house.creabim.json house.pdf      # every sheet, one PDF
 cargo run -p creabim-cli -- schedule house.creabim.json windows w.csv  # doors, windows, walls or slabs
@@ -96,7 +114,7 @@ python3 tools/validate_ifc.py house.ifc                          # needs: pip in
 | Undo, redo | Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y |
 | Delete | Delete key (also removes doors, windows, tags and dimensions attached to it) |
 
-Files: *File → Save/Open* use the path in the toolbar (`.creabim.json`). *Export IFC4* and *Export view as SVG* write next to it.
+Files: *File → Save* and *Open* use the system file picker and keep a list of recent files. *File → IFC4 (.ifc)*, *Sheets as PDF* and the other exports write next to the project file.
 
 ## How it is built
 
@@ -109,7 +127,7 @@ Files: *File → Save/Open* use the path in the toolbar (`.creabim.json`). *Expo
 | `creabim-app` | Desktop app: egui UI, wgpu 3D viewport rendered offscreen so any number of live views can exist. |
 | `creabim-cli` | Command-line export tools. |
 
-Next steps follow the roadmap's Phase 1 plan: a SQLite project file with IFC import, then a Windows installer.
+Next steps follow the roadmap's Phase 1 plan, towards a Windows installer.
 
 ## License
 

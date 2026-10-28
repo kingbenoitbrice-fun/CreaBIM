@@ -3,7 +3,7 @@
 //! Every command that reads a project takes either a `.creabim` database or
 //! a legacy `.creabim.json` file, chosen by extension.
 
-use creabim_core::{sample::sample_house, Document, Model};
+use creabim_core::{sample::sample_house, starter::starter_house, Document, Model};
 use creabim_geom::sheet::{sheet_svg, sheets, sheets_pdf, SheetInfo};
 use creabim_ifc::{export_ifc4, export_ifcx, import_ifc, import_ifcx, ExportOptions, ImportResult};
 use std::process::ExitCode;
@@ -11,7 +11,9 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 usage: (<model> is a .creabim project or a legacy .creabim.json file)
   creabim sample <out.creabim|out.creabim.json>
-                                       write the sample house model
+                                       write the starter house, with its sheets
+  creabim sample-simple <out.creabim.json>
+                                       the simple box house the tests use
   creabim sample-layered <out.creabim.json>
                                        the sample house built of layered assemblies
   creabim sample-typed <out.creabim.json>
@@ -57,6 +59,9 @@ fn main() -> ExitCode {
         .as_slice()
     {
         ["sample", out] if is_json(out) => {
+            std::fs::write(out, starter_house().to_json()).map_err(|e| e.to_string())
+        }
+        ["sample-simple", out] if is_json(out) => {
             std::fs::write(out, sample_house().to_json()).map_err(|e| e.to_string())
         }
         ["sample-layered", out] if is_json(out) => {
@@ -126,7 +131,7 @@ fn main() -> ExitCode {
                 }
                 Ok(())
             }),
-        ["sample", out] => creabim_store::save(out, &Document::from_model(sample_house()))
+        ["sample", out] => creabim_store::save(out, &Document::from_model(starter_house()))
             .map_err(|e| format!("{out}: {e}")),
         ["save-db", input, out] => creabim_store::import_json(input)
             .map_err(|e| format!("{input}: {e}"))

@@ -205,7 +205,8 @@ impl CreaBimApp {
         app.shell.theme = theme;
         app.vis3d.categories = settings.hidden_3d.clone();
         app.shell.settings = settings;
-        app.load_model(sample_house());
+        app.load_model(creabim_core::starter::starter_house());
+        app.status = STARTER_LOADED.into();
         app
     }
 
@@ -5423,6 +5424,9 @@ fn view_style_combo(ui: &mut egui::Ui, salt: &str, style: &mut ViewStyle) -> boo
     });
     changed
 }
+
+/// What the status bar says when the starter house opens.
+pub(crate) const STARTER_LOADED: &str = "Loaded the starter house. Orbit with left drag, pan with right drag, zoom with the wheel; the Sheets group has its drawings.";
 
 /// The app round the sample house, for tests.
 #[cfg(test)]

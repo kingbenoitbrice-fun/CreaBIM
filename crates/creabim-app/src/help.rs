@@ -36,6 +36,7 @@ macro_rules! img {
 /// The pages in their order, by section: (section, id, text).
 pub const PAGES: &[(&str, &str, &str)] = &[
     page!("Getting started", "welcome"),
+    page!("Getting started", "starter-house"),
     page!("Getting started", "start"),
     page!("Getting started", "start-project"),
     page!("Getting started", "start-levels"),
