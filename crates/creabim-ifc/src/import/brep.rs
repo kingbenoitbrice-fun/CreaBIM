@@ -186,6 +186,168 @@ pub(crate) fn wall_of_mesh(
     })
 }
 
+/// Walls along a polyline axis of several straight runs, as FreeCAD writes
+/// a wall drawn round a room (often as one extrusion per layer): one wall
+/// per run, sharing the corners, if the body is a band of one thickness
+/// along the axis between a level bottom and top. An open axis whose body
+/// closes the loop is closed.
+pub(crate) fn walls_along(mesh: &EditMesh, axis: &[DVec2]) -> Result<Vec<WallShape>, String> {
+    let m = welded(mesh)?;
+    let (lo, hi) = bounds(m.vertices.iter().copied()).ok_or("has no corners")?;
+    let (z0, z1) = (lo.z, hi.z);
+    let between = m
+        .vertices
+        .iter()
+        .filter(|v| (v.z - z0).abs() > TOL && (v.z - z1).abs() > TOL)
+        .count();
+    if between > 0 {
+        return Err(format!(
+            "is not an upright prism: {between} of its corners lie between its top and bottom"
+        ));
+    }
+    let mut pts: Vec<DVec2> = vec![];
+    for p in axis {
+        if pts.last().is_none_or(|q: &DVec2| q.distance(*p) > 1e-3) {
+            pts.push(*p);
+        }
+    }
+    let closed = pts.len() > 3 && pts[0].distance(pts[pts.len() - 1]) < 1e-3;
+    if closed {
+        pts.pop();
+    }
+    let pts = if closed { remove_collinear(&pts) } else { pts };
+    let mut why = String::new();
+    for close in [closed, true] {
+        match band_walls(&m, &pts, close, z0, z1) {
+            Ok(w) => return Ok(w),
+            Err(e) if why.is_empty() => why = e,
+            Err(_) => {}
+        }
+        if closed {
+            break;
+        }
+    }
+    Err(why)
+}
+
+fn band_walls(
+    m: &EditMesh,
+    pts: &[DVec2],
+    closed: bool,
+    z0: f64,
+    z1: f64,
+) -> Result<Vec<WallShape>, String> {
+    let n = pts.len();
+    let segs: Vec<(DVec2, DVec2)> = (0..if closed { n } else { n - 1 })
+        .map(|i| (pts[i], pts[(i + 1) % n]))
+        .collect();
+    let frame = |(a, b): (DVec2, DVec2)| {
+        let d = (b - a).normalize_or_zero();
+        (a, d, d.perp(), a.distance(b))
+    };
+    // the band across the longest run, away from its ends
+    let longest = *segs
+        .iter()
+        .max_by(|x, y| x.0.distance(x.1).total_cmp(&y.0.distance(y.1)))
+        .ok_or("has no axis")?;
+    let (a, d, nn, len) = frame(longest);
+    // from the edges along it that pass its middle (an extrusion has
+    // corners only at its ends)
+    let (mut smin, mut smax) = (f64::INFINITY, f64::NEG_INFINITY);
+    for f in &m.faces {
+        for i in 0..f.len() {
+            let (p, q) = (
+                m.vertices[f[i] as usize].truncate() - a,
+                m.vertices[f[(i + 1) % f.len()] as usize].truncate() - a,
+            );
+            let (sp, sq) = (p.dot(nn), q.dot(nn));
+            let (up, uq) = (p.dot(d), q.dot(d));
+            if (sp - sq).abs() < 1e-4
+                && sp.abs() < 0.8
+                && up.min(uq) < 0.75 * len
+                && up.max(uq) > 0.25 * len
+            {
+                (smin, smax) = (smin.min(sp), smax.max(sp));
+            }
+        }
+    }
+    let t = smax - smin;
+    if !(t > 2e-3) {
+        return Err("has no band of material along its axis".into());
+    }
+    let reach = smin.abs().max(smax.abs()) + 2e-3;
+    let stray = m
+        .vertices
+        .iter()
+        .filter(|v| {
+            !segs.iter().any(|&sg| {
+                let (a, d, nn, len) = frame(sg);
+                let p = v.truncate() - a;
+                let (u, s) = (p.dot(d), p.dot(nn));
+                u > -reach && u < len + reach && s > smin - 2e-3 && s < smax + 2e-3
+            })
+        })
+        .count();
+    if stray > 0 {
+        return Err(format!(
+            "is not one thickness along its axis: {stray} of its corners lie outside a {:.0} mm band",
+            t * 1000.0
+        ));
+    }
+    // each run's centreline, meeting its neighbours where the lines cross
+    let c = (smin + smax) / 2.0;
+    let lines: Vec<(DVec2, DVec2)> = segs
+        .iter()
+        .map(|&sg| {
+            let (a, d, nn, _) = frame(sg);
+            (a + nn * c, d)
+        })
+        .collect();
+    let meet = |i: usize, j: usize| -> Option<DVec2> {
+        let ((p, d), (q, e)) = (lines[i], lines[j]);
+        let den = d.perp_dot(e);
+        (den.abs() > 1e-9).then(|| p + d * ((q - p).perp_dot(e) / den))
+    };
+    let k = segs.len();
+    let mut out = vec![];
+    let mut volume = 0.0;
+    for i in 0..k {
+        let (a, b) = segs[i];
+        let (_, _, nn, _) = frame(segs[i]);
+        let start = if closed || i > 0 {
+            meet((i + k - 1) % k, i).unwrap_or(a + nn * c)
+        } else {
+            a + nn * c
+        };
+        let end = if closed || i + 1 < k {
+            meet(i, (i + 1) % k).unwrap_or(b + nn * c)
+        } else {
+            b + nn * c
+        };
+        if start.distance(end) < 1e-3 {
+            continue;
+        }
+        volume += start.distance(end) * t * (z1 - z0);
+        out.push(WallShape {
+            start,
+            end,
+            thickness: t,
+            z0,
+            z1,
+            voids: vec![],
+        });
+    }
+    // the corners overlap or miss by up to a square of the thickness each
+    let v = m.volume().abs();
+    let slack = 0.02 * volume + k as f64 * t * t * (z1 - z0);
+    if (v - volume).abs() > slack {
+        return Err(format!(
+            "has a volume of {v:.3} m³ where walls along its axis hold {volume:.3} m³"
+        ));
+    }
+    Ok(out)
+}
+
 /// The rectangular holes in a wall's face, given as polygons in (along,
 /// up) coordinates: the face is cut into cells on its corners' lines, and
 /// the cells no polygon covers make up the holes.
@@ -372,7 +534,7 @@ pub(crate) fn slab_of_mesh(mesh: &EditMesh) -> Result<SlabShape, String> {
 /// A beam in a mesh: a straight bar lying level, with a rectangular
 /// section, as its start, end, width and depth, and its top height.
 pub(crate) fn beam_of_mesh(mesh: &EditMesh) -> Result<(DVec2, DVec2, f64, f64, f64), String> {
-    let w = wall_of_mesh(mesh, None)?;
+    let w = wall_of_mesh(mesh, None).map_err(|e| e.replace("straight wall", "straight beam"))?;
     if !w.voids.is_empty() {
         return Err("has holes through it".into());
     }

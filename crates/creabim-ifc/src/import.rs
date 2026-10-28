@@ -253,7 +253,9 @@ struct Importer<'a> {
     /// Imported assemblies, by the IfcMaterialLayerSet they came from.
     layer_sets: HashMap<u64, ElementId>,
     assembly_elems: Vec<Element>,
-    walls: HashMap<u64, HostWall>,
+    /// The native walls each IFC wall became (several for a wall along a
+    /// polyline axis).
+    walls: HashMap<u64, Vec<HostWall>>,
     /// Holes cut through native walls' bodies, by wall, and whether a
     /// door, window or opening of the file fills each.
     wall_voids: HashMap<ElementId, Vec<(brep::Void, bool)>>,
@@ -574,17 +576,14 @@ impl<'a> Importer<'a> {
         w.material = material;
         w.curtain = Some(grid);
         let eid = self.new_id(e);
-        self.walls.insert(
-            id,
-            HostWall {
-                id: eid,
-                start: w.start,
-                end: w.end,
-                thickness: w.thickness,
-                base_z: z,
-                top_z: z + height,
-            },
-        );
+        self.walls.entry(id).or_default().push(HostWall {
+            id: eid,
+            start: w.start,
+            end: w.end,
+            thickness: w.thickness,
+            base_z: z,
+            top_z: z + height,
+        });
         self.wall_elems.push(Element {
             source: None,
             of_type: self.type_ref(id),
@@ -639,7 +638,7 @@ impl<'a> Importer<'a> {
             let Some(o) = self.f.get(oid) else { continue };
             let world = self.g.placement(o.arg(5));
             let mesh = self.g.product_mesh(o, &world);
-            if let Some(wall) = self.walls.get(&host).copied() {
+            if let Some(wall) = self.host_wall(host, &mesh) {
                 let Some(r) = opening_in_wall(&wall, &mesh, None) else {
                     self.note(oid, GROUP, "could not be measured in its wall");
                     continue;
@@ -1323,7 +1322,11 @@ impl<'a> Importer<'a> {
             return self.import_free_mesh(id);
         }
         let world = self.g.placement(e.arg(5));
-        let (w, voids) = match self.native_wall(id, e, &world) {
+        let walls = match self.multi_wall(id, e, &world) {
+            Some(walls) => walls,
+            None => self.native_wall(id, e, &world).map(|w| vec![w]),
+        };
+        let walls = match walls {
             Ok(w) => w,
             Err(why) => {
                 let kind = self.body_kind(e);
@@ -1334,6 +1337,25 @@ impl<'a> Importer<'a> {
             }
         };
         self.done.insert(id);
+        let parts = walls.len();
+        for (i, (w, voids)) in walls.into_iter().enumerate() {
+            let part = (parts > 1).then_some(i);
+            self.push_wall(id, e, &world, w, voids, part);
+        }
+    }
+
+    /// One native wall of an IFC wall; `part` numbers the runs of a wall
+    /// along a polyline axis, all but the first under new ids.
+    fn push_wall(
+        &mut self,
+        id: u64,
+        e: &'a Entity,
+        world: &DMat4,
+        w: Wall,
+        voids: Vec<brep::Void>,
+        part: Option<usize>,
+    ) {
+        let world = *world;
         let lid = w.level;
         let level_elev = self.levels.iter().find(|l| l.1 == lid).map_or(0.0, |l| l.0);
         let layered = self.assembly_for(id, creabim_core::AssemblyUse::Wall);
@@ -1345,7 +1367,12 @@ impl<'a> Importer<'a> {
             positive == (y.dot(left) < 0.0)
         });
         // an axis on a face is that face's location line
-        let location = self.axis(e, &world).map_or(LocationLine::Centre, |(a, _)| {
+        let axis = if part.is_some() {
+            None
+        } else {
+            self.axis(e, &world)
+        };
+        let location = axis.map_or(LocationLine::Centre, |(a, _)| {
             let off = (a - w.start).dot((w.end - w.start).normalize_or_zero().perp());
             let t = w.thickness / 2.0;
             let ext = if flip { t } else { -t };
@@ -1361,18 +1388,18 @@ impl<'a> Importer<'a> {
             Some((a, _)) => self.core_material(a),
             None => self.material_for(id),
         };
-        let eid = self.new_id(e);
-        self.walls.insert(
-            id,
-            HostWall {
-                id: eid,
-                start: w.start,
-                end: w.end,
-                thickness: w.thickness,
-                base_z: level_elev + w.base_offset,
-                top_z: level_elev + w.base_offset + w.height,
-            },
-        );
+        let eid = match part {
+            Some(i) if i > 0 => ElementId::new(),
+            _ => self.new_id(e),
+        };
+        self.walls.entry(id).or_default().push(HostWall {
+            id: eid,
+            start: w.start,
+            end: w.end,
+            thickness: w.thickness,
+            base_z: level_elev + w.base_offset,
+            top_z: level_elev + w.base_offset + w.height,
+        });
         if !voids.is_empty() {
             self.wall_voids
                 .insert(eid, voids.into_iter().map(|v| (v, false)).collect());
@@ -1381,7 +1408,10 @@ impl<'a> Importer<'a> {
             source: None,
             of_type: self.type_ref(id),
             id: eid,
-            name: Self::name(e, "Wall"),
+            name: match part {
+                Some(i) => format!("{} {}", Self::name(e, "Wall"), i + 1),
+                None => Self::name(e, "Wall"),
+            },
             kind: ElementKind::Wall(Wall {
                 material,
                 assembly: layered.map(|l| l.0),
@@ -1390,6 +1420,50 @@ impl<'a> Importer<'a> {
                 ..w
             }),
         });
+    }
+
+    /// Native walls along a wall's axis when it is a polyline of several
+    /// runs; `None` for a straight axis or none.
+    fn multi_wall(
+        &mut self,
+        id: u64,
+        e: &Entity,
+        world: &DMat4,
+    ) -> Option<Result<Vec<(Wall, Vec<brep::Void>)>, String>> {
+        let pts = self.axis_polyline(e, world)?;
+        if pts.len() < 3 || remove_collinear(&pts).len() < 3 {
+            return None;
+        }
+        let mesh = self.g.product_mesh(e, world);
+        let shapes = match brep::walls_along(&mesh, &pts) {
+            Ok(s) => s,
+            Err(why) => return Some(Err(why)),
+        };
+        let walls = shapes
+            .into_iter()
+            .map(|w| {
+                let (lid, elev) = self.level_for(id, w.z0);
+                let mut wall = Wall::new(lid, w.start, w.end, w.thickness, w.z1 - w.z0);
+                wall.base_offset = w.z0 - elev;
+                (wall, w.voids)
+            })
+            .collect();
+        Some(Ok(walls))
+    }
+
+    /// The points of a wall's axis in world plan coordinates.
+    fn axis_polyline(&mut self, e: &Entity, world: &DMat4) -> Option<Vec<DVec2>> {
+        let rep = self
+            .g
+            .reps(e)
+            .into_iter()
+            .find(|r| r.identifier.eq_ignore_ascii_case("Axis"))?;
+        let pts = self.g.curve(&Value::Ref(*rep.items.first()?))?;
+        Some(
+            pts.iter()
+                .map(|p| world.transform_point3(*p).truncate())
+                .collect(),
+        )
     }
 
     /// A native wall for an IFC wall, with the holes already cut through
@@ -1579,7 +1653,7 @@ impl<'a> Importer<'a> {
             .collect();
         walls.sort_by_key(|w| w.0);
         for (wid, voids) in walls {
-            let Some(host) = self.walls.values().find(|h| h.id == wid).copied() else {
+            let Some(host) = self.walls.values().flatten().find(|h| h.id == wid).copied() else {
                 continue;
             };
             let name = self
@@ -1611,27 +1685,17 @@ impl<'a> Importer<'a> {
     /// opening relationship: the nearest whose thickness and height hold
     /// the body's centre.
     fn wall_around(&self, mesh: &EditMesh) -> Option<HostWall> {
-        let (lo, hi) = bounds(mesh.vertices.iter().copied())?;
-        let c = (lo + hi) / 2.0;
-        let across = |w: &HostWall| {
-            let d = (w.end - w.start).normalize_or_zero();
-            (c.truncate() - w.start).perp_dot(d).abs()
-        };
-        let mut walls: Vec<&HostWall> = self.walls.values().collect();
+        let mut walls: Vec<&HostWall> = self.walls.values().flatten().collect();
         walls.sort_by_key(|w| w.id);
-        walls
-            .into_iter()
-            .filter(|w| {
-                let d = (w.end - w.start).normalize_or_zero();
-                let u = (c.truncate() - w.start).dot(d);
-                across(w) <= w.thickness / 2.0 + 0.05
-                    && u >= 0.0
-                    && u <= w.start.distance(w.end)
-                    && c.z >= w.base_z - 0.01
-                    && c.z <= w.top_z + 0.01
-            })
-            .min_by(|a, b| across(a).total_cmp(&across(b)))
-            .copied()
+        nearest_wall(walls, mesh, 0.05)
+    }
+
+    /// Which of the native walls an IFC wall became an opening's body is in.
+    fn host_wall(&self, host: u64, mesh: &EditMesh) -> Option<HostWall> {
+        match self.walls.get(&host)?.as_slice() {
+            [w] => Some(*w),
+            walls => nearest_wall(walls.iter().collect(), mesh, 0.5),
+        }
     }
 
     fn import_filling(&mut self, id: u64) {
@@ -1648,17 +1712,18 @@ impl<'a> Importer<'a> {
         let opening = self.fills.get(&id).copied();
         let host = opening.and_then(|o| self.voids.get(&o)).copied();
         let mut why = None;
-        let filled = match host.map(|h| (h, self.walls.get(&h).copied())) {
+        // the hole is what the wall sees, so measure the opening element
+        let mut mesh = opening
+            .and_then(|o| self.f.get(o))
+            .map_or_else(EditMesh::default, |o| {
+                let ow = self.g.placement(o.arg(5));
+                self.g.product_mesh(o, &ow)
+            });
+        if mesh.faces.is_empty() {
+            mesh = self.g.product_mesh(e, &world);
+        }
+        let filled = match host.map(|h| (h, self.host_wall(h, &mesh))) {
             Some((_, Some(wall))) => {
-                // the hole is what the wall sees, so measure the opening element
-                let o = opening.and_then(|o| self.f.get(o));
-                let mut mesh = o.map_or_else(EditMesh::default, |o| {
-                    let ow = self.g.placement(o.arg(5));
-                    self.g.product_mesh(o, &ow)
-                });
-                if mesh.faces.is_empty() {
-                    mesh = self.g.product_mesh(e, &world);
-                }
                 let r = opening_in_wall(&wall, &mesh, None);
                 if r.is_none() {
                     why = Some("could not be measured in its wall".to_string());
@@ -1699,7 +1764,7 @@ impl<'a> Importer<'a> {
             let wall_ifc = self
                 .walls
                 .iter()
-                .find(|(_, w)| w.id == wall.id)
+                .find(|(_, w)| w.iter().any(|w| w.id == wall.id))
                 .map(|(i, _)| *i);
             let host = wall_ifc.map_or_else(|| "a wall".into(), |w| self.label(w));
             self.note(
@@ -1882,6 +1947,30 @@ impl<'a> Importer<'a> {
         merge_coplanar(&mut out);
         *mesh = out;
     }
+}
+
+/// The wall nearest a body's centre whose thickness (give or take `slack`)
+/// and height hold it.
+fn nearest_wall(walls: Vec<&HostWall>, mesh: &EditMesh, slack: f64) -> Option<HostWall> {
+    let (lo, hi) = bounds(mesh.vertices.iter().copied())?;
+    let c = (lo + hi) / 2.0;
+    let across = |w: &HostWall| {
+        let d = (w.end - w.start).normalize_or_zero();
+        (c.truncate() - w.start).perp_dot(d).abs()
+    };
+    walls
+        .into_iter()
+        .filter(|w| {
+            let d = (w.end - w.start).normalize_or_zero();
+            let u = (c.truncate() - w.start).dot(d);
+            across(w) <= w.thickness / 2.0 + slack
+                && u >= 0.0
+                && u <= w.start.distance(w.end)
+                && c.z >= w.base_z - 0.01
+                && c.z <= w.top_z + 0.01
+        })
+        .min_by(|a, b| across(a).total_cmp(&across(b)))
+        .copied()
 }
 
 /// The volume a set of outward polygons encloses.
