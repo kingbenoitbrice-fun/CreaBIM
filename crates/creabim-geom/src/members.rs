@@ -35,6 +35,14 @@ pub fn member_mesh(model: &Model, e: &Element) -> Option<(TriMesh, [f32; 3])> {
             railing_mesh(&r.path_in(model), r.height, r.post_spacing),
             [0.32, 0.34, 0.38],
         ),
+        ElementKind::Footing(f) => {
+            let top = f.top(model);
+            let mut m = TriMesh::default();
+            for piece in creabim_core::footing::outlines(model, e, None) {
+                m.append(&slab_mesh(&piece, top, f.thickness));
+            }
+            (m, [0.66, 0.66, 0.64])
+        }
         _ => return None,
     })
 }
@@ -327,6 +335,28 @@ pub fn member_plan(model: &Model, e: &Element, cut: f64) -> Vec<PlanItem> {
             }
         }
         ElementKind::Stair(s) => stair_plan(&mut items, e, s, s.rise(model), cut - s.base_offset),
+        ElementKind::Footing(f) => {
+            // below the floor, as usual: dashed; cut when the plan plane
+            // passes through it
+            let top = f.top(model);
+            let z = members::elevation(model, f.plan_level(model)) + cut;
+            for piece in creabim_core::footing::outlines(model, e, None) {
+                if top - f.thickness < z && z < top {
+                    items.push(PlanItem::Polygon {
+                        id: e.id,
+                        pen: Pen::Cut,
+                        points: piece,
+                    });
+                } else {
+                    let pen = if top <= z {
+                        Pen::Hidden
+                    } else {
+                        Pen::Projection
+                    };
+                    ring(&mut items, e, pen, &piece);
+                }
+            }
+        }
         ElementKind::Railing(r) => {
             let path = r.path_in(model);
             for w in path.windows(2) {

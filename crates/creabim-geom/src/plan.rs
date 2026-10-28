@@ -766,6 +766,7 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
             ElementKind::Wall(w) => w.level == level,
             ElementKind::Slab(s) => s.level == level,
             ElementKind::FreeMesh(f) => f.level == Some(level),
+            ElementKind::Footing(f) => f.plan_level(model) == level,
             k => creabim_core::members::level_of(k) == Some(level),
         };
         if on_level && (targets.contains(&e.id) || matches!(e.kind, ElementKind::FreeMesh(_))) {
@@ -937,6 +938,14 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
             }
             k if on_level && creabim_core::members::is_member(k) => {
                 items.extend(crate::members::member_plan(model, e, cut_height));
+            }
+            // a column standing on a level below, running up through this one
+            ElementKind::Column(c) if c.crosses(model, level, cut_height) => {
+                items.push(PlanItem::Polygon {
+                    id: e.id,
+                    pen: Pen::Cut,
+                    points: c.outline(),
+                });
             }
             ElementKind::Shaft(sh) => {
                 // on every plan it passes through, crossed, to pick it by:

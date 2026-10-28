@@ -312,6 +312,9 @@ impl<'a> Importer<'a> {
         }
         self.import_bare_openings();
         self.import_objects();
+        for &id in self.ids("IFCFOOTING") {
+            self.import_footing(id);
+        }
         let mut rest: Vec<u64> = self
             .f
             .entities
@@ -464,6 +467,7 @@ impl<'a> Importer<'a> {
                 P::Door(o) | P::Window(o) => o.material = material,
                 P::Column(c) => c.material = material,
                 P::Beam(b) => b.material = material,
+                P::Footing(f) => f.material = material,
                 // object types are read by read_object_types
                 P::Object(_) => continue,
             }
@@ -544,6 +548,30 @@ impl<'a> Importer<'a> {
             id: eid,
             name: Self::name(e, "Curtain wall"),
             kind: ElementKind::Wall(w),
+        });
+    }
+
+    /// A footing CreaBIM wrote: its values from its property set, its
+    /// level from its storey. Others are left to the general import.
+    fn import_footing(&mut self, id: u64) {
+        let props = self.props(id, crate::params::FOOTING_PSET);
+        let Some(e) = self.f.get(id) else { return };
+        let (level, _) = self.level_for(id, 0.0);
+        let Some((mut f, host)) = crate::params::footing_from(&props, level) else {
+            return;
+        };
+        // the wall or column it is under keeps its id from its GlobalId
+        f.host = host.as_deref().and_then(ElementId::from_ifc_guid);
+        f.material = self.material_for(id);
+        self.done.insert(id);
+        let eid = self.new_id(e);
+        let name = Self::name(e, f.kind.label());
+        self.opening_elems.push(Element {
+            source: None,
+            of_type: self.type_ref(id),
+            id: eid,
+            name,
+            kind: ElementKind::Footing(f),
         });
     }
 

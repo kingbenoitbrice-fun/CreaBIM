@@ -1004,6 +1004,7 @@ impl Builder {
                     // hosted elements go after their hosts
                     ElementKind::Opening(_) => self.openings.push(e),
                     ElementKind::Railing(r) if r.stair.is_some() => self.openings.push(e),
+                    ElementKind::Footing(f) if f.host.is_some() => self.openings.push(e),
                     // groups first, so their lines find them
                     ElementKind::GridGroup(_) => self.grids.insert(0, e),
                     ElementKind::Grid(_) => self.grids.push(e),

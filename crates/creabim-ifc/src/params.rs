@@ -5,22 +5,26 @@
 
 use crate::step::{real, string};
 use creabim_core::curtain::{CurtainGrid, GridRule, PanelKind};
+use creabim_core::types::FootingType;
 use creabim_core::types::{
     BeamType, ColumnType, ElementType, OpeningType, SlabType, TypeCategory, TypeParams, WallType,
 };
-use creabim_core::{LocationLine, OpeningFrame, Profile};
+use creabim_core::{Footing, FootingKind, LocationLine, OpeningFrame, Profile};
 use std::collections::HashMap;
 
 /// The property set a type's parameters go in.
 pub(crate) const TYPE_PSET: &str = "CreaBIM_TypeParameters";
 /// The property set a curtain wall's grid goes in.
 pub(crate) const CURTAIN_PSET: &str = "CreaBIM_CurtainWall";
+/// The property set a footing's own values go in.
+pub(crate) const FOOTING_PSET: &str = "CreaBIM_Footing";
 
 /// One property value.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Prop {
     Length(f64),
     Count(i64),
+    Real(f64),
     Label(String),
 }
 
@@ -30,6 +34,7 @@ impl Prop {
         match self {
             Prop::Length(v) => format!("IFCLENGTHMEASURE({})", real(*v)),
             Prop::Count(n) => format!("IFCINTEGER({n})"),
+            Prop::Real(v) => format!("IFCREAL({})", real(*v)),
             Prop::Label(s) => format!("IFCLABEL({})", string(s)),
         }
     }
@@ -168,6 +173,14 @@ pub(crate) fn type_props(t: &ElementType) -> Vec<(&'static str, Prop)> {
             out.push(("Width", Prop::Length(b.width)));
             out.push(("Depth", Prop::Length(b.depth)));
         }
+        TypeParams::Footing(f) => {
+            out.push(("Kind", Prop::Label(kind_label(f.kind).into())));
+            out.push(("Width", Prop::Length(f.width)));
+            if f.kind == FootingKind::Pad {
+                out.push(("Length", Prop::Length(f.length)));
+            }
+            out.push(("Thickness", Prop::Length(f.thickness)));
+        }
         TypeParams::Object(o) => {
             let s = o.size();
             out.push(("Width", Prop::Length(s.x)));
@@ -198,6 +211,7 @@ pub(crate) fn category_of(class: &str) -> Option<(TypeCategory, bool)> {
         "IFCROOFTYPE" => (TypeCategory::Roof, false),
         "IFCCOLUMNTYPE" => (TypeCategory::Column, false),
         "IFCBEAMTYPE" => (TypeCategory::Beam, false),
+        "IFCFOOTINGTYPE" => (TypeCategory::Footing, false),
         _ => return None,
     })
 }
@@ -285,6 +299,19 @@ pub(crate) fn type_from(category: TypeCategory, curtain: bool, p: &Props) -> Typ
             depth: l("Depth", 0.4),
             material: None,
         }),
+        TypeCategory::Footing => {
+            let kind = kind_from(p);
+            TypeParams::Footing(FootingType {
+                kind,
+                width: l("Width", 0.6),
+                length: match kind {
+                    FootingKind::Pad => l("Length", 1.2),
+                    FootingKind::Strip => 0.0,
+                },
+                thickness: l("Thickness", 0.3),
+                material: None,
+            })
+        }
         // the shape comes from the type's representation maps
         TypeCategory::Object => TypeParams::Object(creabim_core::ObjectType {
             category: label(p, "Category")
@@ -313,6 +340,7 @@ mod tests {
                 let r = match v {
                     Prop::Length(x) => (Some(*x), None),
                     Prop::Count(n) => (Some(*n as f64), None),
+                    Prop::Real(x) => (Some(*x), None),
                     Prop::Label(s) => (None, Some(s.clone())),
                 };
                 (k.to_string(), r)
@@ -345,4 +373,70 @@ mod tests {
             assert_eq!(back, want, "{}", e.name);
         }
     }
+}
+
+fn kind_label(k: FootingKind) -> &'static str {
+    match k {
+        FootingKind::Strip => "Strip",
+        FootingKind::Pad => "Pad",
+    }
+}
+
+fn kind_from(p: &Props) -> FootingKind {
+    match label(p, "Kind") {
+        Some(s) if s.eq_ignore_ascii_case("pad") => FootingKind::Pad,
+        _ => FootingKind::Strip,
+    }
+}
+
+/// A footing's own values, as built: its line or centre in plan, its
+/// size, how far below its level (or its host's base) it sits, and the
+/// GlobalId of the wall or column it is under.
+pub(crate) fn footing_props(f: &Footing, host: Option<String>) -> Vec<(&'static str, Prop)> {
+    let mut out = vec![
+        ("Kind", Prop::Label(kind_label(f.kind).into())),
+        ("Width", Prop::Length(f.width)),
+        ("Thickness", Prop::Length(f.thickness)),
+        ("Below", Prop::Length(f.below)),
+        ("StartX", Prop::Length(f.start.x)),
+        ("StartY", Prop::Length(f.start.y)),
+    ];
+    match f.kind {
+        FootingKind::Strip => {
+            out.push(("EndX", Prop::Length(f.end.x)));
+            out.push(("EndY", Prop::Length(f.end.y)));
+        }
+        FootingKind::Pad => {
+            out.push(("Length", Prop::Length(f.length)));
+            out.push(("Rotation", Prop::Real(f.rotation)));
+        }
+    }
+    if let Some(h) = host {
+        out.push(("Host", Prop::Label(h)));
+    }
+    out
+}
+
+/// A footing read back from its properties, on `level` (none when the
+/// properties aren't there), with its host's GlobalId.
+pub(crate) fn footing_from(
+    p: &Props,
+    level: creabim_core::ElementId,
+) -> Option<(Footing, Option<String>)> {
+    let (width, thickness) = (len(p, "Width")?, len(p, "Thickness")?);
+    let at = |x: &str, y: &str| Some(glam::DVec2::new(len(p, x)?, len(p, y)?));
+    let start = at("StartX", "StartY")?;
+    let mut f = match kind_from(p) {
+        FootingKind::Strip => Footing::strip(level, start, at("EndX", "EndY")?),
+        FootingKind::Pad => {
+            let mut f = Footing::pad(level, start);
+            f.length = len(p, "Length")?;
+            f.rotation = p.get("Rotation").and_then(|v| v.0).unwrap_or(0.0);
+            f
+        }
+    };
+    f.width = width;
+    f.thickness = thickness;
+    f.below = p.get("Below").and_then(|v| v.0).unwrap_or(0.0);
+    Some((f, label(p, "Host").map(str::to_string)))
 }
