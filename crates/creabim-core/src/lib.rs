@@ -7,6 +7,7 @@
 pub mod annotation;
 pub mod assembly;
 pub mod catalogue;
+pub mod checks;
 pub mod constraint;
 pub mod cropbox;
 pub mod csg;

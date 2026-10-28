@@ -3391,6 +3391,23 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
             let fill = crate::annotate::color32(c).gamma_multiply_u8(a);
             fill_polygon(painter, xf, points, fill);
         }
+        // a room shows only in its view's colours, and when it is selected
+        PlanItem::Room { points, rgb, .. } => {
+            if let Some(rgb) = rgb {
+                let a = (paper::TINT_ALPHA * 255.0) as u8;
+                let fill = crate::annotate::color32(*rgb).gamma_multiply_u8(a);
+                fill_polygon(painter, xf, points, fill);
+            }
+            if selected {
+                let wash = Color32::from_rgb(250, 178, 115).gamma_multiply(0.25);
+                fill_polygon(painter, xf, points, wash);
+                let pts: Vec<Pos2> = points.iter().map(|p| xf.to_screen(*p)).collect();
+                painter.add(egui::Shape::closed_line(
+                    pts,
+                    Stroke::new(1.5, Color32::from_rgb(230, 120, 40)),
+                ));
+            }
+        }
         PlanItem::Image {
             raster,
             lo,
@@ -3475,6 +3492,11 @@ pub fn draw_hover(painter: &egui::Painter, xf: &Xf, items: &[PlanItem], id: Elem
         match it {
             PlanItem::Fill { points, .. } | PlanItem::Tint { points, .. } => {
                 fill_polygon(painter, xf, points, wash);
+            }
+            PlanItem::Room { points, .. } => {
+                fill_polygon(painter, xf, points, wash);
+                let pts: Vec<Pos2> = points.iter().map(|p| xf.to_screen(*p)).collect();
+                painter.add(egui::Shape::closed_line(pts, line));
             }
             PlanItem::Polygon { points, .. } => {
                 let pts: Vec<Pos2> = points.iter().map(|p| xf.to_screen(*p)).collect();
@@ -4271,6 +4293,14 @@ pub fn hit_all(items: &[PlanItem], p: DVec2, tol: f64, mm: f64) -> Vec<ElementId
                 }
             }
             _ => {}
+        }
+    }
+    // rooms last: a click inside one that finds nothing else picks it
+    for it in items.iter().rev() {
+        if let PlanItem::Room { id, points, .. } = it {
+            if point_in_polygon(p, points) {
+                found(*id);
+            }
         }
     }
     out

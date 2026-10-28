@@ -709,6 +709,7 @@ pub fn material_slot(e: &Element) -> Option<Option<ElementId>> {
         ElementKind::Slab(s) => Some(s.material),
         ElementKind::FreeMesh(m) => Some(m.material),
         ElementKind::Opening(o) => Some(o.material),
+        ElementKind::Ceiling(c) => Some(c.material),
         k if crate::members::is_member(k) => Some(crate::members::material(k)),
         _ => None,
     }
@@ -721,6 +722,7 @@ pub fn set_material(e: &mut Element, material: Option<ElementId>) -> bool {
         ElementKind::Slab(s) => s.material = material,
         ElementKind::FreeMesh(m) => m.material = material,
         ElementKind::Opening(o) => o.material = material,
+        ElementKind::Ceiling(c) => c.material = material,
         k => match crate::members::material_mut(k) {
             Some(m) => *m = material,
             None => return false,

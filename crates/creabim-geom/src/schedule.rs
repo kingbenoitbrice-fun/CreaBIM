@@ -331,6 +331,65 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
                 ],
             )
         }
+        ScheduleCategory::Rooms => {
+            let columns = vec![
+                col("Number", None, 16.0, false),
+                col("Name", Some(Field::Name), 34.0, false),
+                col("Level", None, 28.0, false),
+                col("Area", None, 20.0, true),
+                col("Perimeter", None, 20.0, true),
+                col("Height", None, 18.0, true),
+                col("Floor finish", None, 34.0, false),
+                col("Occupancy", None, 26.0, false),
+            ];
+            let mut total = 0.0;
+            for e in model.iter() {
+                let ElementKind::Room(r) = &e.kind else {
+                    continue;
+                };
+                let shape = creabim_core::room::shape(model, e.id);
+                let (a, p) = shape
+                    .as_ref()
+                    .map_or((0.0, 0.0), |s| (creabim_core::room::net_area(model, r, s), s.perimeter()));
+                total += a;
+                let dash = |s: &str| if s.is_empty() { "-".to_string() } else { s.to_string() };
+                rows.push((
+                    model.level(r.level).map_or(0.0, |l| l.elevation),
+                    r.number.clone(),
+                    Row {
+                        id: e.id,
+                        group: false,
+                        cells: vec![
+                            r.number.clone(),
+                            e.name.clone(),
+                            name(r.level),
+                            if shape.is_some() {
+                                area(a)
+                            } else {
+                                "Not enclosed".into()
+                            },
+                            mm(p),
+                            mm(creabim_core::room::height(model, r)),
+                            dash(&r.floor_finish),
+                            dash(&r.occupancy),
+                        ],
+                    },
+                ));
+            }
+            (
+                columns,
+                vec![
+                    format!("{} rooms", rows.len()),
+                    String::new(),
+                    String::new(),
+                    area(total),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ],
+            )
+        }
         ScheduleCategory::Structure => {
             let columns = vec![
                 col("Name", Some(Field::Name), 30.0, false),
@@ -445,6 +504,9 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
         }
         rows = grouped;
     }
+    if category == ScheduleCategory::Rooms {
+        rows = with_level_totals(model, rows);
+    }
     // feet and inches take more room than millimetres
     if units.is_imperial() {
         for c in columns.iter_mut().filter(|c| c.numeric) {
@@ -459,6 +521,41 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
         totals,
         listed,
     }
+}
+
+/// Rooms under a heading for each level, which gives the level's room
+/// count and its rooms' area added up (in the area column).
+fn with_level_totals(model: &Model, rows: Vec<Row>) -> Vec<Row> {
+    let level = |r: &Row| match model.get(r.id).map(|e| &e.kind) {
+        Some(ElementKind::Room(room)) => room.level,
+        _ => ElementId::NIL,
+    };
+    let mut out = Vec::with_capacity(rows.len() + 4);
+    for group in rows.chunk_by(|a, b| level(a) == level(b)) {
+        let l = level(&group[0]);
+        let total: f64 = group
+            .iter()
+            .filter_map(|r| match model.get(r.id).map(|e| &e.kind) {
+                Some(ElementKind::Room(room)) => creabim_core::room::shape(model, r.id)
+                    .map(|s| creabim_core::room::net_area(model, room, &s)),
+                _ => None,
+            })
+            .sum();
+        let mut cells = vec![String::new(); group[0].cells.len()];
+        let level_name = model.get(l).map_or("No level".into(), |e| e.name.clone());
+        let n = group.len();
+        cells[0] = format!("{level_name} ({n} {})", if n == 1 { "room" } else { "rooms" });
+        if let Some(c) = cells.get_mut(3) {
+            *c = model.units().area(total);
+        }
+        out.push(Row {
+            id: l,
+            cells,
+            group: true,
+        });
+        out.extend(group.iter().cloned());
+    }
+    out
 }
 
 /// Is a placed object listed in the furniture schedule, rather than the

@@ -227,6 +227,14 @@ pub fn centre(model: &Model, id: ElementId) -> Option<DVec3> {
             let (lo, hi) = pts.fold((first, first), |(lo, hi), v| (lo.min(v), hi.max(v)));
             (lo + hi) / 2.0
         }
+        // a room: its point on its floor
+        ElementKind::Room(r) => r.at.extend(elevation(r.level)),
+        // a ceiling: the middle of its outline, on its underside
+        ElementKind::Ceiling(c) => {
+            let o = c.outline(model)?;
+            let middle = o.iter().copied().sum::<DVec2>() / o.len().max(1) as f64;
+            middle.extend(c.span(model).0)
+        }
         // columns, beams, roofs, stairs and railings: the middle of their shape
         k if creabim_core::members::is_member(k) => {
             let (mesh, _) = crate::members::member_mesh(model, e)?;
@@ -291,7 +299,53 @@ pub fn tag_text(model: &Model, id: ElementId) -> (String, bool) {
             },
             false,
         ),
+        ElementKind::Room(_) => (room_tag_text(model, id), false),
+        // a ceiling: its height above the floor, as reflected ceiling plans write it
+        ElementKind::Ceiling(c) => (format!("CLG +{}", units.dimension(c.height)), false),
         _ => (e.name.clone(), false),
+    }
+}
+
+/// What a room's tag reads: its name in capitals, then its number and its
+/// area (or that the walls don't close it off).
+pub fn room_tag_text(model: &Model, id: ElementId) -> String {
+    let Some(e) = model.get(id) else {
+        return String::new();
+    };
+    let ElementKind::Room(r) = &e.kind else {
+        return e.name.clone();
+    };
+    let area = match creabim_core::room::shape_of(model, r) {
+        Some(s) => model
+            .units()
+            .area(creabim_core::room::net_area(model, r, &s)),
+        None => "Not enclosed".into(),
+    };
+    let second = if r.number.is_empty() {
+        area
+    } else {
+        format!("{}  {area}", r.number)
+    };
+    format!("{}\n{second}", e.name.to_uppercase())
+}
+
+/// A room's tag as drawing text: its lines stacked and centred on `at`.
+pub fn room_tag_item(id: ElementId, text: String, at: DVec2, look: TextLook, mm: f64) -> PlanItem {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let width = lines.iter().map(|l| look.width(l)).fold(0.0, f64::max) * mm;
+    let step = look.size * 1.5 * mm;
+    let start = at + DVec2::new(-width / 2.0, step * (lines.len() - 1) as f64 / 2.0);
+    PlanItem::Annotation {
+        id,
+        item: Box::new(Annotation {
+            shape: Shape::Note {
+                at: start,
+                leader: None,
+            },
+            text,
+            look,
+            mm,
+        }),
     }
 }
 
@@ -443,6 +497,17 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
                     continue;
                 };
                 let anchor = project.project(c);
+                // a room's tag is its name, number and area, without a bubble
+                if matches!(model.get(t.host).map(|h| &h.kind), Some(ElementKind::Room(_))) {
+                    out.push(room_tag_item(
+                        e.id,
+                        room_tag_text(model, t.host),
+                        anchor + t.offset,
+                        look_of(model, t.style, t.color),
+                        view.scale / 1000.0,
+                    ));
+                    continue;
+                }
                 let (text, round) = tag_text(model, t.host);
                 out.push(PlanItem::Tag {
                     id: e.id,

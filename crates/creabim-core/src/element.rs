@@ -1275,6 +1275,15 @@ pub struct View {
     /// inside a wall or a slab.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden_in_colour: bool,
+    /// Wash each room in a colour of its own (by its department, else its
+    /// name): a colour-fill plan, or rooms shaded in a section.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub room_colours: bool,
+    /// A plan seen looking up from the cut (a reflected ceiling plan): the
+    /// ceilings over the level and what hangs from them, with walls cut but
+    /// without the furniture and floors below.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ceiling_plan: bool,
 }
 
 /// What a plan shows faintly under its own level (Revit's underlay).
@@ -1359,10 +1368,12 @@ pub enum ScheduleCategory {
     /// lighting, plumbing, heating and ventilation), counted by type and
     /// level.
     Fixtures,
+    /// Rooms, with their areas totalled for each level.
+    Rooms,
 }
 
 impl ScheduleCategory {
-    pub const ALL: [ScheduleCategory; 7] = [
+    pub const ALL: [ScheduleCategory; 8] = [
         ScheduleCategory::Doors,
         ScheduleCategory::Windows,
         ScheduleCategory::Walls,
@@ -1370,6 +1381,7 @@ impl ScheduleCategory {
         ScheduleCategory::Structure,
         ScheduleCategory::Furniture,
         ScheduleCategory::Fixtures,
+        ScheduleCategory::Rooms,
     ];
 
     /// The name of a new schedule of it: "Door Schedule".
@@ -1382,6 +1394,7 @@ impl ScheduleCategory {
             ScheduleCategory::Structure => "Column and beam",
             ScheduleCategory::Furniture => "Furniture",
             ScheduleCategory::Fixtures => "Fixture",
+            ScheduleCategory::Rooms => "Room",
         };
         format!("{one} Schedule")
     }
@@ -1403,6 +1416,7 @@ impl ScheduleCategory {
             ScheduleCategory::Structure => "Columns and beams",
             ScheduleCategory::Furniture => "Furniture",
             ScheduleCategory::Fixtures => "Fixtures",
+            ScheduleCategory::Rooms => "Rooms",
         }
     }
 }
@@ -1449,6 +1463,8 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            room_colours: false,
+            ceiling_plan: false,
         }
     }
 
@@ -1467,6 +1483,8 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            room_colours: false,
+            ceiling_plan: false,
         }
     }
 }
@@ -1482,6 +1500,8 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            room_colours: false,
+            ceiling_plan: false,
         }
     }
 
@@ -1498,6 +1518,8 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            room_colours: false,
+            ceiling_plan: false,
         }
     }
 

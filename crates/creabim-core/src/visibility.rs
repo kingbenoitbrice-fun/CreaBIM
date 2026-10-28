@@ -38,6 +38,9 @@ pub enum Category {
     Objects,
     /// Strip and pad footings.
     Footings,
+    /// Rooms (their colours and picking areas) and room separators.
+    Rooms,
+    Ceilings,
     /// A category from a newer CreaBIM, kept so older versions still read
     /// the file.
     #[serde(other)]
@@ -45,7 +48,7 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 21] = [
+    pub const ALL: [Category; 23] = [
         Category::Walls,
         Category::Slabs,
         Category::Doors,
@@ -67,6 +70,8 @@ impl Category {
         Category::Railings,
         Category::Objects,
         Category::Footings,
+        Category::Rooms,
+        Category::Ceilings,
     ];
 
     pub fn label(self) -> &'static str {
@@ -92,6 +97,8 @@ impl Category {
             Category::Railings => "Railings",
             Category::Objects => "Furniture and fixtures",
             Category::Footings => "Footings",
+            Category::Rooms => "Rooms and room separators",
+            Category::Ceilings => "Ceilings",
             Category::Other => "Other",
         }
     }
@@ -127,6 +134,8 @@ impl Category {
             ElementKind::Railing(_) => Category::Railings,
             ElementKind::Object(_) => Category::Objects,
             ElementKind::Footing(_) => Category::Footings,
+            ElementKind::Room(_) | ElementKind::RoomSeparator(_) => Category::Rooms,
+            ElementKind::Ceiling(_) => Category::Ceilings,
             _ => return None,
         })
     }
@@ -251,6 +260,8 @@ pub fn without(model: &Model, hidden: &HashSet<ElementId>) -> Model {
                     | ElementKind::Sheet(_)
                     | ElementKind::Viewport(_)
                     | ElementKind::Material(_)
+                    // ceilings over a hidden room still take its outline
+                    | ElementKind::Room(_)
             ) && !keep_cutters.contains(&e.id)
         })
         .map(|e| e.id)

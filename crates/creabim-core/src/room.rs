@@ -123,6 +123,14 @@ pub struct Ceiling {
     pub thickness: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<ElementId>,
+    /// The tile size of a suspended ceiling's grid, drawn in ceiling
+    /// plans; 0 for a plain (plastered) one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub grid: f64,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 /// The height new ceilings hang at, and their thickness.
@@ -139,6 +147,7 @@ impl Ceiling {
             height,
             thickness: CEILING_THICKNESS,
             material: None,
+            grid: 0.0,
         }
     }
 
@@ -154,6 +163,7 @@ impl Ceiling {
             height,
             thickness: CEILING_THICKNESS,
             material: None,
+            grid: 0.0,
         }
     }
 
@@ -166,6 +176,9 @@ impl Ceiling {
         }
         if !self.height.is_finite() {
             return Err("a ceiling's height must be a number".into());
+        }
+        if !(self.grid.is_finite() && (self.grid == 0.0 || self.grid >= 0.1)) {
+            return Err("a ceiling's grid must be 0 (none) or at least 100 mm".into());
         }
         if self.boundary.iter().any(|p| !p.is_finite()) {
             return Err("a ceiling's outline must be finite".into());
@@ -323,9 +336,35 @@ pub fn outline(model: &Model, room: ElementId) -> Option<Vec<DVec2>> {
     shape(model, room).map(|s| s.outline)
 }
 
-/// A room's floor area, 0 when it is not enclosed.
+/// A room's floor area, 0 when it is not enclosed: inside its outline,
+/// less the shafts (a stair well, a lift) that open its floor to the
+/// storey below.
 pub fn area(model: &Model, room: ElementId) -> f64 {
-    shape(model, room).map_or(0.0, |s| s.area())
+    match model.get(room).map(|e| &e.kind) {
+        Some(ElementKind::Room(r)) => shape_of(model, r).map_or(0.0, |s| net_area(model, r, &s)),
+        _ => 0.0,
+    }
+}
+
+/// The floor area of `r`, shaped `s`, less the shafts through its floor.
+pub fn net_area(model: &Model, r: &Room, s: &RoomShape) -> f64 {
+    let floor = model.level(r.level).map_or(0.0, |l| l.elevation);
+    let voids: f64 = model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Shaft(sh) => {
+                let (z0, z1) = sh.span(model);
+                let n = sh.boundary.len().max(1) as f64;
+                let middle = sh.boundary.iter().copied().sum::<DVec2>() / n;
+                (z0 < floor - 1e-6
+                    && z1 >= floor - 1e-6
+                    && crate::polygon::contains(&s.outline, middle))
+                .then(|| crate::polygon::signed_area2(&sh.boundary).abs() / 2.0)
+            }
+            _ => None,
+        })
+        .sum();
+    (s.area() - voids).max(0.0)
 }
 
 /// How tall a room is: its own height, else up to the underside of the

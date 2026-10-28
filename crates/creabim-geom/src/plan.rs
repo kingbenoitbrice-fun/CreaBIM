@@ -548,6 +548,14 @@ pub enum PlanItem {
         points: Vec<DVec2>,
         rgb: [f32; 3],
     },
+    /// A room's floor: washed in `rgb` when the view colours its rooms,
+    /// otherwise not drawn; picked by a click inside it that finds nothing
+    /// else.
+    Room {
+        id: ElementId,
+        points: Vec<DVec2>,
+        rgb: Option<[f32; 3]>,
+    },
     /// Shaded surfaces as an image spanning `lo`..`hi`, drawn only inside `clip`.
     Image {
         id: ElementId,
@@ -583,6 +591,7 @@ impl PlanItem {
             | PlanItem::Tag { id, .. }
             | PlanItem::Annotation { id, .. }
             | PlanItem::Tint { id, .. }
+            | PlanItem::Room { id, .. }
             | PlanItem::Image { id, .. } => *id,
         }
     }
@@ -594,7 +603,8 @@ impl PlanItem {
         match self {
             PlanItem::Polygon { points, .. }
             | PlanItem::Fill { points, .. }
-            | PlanItem::Tint { points, .. } => pts.extend(points.iter().copied()),
+            | PlanItem::Tint { points, .. }
+            | PlanItem::Room { points, .. } => pts.extend(points.iter().copied()),
             PlanItem::Line {
                 pen: Pen::Guide, ..
             } => {}

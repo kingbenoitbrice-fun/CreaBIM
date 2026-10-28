@@ -190,10 +190,16 @@ pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
                     canvas.line(&[to(a), to(b)], HATCH);
                 }
             }
-            PlanItem::Tint { points, rgb, .. } => {
+            PlanItem::Tint { points, rgb, .. }
+            | PlanItem::Room {
+                points,
+                rgb: Some(rgb),
+                ..
+            } => {
                 let pts: Vec<DVec2> = points.iter().map(|p| to(*p)).collect();
                 canvas.tint(&pts, *rgb);
             }
+            PlanItem::Room { rgb: None, .. } => {}
             PlanItem::Polygon { pen, points, .. } => {
                 let pts: Vec<DVec2> = points.iter().map(|p| to(*p)).collect();
                 if *pen == Pen::Cut {
