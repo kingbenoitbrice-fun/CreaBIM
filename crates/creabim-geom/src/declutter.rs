@@ -254,7 +254,7 @@ fn obstacles(items: &[PlanItem], mm: f64) -> Vec<(DVec2, DVec2, f64, usize)> {
 /// How far a label may move to find a clear spot, paper mm.
 const REACH: f64 = 14.0;
 /// A label moved further than this, paper mm, gets a leader back.
-const LEADER_PAST: f64 = 6.0;
+const LEADER_PAST: f64 = 9.0;
 
 /// Move labels, notes and tags off lines and each other. `mm` is drawing
 /// units per paper mm. Grid and section bubbles and dimension text stay
@@ -423,4 +423,103 @@ pub fn overlapping_labels(items: &[PlanItem], mm: f64) -> Vec<(usize, usize)> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use creabim_core::{ElementId, ElementKind, Model};
+
+    #[test]
+    fn a_label_on_a_line_moves_off_it() {
+        let id = ElementId::NIL;
+        let mut items = vec![
+            PlanItem::Line {
+                id,
+                pen: Pen::Grid,
+                a: DVec2::new(-10.0, 0.0),
+                b: DVec2::new(10.0, 0.0),
+            },
+            PlanItem::Label {
+                id,
+                at: DVec2::ZERO,
+                text: "LOGGIA".into(),
+            },
+        ];
+        let mm = 0.05;
+        place_labels(&mut items, mm);
+        let (b, _) = text_box(&items[1], mm).unwrap();
+        assert!(!b.crossed_by(DVec2::new(-10.0, 0.0), DVec2::new(10.0, 0.0)));
+        // close by, so no leader
+        assert_eq!(items.len(), 2);
+    }
+
+    fn plans_on_sheets(m: &Model) -> Vec<ElementId> {
+        let mut out = vec![];
+        for e in m.iter() {
+            if let ElementKind::Viewport(vp) = &e.kind {
+                if matches!(
+                    m.get(vp.view).map(|v| &v.kind),
+                    Some(ElementKind::View(v)) if matches!(v.kind, creabim_core::ViewKind::Plan { .. })
+                ) && !out.contains(&vp.view)
+                {
+                    out.push(vp.view);
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn no_two_labels_overlap_on_the_starter_house_sheets() {
+        let m = creabim_core::starter::starter_house();
+        let plans = plans_on_sheets(&m);
+        assert_eq!(plans.len(), 4);
+        for view in plans {
+            let ElementKind::View(v) = &m.get(view).unwrap().kind else {
+                unreachable!()
+            };
+            let mm = v.scale / 1000.0;
+            let items = crate::section::view_drawing(&m, view).unwrap().items;
+            let clash = overlapping_labels(&items, mm);
+            let name = &m.get(view).unwrap().name;
+            assert!(
+                clash.is_empty(),
+                "{name}: {:?}",
+                clash
+                    .iter()
+                    .map(|(a, b)| (format!("{:?}", items[*a]), format!("{:?}", items[*b])))
+                    .collect::<Vec<_>>()
+            );
+            // room names and notes keep off grid and section lines
+            for it in &items {
+                let PlanItem::Annotation { item, .. } = it else {
+                    continue;
+                };
+                if !matches!(item.shape, Shape::Note { .. }) {
+                    continue;
+                }
+                let (b, _) = text_box(it, mm).unwrap();
+                for other in &items {
+                    if let PlanItem::Line {
+                        id,
+                        pen: Pen::Grid | Pen::Symbol,
+                        a,
+                        b: e,
+                    } = other
+                    {
+                        let line = matches!(
+                            m.get(*id).map(|x| &x.kind),
+                            Some(ElementKind::Grid(_) | ElementKind::View(_))
+                        );
+                        assert!(
+                            !line || !b.shrunk(0.3 * mm).crossed_by(*a, *e),
+                            "{name}: {:?} sits on a grid or section line",
+                            item.text
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

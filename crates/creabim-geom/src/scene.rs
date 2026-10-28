@@ -64,6 +64,7 @@ fn layer_items(
     plain: [f32; 3],
 ) -> Option<Vec<SceneItem>> {
     let (_, a) = assembly::assembly_of(model, e)?;
+    let mut linings: Vec<SceneItem> = Vec::new();
     let parts: Vec<(assembly::Band, TriMesh)> = match &e.kind {
         ElementKind::Wall(w) => {
             let level = model.level(w.level)?;
@@ -72,6 +73,15 @@ fn layer_items(
             let openings: Vec<&Opening> = owned.iter().collect();
             let ends = joins.get(&e.id).cloned().unwrap_or_default();
             let top = creabim_core::walls::top_profile(model, w);
+            linings = reveal_linings(
+                model,
+                e.id,
+                w,
+                &openings,
+                &assembly::wall_bands(a, w),
+                level.elevation,
+                plain,
+            );
             assembly::wall_bands(a, w)
                 .into_iter()
                 .map(|b| {
@@ -138,8 +148,130 @@ fn layer_items(
                     finish: None,
                 }
             })
+            .chain(linings)
             .collect(),
     )
+}
+
+/// The [`SceneItem::finish`] of a reveal lining.
+pub const REVEAL: &str = "Reveal";
+
+/// How thick a reveal lining is: thin enough to leave the opening its size.
+const LINING: f64 = 0.004;
+
+impl SceneItem {
+    /// A reveal lining, seen in 3D only: drawings and exports leave it out.
+    pub fn is_lining(&self) -> bool {
+        self.finish == Some(REVEAL)
+    }
+}
+
+/// The reveals of a layered wall's doors and windows lined, for the 3D
+/// view: each layer's part of the jambs, head and sill in the finish on
+/// its side of the wall (render outside, plaster inside), so an opening
+/// doesn't show the insulation or the membrane cut open.
+fn reveal_linings(
+    model: &Model,
+    id: ElementId,
+    w: &creabim_core::Wall,
+    openings: &[&Opening],
+    bands: &[assembly::Band],
+    level_z: f64,
+    plain: [f32; 3],
+) -> Vec<SceneItem> {
+    use creabim_core::LayerFunction as F;
+    let look = |b: &assembly::Band| {
+        b.material
+            .and_then(|m| match &model.get(m)?.kind {
+                ElementKind::Material(m) => Some((m.color, m.surface())),
+                _ => None,
+            })
+            .unwrap_or((layer_color(b.function, plain), PLAIN_SURFACE))
+    };
+    let finishes: Vec<&assembly::Band> = bands.iter().filter(|b| b.function == F::Finish).collect();
+    let d = w.direction();
+    let n = DVec2::new(-d.y, d.x);
+    let z0 = level_z + w.base_offset;
+    let at = |u: f64, v: f64, s: f64| (w.start + d * u + n * s).extend(z0 + v);
+    let mut out = Vec::new();
+    for o in openings {
+        if o.kind == creabim_core::OpeningKind::Hole {
+            continue;
+        }
+        let Some(c) = crate::wall::Cut::of(o, w) else {
+            continue;
+        };
+        for b in bands.iter().filter(|b| b.function != F::AirGap) {
+            // a finish shows itself; the rest take the finish nearest them
+            let mid = (b.s0 + b.s1) / 2.0;
+            let from = if b.function == F::Finish {
+                Some(b)
+            } else {
+                finishes.iter().copied().min_by(|x, y| {
+                    ((x.s0 + x.s1) / 2.0 - mid)
+                        .abs()
+                        .total_cmp(&((y.s0 + y.s1) / 2.0 - mid).abs())
+                })
+            };
+            let (color, surface) = from.map_or((plain, PLAIN_SURFACE), look);
+            let mut mesh = TriMesh::default();
+            let mut slab = |u0: f64, u1: f64, v0: f64, v1: f64| {
+                let p = |i: usize| {
+                    at(
+                        if i & 1 == 0 { u0 } else { u1 },
+                        if i & 2 == 0 { v0 } else { v1 },
+                        if i & 4 == 0 { b.s0 } else { b.s1 },
+                    )
+                };
+                cuboid(&mut mesh, [p(0), p(1), p(2), p(3), p(4), p(5), p(6), p(7)]);
+            };
+            slab(c.u0, c.u0 + LINING, c.v0, c.v1);
+            slab(c.u1 - LINING, c.u1, c.v0, c.v1);
+            slab(c.u0, c.u1, c.v1 - LINING, c.v1);
+            if c.v0 > 1e-6 {
+                slab(c.u0, c.u1, c.v0, c.v0 + LINING);
+            }
+            // one item per finish, for all the wall's openings
+            match out.iter_mut().find(|i: &&mut SceneItem| i.color == color) {
+                Some(i) => i.mesh.append(&mesh),
+                None => out.push(SceneItem {
+                    id,
+                    mesh,
+                    color,
+                    surface,
+                    ghost: false,
+                    layer: None,
+                    finish: Some(REVEAL),
+                }),
+            }
+        }
+    }
+    out
+}
+
+/// A six-sided box from its corners, corner `i` having bit 0 for the far
+/// end along the first axis, bit 1 along the second and bit 2 along the
+/// third.
+fn cuboid(m: &mut TriMesh, c: [DVec3; 8]) {
+    let centre = c.iter().copied().sum::<DVec3>() / 8.0;
+    for face in [
+        [0, 1, 3, 2],
+        [4, 5, 7, 6],
+        [0, 1, 5, 4],
+        [2, 3, 7, 6],
+        [0, 2, 6, 4],
+        [1, 3, 7, 5],
+    ] {
+        let q = face.map(|i| c[i]);
+        let mid = q.iter().copied().sum::<DVec3>() / 4.0;
+        let normal = (q[1] - q[0]).cross(q[3] - q[0]);
+        let normal = if normal.dot(mid - centre) < 0.0 {
+            -normal
+        } else {
+            normal
+        };
+        m.add_quad(q, normal);
+    }
 }
 
 /// The lines of every sketch, in model coordinates: (sketch, from, to).
@@ -310,7 +442,7 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
 /// The scene as drawings show it: cutters left out.
 pub fn drawn_scene(model: &Model) -> Vec<SceneItem> {
     let mut s = build_scene(model);
-    s.retain(|i| !i.ghost);
+    s.retain(|i| !i.ghost && !i.is_lining());
     s
 }
 
@@ -319,7 +451,7 @@ pub fn drawn_scene(model: &Model) -> Vec<SceneItem> {
 pub fn merged(items: Vec<SceneItem>) -> Vec<SceneItem> {
     let mut out: Vec<SceneItem> = Vec::with_capacity(items.len());
     let mut at: std::collections::HashMap<ElementId, usize> = std::collections::HashMap::new();
-    for item in items {
+    for item in items.into_iter().filter(|i| !i.is_lining()) {
         match at.get(&item.id) {
             Some(&i) => {
                 let o = &mut out[i];
@@ -498,7 +630,7 @@ pub const GLASS_SURFACE: [f32; 3] = [0.05, 0.0, 0.3];
 /// and glass) merged.
 pub fn element_meshes(scene: &[SceneItem]) -> std::collections::HashMap<ElementId, TriMesh> {
     let mut out: std::collections::HashMap<ElementId, TriMesh> = Default::default();
-    for i in scene {
+    for i in scene.iter().filter(|i| !i.is_lining()) {
         out.entry(i.id).or_default().append(&i.mesh);
     }
     out
@@ -717,5 +849,34 @@ mod tests {
         e.extrude_face(1, 1.0);
         let m = edit_mesh_to_tri(&e, DVec3::new(10.0, 0.0, 0.0));
         assert!((m.volume() - 12.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn window_reveals_show_the_finish_not_the_insulation() {
+        let m = creabim_core::starter::starter_house();
+        let scene = build_scene(&m);
+        let linings: Vec<&SceneItem> = scene.iter().filter(|i| i.is_lining()).collect();
+        assert!(!linings.is_empty());
+        let insulation = layer_color(creabim_core::LayerFunction::Insulation, [0.0; 3]);
+        let insulation_materials: Vec<[f32; 3]> = scene
+            .iter()
+            .filter(|i| {
+                i.layer
+                    .is_some_and(|l| l.function == creabim_core::LayerFunction::Insulation)
+            })
+            .map(|i| i.color)
+            .collect();
+        for l in &linings {
+            assert_ne!(l.color, insulation);
+            assert!(!insulation_materials.contains(&l.color), "{:?}", l.color);
+            // thin, closed boxes
+            assert!(l.mesh.volume() > 0.0);
+        }
+        // drawings and exports leave them out
+        assert!(!drawn_scene(&m).iter().any(|i| i.is_lining()));
+        let walls: f64 = element_meshes(&scene).values().map(|m| m.volume()).sum();
+        let without: Vec<SceneItem> = scene.iter().filter(|i| !i.is_lining()).cloned().collect();
+        let plain: f64 = element_meshes(&without).values().map(|m| m.volume()).sum();
+        assert!((walls - plain).abs() < 1e-9);
     }
 }

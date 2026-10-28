@@ -1779,8 +1779,9 @@ fn annotate(b: &mut Builder, views: &Views) {
             "PADS 600 × 600\nunder the terrace posts",
             Some(v(11.8, 11.4)),
         ),
-        (views.roof, v(4.0, 2.4), "SLATE 35°\nfalls to the eaves", None),
-        (views.roof, v(4.0, 7.4), "SLATE 35°\nfalls to the eaves", None),
+        // the slope arrows give the pitch and the fall
+        (views.roof, v(0.6, 2.2), "SLATE\nnatural slate on battens", None),
+        (views.roof, v(0.6, 8.8), "SLATE\nnatural slate on battens", None),
         (views.roof, v(12.4, 7.6), "GREEN ROOF\nsedum on EPDM\nfalls 1:60 to the east", None),
         (views.roof, v(4.4, -2.4), "ZINC CANOPY", Some(v(5.6, -0.9))),
     ];

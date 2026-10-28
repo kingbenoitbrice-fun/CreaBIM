@@ -1915,4 +1915,273 @@ mod tests {
         // a cut above their tops passes none of them
         assert_eq!(cut_footings(&m, "Foundation", 0.6), 0);
     }
+
+    fn named(m: &Model, name: &str) -> ElementId {
+        m.iter().find(|e| e.name == name).expect(name).id
+    }
+
+    fn view_items(m: &Model, view: &str) -> Vec<PlanItem> {
+        crate::section::view_drawing(m, named(m, view))
+            .unwrap()
+            .items
+    }
+
+    /// How many closed outlines a set of segments makes, joined end to
+    /// end; every corner must be met by an even number of them.
+    fn loops(segs: &[(DVec2, DVec2)]) -> usize {
+        type Key = (i64, i64);
+        let key = |p: DVec2| ((p.x * 1e4).round() as i64, (p.y * 1e4).round() as i64);
+        fn find(p: &mut std::collections::HashMap<Key, Key>, k: Key) -> Key {
+            let up = *p.entry(k).or_insert(k);
+            if up == k {
+                k
+            } else {
+                let r = find(p, up);
+                p.insert(k, r);
+                r
+            }
+        }
+        let mut parent: std::collections::HashMap<Key, Key> = Default::default();
+        let mut degree: std::collections::HashMap<Key, usize> = Default::default();
+        for (a, b) in segs {
+            let (ka, kb) = (key(*a), key(*b));
+            *degree.entry(ka).or_default() += 1;
+            *degree.entry(kb).or_default() += 1;
+            let (ra, rb) = (find(&mut parent, ka), find(&mut parent, kb));
+            parent.insert(ra, rb);
+        }
+        assert!(degree.values().all(|d| d % 2 == 0), "an open outline");
+        let keys: Vec<Key> = parent.keys().copied().collect();
+        let roots: std::collections::HashSet<Key> =
+            keys.into_iter().map(|k| find(&mut parent, k)).collect();
+        roots.len()
+    }
+
+    #[test]
+    fn footings_meeting_at_corners_merge_into_one_outline() {
+        let m = creabim_core::starter::starter_house();
+        let items = view_items(&m, "Foundation plan");
+        let footing =
+            |id: &ElementId| matches!(m.get(*id).map(|e| &e.kind), Some(ElementKind::Footing(_)));
+        let fills: Vec<&Vec<DVec2>> = items
+            .iter()
+            .filter_map(|it| match it {
+                PlanItem::Fill { id, points, .. } if footing(id) => Some(points),
+                _ => None,
+            })
+            .collect();
+        let cut: Vec<(DVec2, DVec2)> = items
+            .iter()
+            .filter_map(|it| match it {
+                PlanItem::Line {
+                    id,
+                    pen: Pen::Cut,
+                    a,
+                    b,
+                } if footing(id) => Some((*a, *b)),
+                _ => None,
+            })
+            .collect();
+        // no outline runs inside another footing: no overlap squares
+        for (a, b) in &cut {
+            let mid = (*a + *b) / 2.0;
+            for f in &fills {
+                assert!(
+                    !(point_in(mid, f) && edge_distance(mid, f) > 1e-3),
+                    "a footing edge {a} {b} runs inside another"
+                );
+            }
+        }
+        // the strips make one network: an outline round its outside and
+        // one round each bay inside it; each pad stands alone
+        let pads = m
+            .iter()
+            .filter(|e| {
+                matches!(&e.kind, ElementKind::Footing(f)
+                    if f.kind == creabim_core::FootingKind::Pad)
+            })
+            .count();
+        let n = loops(&cut);
+        // (the starter house has seven bays between its strips)
+        assert_eq!(n, 1 + 7 + pads, "{n} outlines, {pads} pads");
+    }
+
+    #[test]
+    fn an_l_shaped_hole_is_crossed_in_each_leg_inside_its_outline() {
+        let l = vec![
+            DVec2::new(0.0, 0.0),
+            DVec2::new(1.0, 0.0),
+            DVec2::new(1.0, 3.0),
+            DVec2::new(3.0, 3.0),
+            DVec2::new(3.0, 4.0),
+            DVec2::new(0.0, 4.0),
+        ];
+        let pieces = convex_pieces(&l);
+        assert_eq!(pieces.len(), 2);
+        let area: f64 = pieces.iter().map(|p| signed_area(p).abs()).sum();
+        assert!((area - signed_area(&l).abs()).abs() < 1e-9);
+        let cross = hole_cross(&l);
+        assert_eq!(cross.len(), 4);
+        for (a, b) in cross {
+            for t in [0.25, 0.5, 0.75] {
+                let p = a + (b - a) * t;
+                assert!(point_in(p, &l), "{p} is outside the hole");
+            }
+        }
+        // a hole that isn't square splits into convex pieces too
+        let tilted: Vec<DVec2> = l
+            .iter()
+            .map(|p| DVec2::from_angle(0.3).rotate(*p))
+            .collect();
+        let pieces = convex_pieces(&tilted);
+        assert!(pieces.len() >= 2);
+        for piece in pieces {
+            assert!(is_convex(&piece));
+        }
+    }
+
+    #[test]
+    fn the_first_floor_shows_the_stair_through_its_well() {
+        let m = creabim_core::starter::starter_house();
+        let stair = named(&m, "Stair");
+        let shaft = named(&m, "Stair Well");
+        let well = match &m.get(shaft).unwrap().kind {
+            ElementKind::Shaft(s) => s.boundary.clone(),
+            _ => unreachable!(),
+        };
+        let items = view_items(&m, "First Floor plan");
+        let treads = items
+            .iter()
+            .filter(
+                |it| matches!(it, PlanItem::Line { id, pen: Pen::Projection, .. } if *id == stair),
+            )
+            .count();
+        assert!(treads >= 15, "{treads} lines of the stair");
+        // all of it inside the well
+        for it in items.iter().filter(|it| it.id() == stair) {
+            if let PlanItem::Line { a, b, .. } = it {
+                let mid = (*a + *b) / 2.0;
+                assert!(point_in(mid, &well) || edge_distance(mid, &well) < 1e-6);
+            }
+        }
+        assert!(items.iter().any(
+            |it| matches!(it, PlanItem::Label { id, text, .. } if *id == stair && text == "DN")
+        ));
+        // the well's cross stays inside the L of the well
+        let mut crossing = 0;
+        for it in &items {
+            if let PlanItem::Line {
+                id,
+                pen: Pen::Fine,
+                a,
+                b,
+            } = it
+            {
+                if *id == shaft {
+                    crossing += 1;
+                    assert!(point_in((*a + *b) / 2.0, &well));
+                }
+            }
+        }
+        assert_eq!(crossing, 4);
+        // a view depth too shallow to reach the stair's foot shows less
+        let f = named(&m, "First Floor");
+        let shallow = creabim_core::PlanGraphics {
+            view_depth: Some(1.0),
+            ..Default::default()
+        };
+        let count = |g: &creabim_core::PlanGraphics| {
+            plan_view_with(&m, f, 1.2, g)
+                .items
+                .iter()
+                .filter(|it| it.id() == stair)
+                .count()
+        };
+        let (some, all) = (count(&shallow), count(&Default::default()));
+        assert!(some > 0 && some < all, "{some} of {all}");
+        // on the ground floor the well is only the dashed edge above
+        let g = view_items(&m, "Ground Floor plan");
+        assert!(g.iter().filter(|it| it.id() == shaft).all(|it| matches!(
+            it,
+            PlanItem::Line {
+                pen: Pen::Hidden,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn what_lies_below_the_cut_is_tinted() {
+        let m = creabim_core::starter::starter_house();
+        let g = named(&m, "Ground Floor");
+        let shades = |graphics: &creabim_core::PlanGraphics| {
+            plan_view_with(&m, g, 1.2, graphics)
+                .items
+                .iter()
+                .filter(|it| matches!(it, PlanItem::Shade { .. }))
+                .count()
+        };
+        let on = shades(&Default::default());
+        assert!(on >= 10, "{on}");
+        let off = creabim_core::PlanGraphics {
+            below_fill: false,
+            ..Default::default()
+        };
+        assert_eq!(shades(&off), 0);
+        // tints come first, under every line, and are light
+        let items = plan_view(&m, g, 1.2).items;
+        let last = items
+            .iter()
+            .rposition(|it| matches!(it, PlanItem::Shade { .. }))
+            .unwrap();
+        for it in &items[..=last] {
+            let PlanItem::Shade { rgb, .. } = it else {
+                panic!("{it:?} under a tint");
+            };
+            assert!(rgb.iter().all(|c| *c > 0.6), "{rgb:?}");
+        }
+    }
+
+    #[test]
+    fn furniture_is_drawn_lighter_than_walls_and_slabs() {
+        let m = creabim_core::starter::starter_house();
+        let items = view_items(&m, "Ground Floor plan");
+        let objects: std::collections::HashSet<String> = items
+            .iter()
+            .filter(|it| {
+                m.get(it.id())
+                    .is_some_and(|e| matches!(e.kind, ElementKind::Object(_)))
+            })
+            .filter_map(|it| match it {
+                PlanItem::Line { pen, .. } | PlanItem::Polygon { pen, .. } => {
+                    Some(format!("{pen:?}"))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(objects.contains("Fine"));
+        assert!(!objects.contains("Projection") && !objects.contains("Cut"));
+        let w = creabim_core::LineWeights::for_scale(50.0);
+        let width = |p| crate::paper::pen_stroke_with(p, &w).width;
+        assert!(width(Pen::Cut) > width(Pen::Projection));
+        assert!(width(Pen::Projection) > width(Pen::Symbol));
+        assert!(width(Pen::Symbol) > width(Pen::Fine));
+        // a view's own weights reach its sheet
+        let mut m2 = m.clone();
+        let v = named(&m2, "Ground Floor plan");
+        let before = m2.get(v).unwrap().clone();
+        let mut after = before.clone();
+        if let ElementKind::View(view) = &mut after.kind {
+            let mut heavy = creabim_core::LineWeights::for_scale(50.0);
+            heavy.cut = 1.4;
+            view.graphics.weights = Some(heavy);
+        }
+        creabim_core::Transaction::new("Line weights")
+            .replace(before, after)
+            .apply(&mut m2)
+            .unwrap();
+        let sheet = named(&m2, "Ground Floor Plan");
+        let svg = crate::sheet::sheet_svg(&m2, sheet, &crate::sheet::SheetInfo::default()).unwrap();
+        assert!(svg.contains("stroke-width=\"1.4\""));
+    }
 }

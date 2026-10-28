@@ -4118,6 +4118,9 @@ impl CreaBimApp {
                             )
                             .weak(),
                         );
+                        if let Some(l) = plan_graphics_ui(ui, &mut v.graphics, v.scale) {
+                            label = l;
+                        }
                     }
                     ViewKind::Section {
                         start,
@@ -5408,6 +5411,95 @@ fn draw_guide_3d(
     if run.len() > 1 {
         painter.extend(egui::Shape::dashed_line(&run, stroke, 6.0, 4.0));
     }
+}
+
+/// A plan's graphics in its Properties: the tint of what lies below the
+/// cut, how far below its floor it looks, and its pens' line weights.
+/// Returns the undo label of a change.
+fn plan_graphics_ui(
+    ui: &mut egui::Ui,
+    g: &mut creabim_core::PlanGraphics,
+    scale: f64,
+) -> Option<&'static str> {
+    let mut label = None;
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Graphics").strong());
+    if ui
+        .checkbox(&mut g.below_fill, "Tint what lies below the cut")
+        .on_hover_text("Furniture, fittings and imported meshes under the cut get a light fill.")
+        .changed()
+    {
+        label = Some("Below-cut fill");
+    }
+    if g.below_fill {
+        ui.horizontal(|ui| {
+            ui.label("Strength");
+            if ui
+                .add(egui::Slider::new(&mut g.below_strength, 0.05..=1.0))
+                .changed()
+            {
+                label = Some("Below-cut fill");
+            }
+        });
+        if ui
+            .checkbox(&mut g.below_grey, "In grey, not material colours")
+            .changed()
+        {
+            label = Some("Below-cut fill");
+        }
+    }
+    let mut to_level = g.view_depth.is_none();
+    if ui
+        .checkbox(&mut to_level, "View depth: down to the level below")
+        .on_hover_text(
+            "How far below its floor the plan looks, through holes in the floor such as a stair well.",
+        )
+        .changed()
+    {
+        g.view_depth = if to_level { None } else { Some(1.0) };
+        label = Some("View depth");
+    }
+    if let Some(d) = &mut g.view_depth {
+        ui.horizontal(|ui| {
+            ui.label("View depth below the floor");
+            if ui.add(crate::units::drag(d).range(0.0..=100.0)).changed() {
+                label = Some("View depth");
+            }
+        });
+    }
+    let mut auto = g.weights.is_none();
+    if ui
+        .checkbox(&mut auto, "Line weights from the scale")
+        .on_hover_text("Heavier pens at 1:50 and larger, lighter at 1:100 and smaller.")
+        .changed()
+    {
+        g.weights = if auto {
+            None
+        } else {
+            Some(creabim_core::LineWeights::for_scale(scale))
+        };
+        label = Some("Line weights");
+    }
+    if let Some(w) = &mut g.weights {
+        for (name, v) in w.fields_mut() {
+            ui.horizontal(|ui| {
+                ui.label(name);
+                if ui
+                    .add(
+                        egui::DragValue::new(v)
+                            .speed(0.01)
+                            .range(0.02..=2.0)
+                            .max_decimals(2)
+                            .suffix(" mm"),
+                    )
+                    .changed()
+                {
+                    label = Some("Line weights");
+                }
+            });
+        }
+    }
+    label
 }
 
 /// A drop-down of the ways a section, elevation or 3D view draws.

@@ -451,11 +451,11 @@ fn slope_arrows(items: &mut Vec<PlanItem>, e: &Element, r: &Roof) {
         let (back, wing) = (-down * 0.25, down.perp() * 0.1);
         line(items, head, head + back + wing);
         line(items, head, head + back - wing);
-        // the pitch at the arrow's tail, clear of the shaft
+        // the pitch beside the shaft, on its right going down the slope
         let slope = f.g.length().atan().to_degrees();
         items.push(PlanItem::Label {
             id: e.id,
-            at: tail - down * 0.3,
+            at: c - down.perp() * 0.45,
             text: pitch_text(slope),
         });
     }
@@ -808,5 +808,29 @@ mod tests {
             member_plan(&m, &c, 1.2)[0],
             PlanItem::Polygon { pen: Pen::Cut, .. }
         ));
+    }
+
+    #[test]
+    fn roof_plans_show_slope_arrows_with_their_pitch() {
+        let m = creabim_core::starter::starter_house();
+        let view = |name: &str| {
+            let id = m.iter().find(|e| e.name == name).unwrap().id;
+            crate::section::view_drawing(&m, id).unwrap().items
+        };
+        let pitches = |items: &[PlanItem]| -> Vec<String> {
+            items
+                .iter()
+                .filter_map(|it| match it {
+                    PlanItem::Label { text, .. } if text.ends_with('°') => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        // the gable's two faces, each falling to its eave; the flat roofs none
+        assert_eq!(pitches(&view("Roof plan")), vec!["35°", "35°"]);
+        // the first floor is under the roof: no arrows there
+        assert!(pitches(&view("First Floor plan")).is_empty());
+        assert_eq!(pitch_text(35.0), "35°");
+        assert_eq!(pitch_text((1.0f64 / 60.0).atan().to_degrees()), "1:60");
     }
 }
