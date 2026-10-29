@@ -1775,6 +1775,17 @@ fn drag_level(
 ) -> Option<Option<String>> {
     if response.drag_started_by(egui::PointerButton::Primary) {
         let press = response.ctx.input(|i| i.pointer.press_origin())?;
+        // the grip on a selected level's head moves the head instead
+        let on_head = plan.items.iter().any(|it| match it {
+            PlanItem::Annotation { id, item } => {
+                selection.contains(*id)
+                    && matches!(item.shape, creabim_geom::annotation::Shape::Level { at, .. } if xf.to_screen(at).distance(press) < 9.0)
+            }
+            _ => false,
+        });
+        if on_head {
+            return None;
+        }
         let w = xf.to_world(press);
         let id = hit_test(&plan.items, w, 6.0 / xf.scale as f64, mm)?;
         let l = doc.model().level(id)?;

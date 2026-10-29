@@ -67,18 +67,16 @@ impl CreaBimApp {
             .find(|(_, ids)| ids.contains(&id))
         {
             let n = others.len() - 1;
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "⚠ {m} is also the mark of {n} other element{}.",
-                        if n == 1 { "" } else { "s" }
-                    ))
-                    .color(ui.visuals().warn_fg_color),
-                );
-                if ui.small_button("Select them").clicked() {
-                    self.selection.extend(others.clone(), false);
-                }
-            });
+            ui.label(
+                egui::RichText::new(format!(
+                    "⚠ {m} is also the mark of {n} other element{}.",
+                    if n == 1 { "" } else { "s" }
+                ))
+                .color(ui.visuals().warn_fg_color),
+            );
+            if ui.small_button("Select them").clicked() {
+                self.selection.extend(others.clone(), false);
+            }
         }
     }
 
@@ -223,8 +221,14 @@ impl CreaBimApp {
                             .iter()
                             .filter_map(|i| self.doc.model().get(*i).map(|e| e.name.clone()))
                             .collect();
+                        // a few names keep the dialog narrow; Select takes them all
+                        let mut shown =
+                            names.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
+                        if names.len() > 2 {
+                            shown += &format!(" and {} more", names.len() - 2);
+                        }
                         ui.label(egui::RichText::new(&m).strong());
-                        ui.label(names.join(", "));
+                        ui.label(shown);
                         if ui.small_button("Select").clicked() {
                             self.selection.extend(ids.clone(), false);
                         }

@@ -40,7 +40,7 @@ Walls, doors, windows, slabs, masses, levels, guides, sketches and dimensions ca
 
 Each level's line ends in a head with its name and elevation. Where levels are too close for their heads to fit, the heads spread apart up and down, each joined to its line by a short dog-leg.
 
-- Drag a head to put it somewhere else in this view. To put it back, select the level and click **Put it back** in *Properties*.
+- Dragging a level's line or head moves the level itself up or down. To move only the head, click the level to select it, then drag the square grip on its head: the head goes somewhere else in this view and a dog-leg joins it to its line. To put it back, select the level and click **Put it back** in *Properties*.
 - To leave a head out of this view, select the level while the view is shown and turn off **Head in** (the view's name) in *Properties*. Its line stays.
 
 The heads are set for each view: an elevation and a section can show the same level differently.

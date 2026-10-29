@@ -223,6 +223,10 @@ fn grips(model: &Model, it: &PlanItem, mm: f64) -> Vec<(DVec2, Grab)> {
                     (elbow_grip(*elbow, from, *tip), Grab::Elbow(*id)),
                 ]
             }
+            // a level's head in a section or elevation, for this view only
+            Shape::Level { at, line_end, .. } => {
+                vec![(*at, Grab::LevelHead(*id, line_end.unwrap_or(*at)))]
+            }
             _ => vec![],
         },
         PlanItem::Tag {
@@ -878,10 +882,6 @@ pub fn drag(
                 }
                 Some(match item.shape {
                     Shape::Note { at, .. } => Grab::Note(*id, w, at),
-                    // a level head in a section moves for this view only
-                    Shape::Level { at, line_end, .. } if view_id.is_some() => {
-                        Grab::LevelHead(*id, line_end.unwrap_or(at))
-                    }
                     _ => Grab::Shape(*id),
                 })
             })
@@ -980,8 +980,8 @@ pub fn drag(
     Some(r.err().map(|e| e.to_string()))
 }
 
-/// The grips drawn on selected notes' and tags' leaders: their ends and
-/// elbows.
+/// The grips drawn on selected notes' and tags' leaders (their ends and
+/// elbows) and on selected levels' heads.
 pub fn draw_grips(
     painter: &egui::Painter,
     xf: &Xf,
