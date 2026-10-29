@@ -38,6 +38,12 @@ pub enum Category {
     Objects,
     /// Strip and pad footings.
     Footings,
+    /// Extrusions and sweeps (voids are openings).
+    Parts,
+    /// Terrain and hard landscape.
+    Site,
+    /// Trees and shrubs.
+    Planting,
     /// A category from a newer CreaBIM, kept so older versions still read
     /// the file.
     #[serde(other)]
@@ -45,7 +51,7 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 21] = [
+    pub const ALL: [Category; 24] = [
         Category::Walls,
         Category::Slabs,
         Category::Doors,
@@ -67,6 +73,9 @@ impl Category {
         Category::Railings,
         Category::Objects,
         Category::Footings,
+        Category::Parts,
+        Category::Site,
+        Category::Planting,
     ];
 
     pub fn label(self) -> &'static str {
@@ -92,6 +101,9 @@ impl Category {
             Category::Railings => "Railings",
             Category::Objects => "Furniture and fixtures",
             Category::Footings => "Footings",
+            Category::Parts => "Extrusions and sweeps",
+            Category::Site => "Terrain and hard landscape",
+            Category::Planting => "Planting",
             Category::Other => "Other",
         }
     }
@@ -108,6 +120,7 @@ impl Category {
                 OpeningKind::Hole => Category::Openings,
             },
             ElementKind::Shaft(_) => Category::Openings,
+            ElementKind::Part(p) if p.void => Category::Openings,
             _ if cutters.contains(&e.id) => Category::Openings,
             ElementKind::FreeMesh(_) => Category::FreeMeshes,
             ElementKind::Grid(_) | ElementKind::GridGroup(_) => Category::Grids,
@@ -127,6 +140,9 @@ impl Category {
             ElementKind::Railing(_) => Category::Railings,
             ElementKind::Object(_) => Category::Objects,
             ElementKind::Footing(_) => Category::Footings,
+            ElementKind::Part(_) => Category::Parts,
+            ElementKind::Site(s) if s.is_plant() => Category::Planting,
+            ElementKind::Site(_) => Category::Site,
             _ => return None,
         })
     }

@@ -22,6 +22,8 @@
 //! assembly rather than holding layers of its own.
 
 use crate::curtain::{CurtainGrid, GridRule, PanelKind};
+use crate::screen::ScreenPattern;
+use glam::DVec2;
 use crate::{
     assembly, Element, ElementId, ElementKind, LocationLine, Model, Op, OpeningFrame, OpeningKind,
     Profile, Transaction,
@@ -210,6 +212,10 @@ pub struct WallType {
     /// A curtain wall type's grid, mullions and panels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curtain: Option<CurtainGrid>,
+    /// A screen wall type's repeating unit and its holes (breeze block,
+    /// louvres, lattice): every wall of the type is pierced by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen: Option<crate::screen::ScreenPattern>,
 }
 
 /// What doors or windows of a type share.
@@ -503,6 +509,7 @@ pub fn from_instance(e: &Element) -> Option<TypeParams> {
             location: w.location,
             height: None,
             curtain: w.curtain.clone(),
+            screen: None,
         }),
         ElementKind::Opening(o) => {
             let t = OpeningType {
@@ -995,6 +1002,18 @@ fn wall(thickness: f64, assembly: Option<ElementId>) -> TypeParams {
         location: LocationLine::Centre,
         height: None,
         curtain: None,
+        screen: None,
+    })
+}
+
+/// A screen wall type `thickness` thick pierced by `pattern`.
+fn screen(thickness: f64, pattern: ScreenPattern) -> TypeParams {
+    TypeParams::Wall(WallType {
+        screen: Some(pattern),
+        ..match wall(thickness, None) {
+            TypeParams::Wall(w) => w,
+            _ => unreachable!(),
+        }
     })
 }
 
@@ -1012,6 +1031,7 @@ fn curtain(vertical: GridRule, horizontal: GridRule, panel: PanelKind) -> TypePa
         location: LocationLine::Centre,
         height: None,
         curtain: Some(c),
+        screen: None,
     })
 }
 
@@ -1063,6 +1083,28 @@ pub const STARTERS: &[Starter] = &[
         "Storefront, 4 bays",
         "Four equal glazed bays, a transom at 2.4 m",
         |_| curtain(GridRule::Count(4), GridRule::Spacing(2.4), PanelKind::Glass),
+    ),
+    (
+        "Screen, breeze block 400 × 200",
+        "Pierced concrete blocks, two openings each, 100 mm thick",
+        |_| {
+            let mut p = ScreenPattern::blocks(DVec2::new(0.4, 0.2), DVec2::ZERO, 0.0);
+            p.holes = vec![
+                [DVec2::new(0.03, 0.03), DVec2::new(0.185, 0.17)],
+                [DVec2::new(0.215, 0.03), DVec2::new(0.37, 0.17)],
+            ];
+            screen(0.1, p)
+        },
+    ),
+    (
+        "Screen, timber louvres",
+        "40 mm slats every 120 mm in a 50 mm frame",
+        |_| screen(0.05, ScreenPattern::louvres(0.12, 0.04, 0.05)),
+    ),
+    (
+        "Screen, lattice 150",
+        "30 mm bars on a 150 mm square grid",
+        |_| screen(0.04, ScreenPattern::lattice(0.15, 0.03, 0.03)),
     ),
     ("Single door 900 × 2100", "", |_| {
         TypeParams::Door(opening(0.9, 2.1, 0.0, 1, 1))

@@ -418,6 +418,8 @@ pub fn wall_openings(model: &Model, id: ElementId) -> Vec<Opening> {
         })
         .collect();
     out.extend(voids_in(model, id).into_iter().map(|(_, o)| o));
+    // a screen wall's holes
+    out.extend(crate::screen::screen_openings(model, id));
     out
 }
 

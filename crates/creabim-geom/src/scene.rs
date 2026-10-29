@@ -231,6 +231,10 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                 out.extend(opening_items(model, e, o, w, level.elevation));
                 continue;
             }
+            ElementKind::Part(_) | ElementKind::Site(_) => {
+                out.extend(crate::parts::scene_items(model, e));
+                continue;
+            }
             ElementKind::Object(_) => {
                 // one item per part, each in its own material
                 for (mesh, material) in creabim_core::objects::model_parts(model, e) {
@@ -362,6 +366,17 @@ pub fn cuts(model: &Model) -> Vec<(ElementId, ElementId, BoolOp)> {
         .collect()
 }
 
+/// [`cuts`], and what each void cuts: everything that is cut in the model.
+pub fn all_cuts(model: &Model) -> Vec<(ElementId, ElementId, BoolOp)> {
+    let mut out = cuts(model);
+    out.extend(
+        creabim_core::parts::void_cuts(model)
+            .into_iter()
+            .map(|(t, v)| (t, v, BoolOp::Difference)),
+    );
+    out
+}
+
 /// Is `id` used to cut something? Cutters are hidden from drawings.
 pub fn is_cutter(model: &Model, id: ElementId) -> bool {
     model
@@ -373,7 +388,7 @@ pub fn is_cutter(model: &Model, id: ElementId) -> bool {
 /// shapes (a cutter that is itself cut cuts with its uncut shape, so cuts
 /// can never loop), and turn the cutters into ghosts.
 fn apply_cuts(model: &Model, items: &mut [SceneItem]) {
-    let cuts = cuts(model);
+    let cuts = all_cuts(model);
     if cuts.is_empty() {
         return;
     }

@@ -43,6 +43,7 @@ pub fn member_mesh(model: &Model, e: &Element) -> Option<(TriMesh, [f32; 3])> {
             }
             (m, [0.66, 0.66, 0.64])
         }
+        ElementKind::Part(_) | ElementKind::Site(_) => crate::parts::mesh_of(model, e)?,
         _ => return None,
     })
 }
@@ -269,6 +270,9 @@ pub fn member_plan(model: &Model, e: &Element, cut: f64) -> Vec<PlanItem> {
     };
     let z = members::elevation(model, level) + cut;
     match &e.kind {
+        ElementKind::Part(_) | ElementKind::Site(_) => {
+            return crate::parts::plan_items(model, e, cut);
+        }
         ElementKind::Column(c) => {
             let (z0, z1) = c.span(model);
             let pts = c.outline();

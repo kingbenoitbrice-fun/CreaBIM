@@ -37,6 +37,8 @@ struct Ctx {
     axis: Ref,
     z_axis: Ref,
     x_axis: Ref,
+    /// Each element's product, for voiding it later.
+    products: HashMap<ElementId, Ref>,
 }
 
 impl Ctx {
@@ -199,6 +201,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         axis,
         z_axis,
         x_axis,
+        products: HashMap::new(),
     };
 
     let units = [
@@ -266,10 +269,19 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
     // cut is written as its final shape, tessellated
     let cuts = creabim_geom::scene::cuts(model);
     let cutters: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.1).collect();
-    let cut_meshes: HashMap<ElementId, creabim_geom::mesh::TriMesh> = if cuts.is_empty() {
+    // screen walls too: their holes are written in their shape
+    let screens: Vec<ElementId> = model
+        .iter()
+        .filter(|e| creabim_core::screen::screen_of(model, e).is_some())
+        .map(|e| e.id)
+        .collect();
+    let cut_meshes: HashMap<ElementId, creabim_geom::mesh::TriMesh> = if cuts.is_empty()
+        && screens.is_empty()
+    {
         HashMap::new()
     } else {
-        let targets: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.0).collect();
+        let targets: std::collections::HashSet<ElementId> =
+            cuts.iter().map(|c| c.0).chain(screens).collect();
         let mut all = creabim_geom::scene::element_meshes(&creabim_geom::scene::build_scene(model));
         all.retain(|id, _| targets.contains(id));
         all
@@ -564,6 +576,8 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     by_material.entry(m.id).or_default().push(r);
                 }
             }
+            // a void is an opening in what it cuts, written below
+            ElementKind::Part(p) if p.void => {}
             k if creabim_core::members::is_member(k) => {
                 let level = creabim_core::members::level_of(k);
                 let Some(&(_, spl)) = level.and_then(|l| storeys.get(&l)) else {
@@ -579,8 +593,14 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let z0 = elevation(level);
                 let fs = tessellate(&mut c, &mesh, |p| p - DVec3::Z * z0);
                 let shape = c.shape("Tessellation", &[fs]);
-                let (class, tail) = member_entity(k);
-                let r = product(&mut c, class, e, pl, shape, tail);
+                let (class, tail) = match k {
+                    ElementKind::Part(_) | ElementKind::Site(_) => part_entity(e),
+                    _ => {
+                        let (class, tail) = member_entity(k);
+                        (class.to_string(), tail.to_string())
+                    }
+                };
+                let r = product(&mut c, &class, e, pl, shape, &tail);
                 of_type(e, r);
                 contained.entry(level).or_default().push(r);
                 if let ElementKind::Footing(f) = k {
@@ -607,6 +627,40 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             }
             _ => {}
         }
+    }
+
+    // A void is an opening in each element it cuts, in its own shape.
+    for (target, void) in creabim_core::parts::void_cuts(model) {
+        let (Some(host), Some(v)) = (c.products.get(&target).copied(), model.get(void)) else {
+            continue;
+        };
+        let ElementKind::Part(p) = &v.kind else {
+            continue;
+        };
+        let (Some(&(_, spl)), Some(mesh)) = (
+            storeys.get(&p.level),
+            creabim_geom::parts::part_mesh(model, p),
+        ) else {
+            continue;
+        };
+        let z0 = elevation(Some(p.level));
+        let pl = c.local_placement(Some(spl), DVec3::ZERO, None);
+        let fs = tessellate(&mut c, &mesh, |q| q - DVec3::Z * z0);
+        let shape = c.shape("Tessellation", &[fs]);
+        let name = model.get(target).map_or("", |t| t.name.as_str());
+        let opening = c.w.add(
+            "IFCOPENINGELEMENT",
+            format!(
+                "{},$,{},$,$,{pl},{shape},$,.OPENING.",
+                c.guid(),
+                string(&format!("{} in {name}", v.name))
+            ),
+        );
+        let g = c.guid();
+        c.w.add(
+            "IFCRELVOIDSELEMENT",
+            format!("{g},$,$,$,{host},{opening}"),
+        );
     }
 
     // Openings need their host wall exported first, so they get a second pass.
@@ -1283,14 +1337,28 @@ fn opening_body(
 }
 
 fn product(c: &mut Ctx, class: &str, e: &Element, pl: Ref, shape: Ref, tail: &str) -> Ref {
-    c.w.add(
+    let r = c.w.add(
         class,
         format!(
             "{},$,{},$,$,{pl},{shape}{tail}",
             string(&e.id.ifc_guid()),
             string(&e.name)
         ),
-    )
+    );
+    c.products.insert(e.id, r);
+    r
+}
+
+/// The STEP entity and record tail of an extrusion, a sweep or a site
+/// element: the class picked for it, or a proxy when the exporter can't
+/// write that class.
+fn part_entity(e: &Element) -> (String, String) {
+    match &e.kind {
+        ElementKind::Site(s) if matches!(s.form, creabim_core::SiteForm::Terrain { .. }) => {
+            ("IFCGEOGRAPHICELEMENT".into(), ",$,.TERRAIN.".into())
+        }
+        _ => free_mesh_entity(e.ifc_class()),
+    }
 }
 
 /// The STEP entity and record tail (Tag, PredefinedType) of a member.

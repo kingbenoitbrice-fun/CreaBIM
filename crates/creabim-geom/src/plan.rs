@@ -768,7 +768,7 @@ fn footing_cut_at(
 pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
     let mut items = Vec::new();
     let joins = creabim_core::wall_joins(model);
-    let cuts = crate::scene::cuts(model);
+    let cuts = crate::scene::all_cuts(model);
     let cutters: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.1).collect();
     let targets: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.0).collect();
     // elements whose plan comes from slicing their final 3D shape
@@ -862,8 +862,11 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                         items.extend(opening_symbol(oid, o, w, &c, cut_v, &at));
                     }
                 }
-                // a curtain wall set in it leaves its own gap, and draws itself
-                for (_, o) in creabim_core::curtain::voids_in(model, e.id) {
+                // a curtain wall set in it leaves its own gap, and draws
+                // itself; a screen wall's holes leave theirs
+                let screen = creabim_core::screen::screen_openings(model, e.id);
+                let voids = creabim_core::curtain::voids_in(model, e.id);
+                for o in voids.into_iter().map(|v| v.1).chain(screen) {
                     if let Some(c) = Cut::of(&o, w) {
                         if cut_v > c.v0 && cut_v < c.v1 {
                             gaps.push((c.u0, c.u1));
@@ -1347,7 +1350,7 @@ fn opening_symbol(
     out
 }
 
-fn sliced_plan(model: &Model, item: &crate::scene::SceneItem, z: f64, items: &mut Vec<PlanItem>) {
+pub(crate) fn sliced_plan(model: &Model, item: &crate::scene::SceneItem, z: f64, items: &mut Vec<PlanItem>) {
     let mut cut: Vec<(DVec2, DVec2)> = Vec::new();
     for lp in crate::slice::slice(&item.mesh, z) {
         let n = lp.len();

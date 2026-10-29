@@ -919,6 +919,8 @@ pub fn level_of(kind: &ElementKind) -> Option<ElementId> {
         ElementKind::Stair(s) => s.level,
         ElementKind::Railing(r) => r.level,
         ElementKind::Footing(f) => f.level,
+        ElementKind::Part(p) => p.level,
+        ElementKind::Site(s) => s.level,
         _ => return None,
     })
 }
@@ -932,6 +934,8 @@ pub fn level_mut(kind: &mut ElementKind) -> Option<&mut ElementId> {
         ElementKind::Stair(s) => &mut s.level,
         ElementKind::Railing(r) => &mut r.level,
         ElementKind::Footing(f) => &mut f.level,
+        ElementKind::Part(p) => &mut p.level,
+        ElementKind::Site(s) => &mut s.level,
         _ => return None,
     })
 }
@@ -945,6 +949,8 @@ pub fn material_mut(kind: &mut ElementKind) -> Option<&mut Option<ElementId>> {
         ElementKind::Stair(s) => &mut s.material,
         ElementKind::Railing(r) => &mut r.material,
         ElementKind::Footing(f) => &mut f.material,
+        ElementKind::Part(p) => &mut p.material,
+        ElementKind::Site(s) => &mut s.material,
         _ => return None,
     })
 }
@@ -957,6 +963,8 @@ pub fn material(kind: &ElementKind) -> Option<ElementId> {
         ElementKind::Stair(s) => s.material,
         ElementKind::Railing(r) => r.material,
         ElementKind::Footing(f) => f.material,
+        ElementKind::Part(p) => p.material,
+        ElementKind::Site(s) => s.material,
         _ => None,
     }
 }
@@ -1055,6 +1063,8 @@ pub fn transform(model: &Model, kind: &mut ElementKind, t: &Xform) -> Option<()>
                 *p = t.point3(*p + DVec3::Z * z) - DVec3::Z * z;
             }
         }
+        ElementKind::Part(p) => crate::parts::transform(p, t)?,
+        ElementKind::Site(s) => crate::site::transform(s, t)?,
         _ => return None,
     }
     Some(())
@@ -1076,6 +1086,8 @@ pub fn pivot(model: &Model, e: &Element) -> Option<DVec3> {
             p.iter().copied().sum::<DVec3>() / n
         }
         ElementKind::Footing(f) => f.anchor(model),
+        ElementKind::Part(p) => p.pivot(model)?,
+        ElementKind::Site(s) => s.pivot(model)?,
         _ => return None,
     })
 }

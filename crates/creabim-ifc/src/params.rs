@@ -238,6 +238,7 @@ pub(crate) fn type_from(category: TypeCategory, curtain: bool, p: &Props) -> Typ
                 location,
                 height: len(p, "DefaultHeight").filter(|h| *h > 0.0),
                 curtain,
+                screen: None,
             })
         }
         TypeCategory::Door | TypeCategory::Window => {
