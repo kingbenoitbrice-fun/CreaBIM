@@ -51,9 +51,9 @@ pub(super) fn wall_fields(
 ) -> &'static str {
     let mut label = "";
     ui.horizontal(|ui| {
-        egui::ComboBox::from_label("Location line")
+        crate::app::helpui::combo(ui, "Location line")
             .selected_text(w.location.label())
-            .width(130.0)
+            .width(ui.available_width().min(130.0))
             .show_ui(ui, |ui| {
                 for l in LocationLine::ALL {
                     if ui.selectable_value(&mut w.location, l, l.label()).changed() {
@@ -81,9 +81,9 @@ pub(super) fn wall_fields(
     ui.add_space(4.0);
     let lv = levels(model);
     ui.horizontal(|ui| {
-        egui::ComboBox::from_label("Base level")
+        crate::app::helpui::combo(ui, "Base level")
             .selected_text(name_of(model, w.level))
-            .width(130.0)
+            .width(ui.available_width().min(130.0))
             .show_ui(ui, |ui| {
                 for (l, n, _) in &lv {
                     if ui.selectable_value(&mut w.level, *l, n).changed() {
@@ -100,9 +100,9 @@ pub(super) fn wall_fields(
         WallTop::UpToLevel { level, .. } => format!("Up to {}", name_of(model, level)),
     };
     ui.horizontal(|ui| {
-        egui::ComboBox::from_label("Top")
+        crate::app::helpui::combo(ui, "Top")
             .selected_text(shown)
-            .width(130.0)
+            .width(ui.available_width().min(130.0))
             .show_ui(ui, |ui| {
                 if ui
                     .selectable_label(w.top.is_unconnected(), "Unconnected")

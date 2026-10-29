@@ -788,7 +788,7 @@ fn column_levels(ui: &mut egui::Ui, model: &Model, c: &mut Column) -> &'static s
             .map_or("Unconnected".to_string(), |l| l.1.clone())
     };
     let mut base = c.level;
-    egui::ComboBox::from_label("Base level")
+    crate::app::helpui::combo(ui, "Base level")
         .selected_text(name(Some(c.level)))
         .show_ui(ui, |ui| {
             for (lid, n, _) in levels.iter().rev() {
@@ -810,7 +810,7 @@ fn column_levels(ui: &mut egui::Ui, model: &Model, c: &mut Column) -> &'static s
         label = "Column base offset";
     }
     let mut top = c.top_level();
-    egui::ComboBox::from_label("Top level")
+    crate::app::helpui::combo(ui, "Top level")
         .selected_text(name(top))
         .show_ui(ui, |ui| {
             ui.selectable_value(&mut top, None, "Unconnected")
@@ -892,7 +892,7 @@ fn footing_fields(ui: &mut egui::Ui, model: &Model, f: &mut creabim_core::Footin
                 .iter()
                 .find(|l| l.0 == f.level)
                 .map_or(String::new(), |l| l.1.clone());
-            egui::ComboBox::from_label("Level")
+            crate::app::helpui::combo(ui, "Level")
                 .selected_text(current)
                 .show_ui(ui, |ui| {
                     for (lid, n, _) in levels.iter().rev() {

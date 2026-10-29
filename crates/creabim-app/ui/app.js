@@ -49,32 +49,46 @@
 
   // ---- controls shared by the top bar and the status bar ----
 
-  function control(c) {
+  // A control's tooltip: its name, its key, then what it does.
+  function tip(c) {
+    let name = c.label || c.value || "";
+    if (c.kind === "menu" && c.label && c.value) name = `${c.label}: ${c.value}`;
+    return name + (c.shortcut ? `  (${c.shortcut})` : "") + (c.hint ? (name ? "\n" : "") + c.hint : "");
+  }
+
+  // `full` draws a compact control with its words too (in the More menu).
+  function control(c, full) {
+    const compact = c.compact && !full;
+    const slot = c.slot ? ` data-slot="${esc(c.slot)}"` : "";
     switch (c.kind) {
       case "number": {
         // a length comes formatted in the project's units, and what is
         // typed in it goes back as text for the app to read
         const text = c.text != null;
-        return `<label class="field" title="${esc(c.hint)}"><span class="k" data-scrub="${esc(c.key)}" data-step="${c.step}" data-min="${c.min}" data-max="${c.max}">${esc(c.label)}</span>` +
+        return `<label class="field"${slot} title="${esc(tip(c))}"><span class="k" data-scrub="${esc(c.key)}" data-step="${c.step}" data-min="${c.min}" data-max="${c.max}">${esc(c.label)}</span>` +
           `<input class="${text ? "len" : ""}" data-key="${esc(c.key)}" data-step="${c.step}" data-min="${c.min}" data-max="${c.max}" data-v="${c.value}" data-text="${text ? 1 : 0}" value="${text ? esc(c.text) : fmt(c.value, c.step)}">` +
           (c.unit ? `<span class="u">${esc(c.unit)}</span>` : "") + `</label>`;
       }
       case "menu":
-        return `<button class="dd ${c.big ? "big" : ""} ${S.popup === c.key ? "open" : ""}" data-popup="${esc(c.key)}" title="${esc(c.hint)}" ${c.enabled === false ? "disabled" : ""}>` +
+        if (compact) {
+          return `<button class="dd icon ${S.popup === c.key ? "open" : ""}"${slot} data-popup="${esc(c.key)}" title="${esc(tip(c))}" ${c.enabled === false ? "disabled" : ""}>` +
+            icon(c.icon) + `${icon("chevron-down", "chev")}</button>`;
+        }
+        return `<button class="dd ${c.big ? "big" : ""} ${S.popup === c.key ? "open" : ""}"${slot} data-popup="${esc(c.key)}" title="${esc(tip(c))}" ${c.enabled === false ? "disabled" : ""}>` +
           (c.icon ? icon(c.icon) : "") + (c.label ? `<span class="k">${esc(c.label)}</span>` : "") +
           `<span class="v">${esc(c.value)}</span>${icon("chevron-down", "chev")}</button>`;
       case "button":
-        return `<button class="btn" data-act="${esc(c.id)}" title="${esc(c.hint)}">${c.icon ? icon(c.icon) : ""}${esc(c.label)}</button>`;
+        return `<button class="btn ${compact ? "icon" : ""}"${slot} data-act="${esc(c.id)}" title="${esc(tip(c))}">${c.icon ? icon(c.icon) : ""}${compact ? "" : esc(c.label)}</button>`;
       case "toggle":
-        return `<button class="toggle ${c.on ? "on" : ""}" data-act="${esc(c.id)}" title="${esc(c.hint)}">${c.icon ? icon(c.icon) : ""}${esc(c.label)}</button>`;
+        return `<button class="toggle ${compact ? "icon" : ""} ${c.on ? "on" : ""}"${slot} data-act="${esc(c.id)}" data-keep="${full ? 1 : 0}" title="${esc(tip(c))}">${c.icon ? icon(c.icon) : ""}${compact ? "" : esc(c.label)}</button>`;
       case "label":
-        return `<span class="ctl-label">${esc(c.label)}</span>`;
+        return `<span class="ctl-label"${slot}>${esc(c.label)}</span>`;
       case "seg":
-        return `<span class="seg">` + c.items.map((i) => `<button class="${i.on ? "on" : ""}" data-act="${esc(i.id)}" title="${esc(i.hint)}">${esc(i.label)}</button>`).join("") + `</span>`;
+        return `<span class="seg"${slot}>` + c.items.map((i) => `<button class="${i.on ? "on" : ""}" data-act="${esc(i.id)}" data-keep="${full ? 1 : 0}" title="${esc(i.hint)}">${esc(i.label)}</button>`).join("") + `</span>`;
       case "sep":
-        return `<span class="vsep"></span>`;
+        return `<span class="vsep"${slot}></span>`;
       case "meta":
-        return `<span class="meta">${esc(c.label)}</span>`;
+        return `<span class="meta"${slot}>${esc(c.label)}</span>`;
     }
     return "";
   }
@@ -106,24 +120,77 @@
       group = t.group;
       tools += `<button class="tool ${t.active ? "on" : ""}" data-act="${esc(t.id)}" title="${esc(t.label + ": " + t.hint)}">${icon(t.icon)}<span>${esc(t.label)}</span></button>`;
     }
-    root.innerHTML =
+    const html =
       `<div class="bar1"><div class="brand"><div class="logo">${icon("box")}</div>CreaBIM</div>${menus}<span class="vsep"></span>` +
       `<div class="quick">${quick}</div><span class="spacer"></span><div class="doc" title="${esc(S.doc.path)}"><b>${esc(S.doc.name)}</b>${S.doc.note ? " · " + esc(S.doc.note) : ""}</div><span class="spacer"></span>${S.right.map(control).join("")}</div>` +
       `<div class="bar2"><div class="tools">${tools}</div><span class="spacer"></span></div>` +
       // the tool options strip: the tool in use and what it can be set to,
-      // then the active view's own settings at the right
+      // then the active view's own settings at the right. What doesn't fit
+      // goes in a More menu at the end (the app picks what, from the
+      // widths measured below).
       `<div class="bar3"><div class="toolname">${S.tool.icon ? icon(S.tool.icon) : ""}<b>${esc(S.tool.label)}</b>` +
-      (S.tool.help ? `<button class="qhelp" data-act="help:${esc(S.tool.help)}" title="Help for the ${esc(S.tool.label)} tool (F1)">${icon("circle-help")}</button>` : "") + `</div>` +
-      (S.tool_options.length ? `<div class="options">${S.tool_options.map(control).join("")}</div>` :
+      (S.tool.help ? `<button class="qhelp ${S.popup === "toolhelp" ? "open" : ""}" data-popup="toolhelp" title="How to use the ${esc(S.tool.label)} tool (F1 opens its page)">${icon("circle-help")}</button>` : "") + `</div>` +
+      (S.tool_options.length ? `<div class="options tool-opts">${shown(S.tool_options).map((c) => control(c)).join("")}</div>` :
         `<div class="tool-hint" title="${esc(S.tool.hint)}">${esc(S.tool.hint || "")}</div>`) +
-      `<span class="spacer"></span><div class="options">${S.options.map(control).join("")}</div></div>`;
+      `<span class="spacer"></span>` +
+      (S.tool_options.length && S.options.length ? `<span class="vsep group-sep"></span>` : "") +
+      `<div class="options view-opts">${shown(S.options).map((c) => control(c)).join("")}</div>` +
+      (S.more ? `<button class="dd more-btn ${S.popup === "more" ? "open" : ""}" data-popup="more" title="${S.more} more ${S.more === 1 ? "option" : "options"} that don't fit here">${icon("ellipsis")}<span class="v">More</span></button>` : "") +
+      `</div>` +
+      // every control at its own width, out of sight, to measure
+      `<div class="bar3 measure" aria-hidden="true"><div class="m-tool">${S.tool_options.map((c) => control(c)).join("")}</div>` +
+      `<div class="m-view">${S.options.map((c) => control(c)).join("")}</div>` +
+      `<span class="m-more"><button class="dd more-btn">${icon("ellipsis")}<span class="v">More</span></button></span></div>`;
+    const cut = html.indexOf(`<div class="bar3 measure"`);
+    // the measured copies answer no clicks and hold no typing
+    root.innerHTML = html.slice(0, cut) + html.slice(cut).replace(/ data-(key|act|popup|scrub)=/g, " data-m$1=");
+    measureBar();
   }
+
+  // The controls the More menu doesn't hold.
+  function shown(list) {
+    return list.filter((c) => !c.more);
+  }
+
+  // Tell the app how wide each control is and how much room the strip
+  // has, when that changes; it answers with what goes in More.
+  function measureBar() {
+    const bar = root.querySelector(".bar3:not(.measure)");
+    const m = root.querySelector(".bar3.measure");
+    if (!bar || !m) return;
+    const w = (e) => Math.ceil(e.getBoundingClientRect().width);
+    const items = [];
+    const take = (sel, view, list) => {
+      [...m.querySelectorAll(sel + " > *")].forEach((k, i) => {
+        const cs = getComputedStyle(k);
+        const out = w(k) + Math.ceil(parseFloat(cs.marginLeft) + parseFloat(cs.marginRight));
+        items.push({ k: (list[i] && list[i].slot) || "", w: out, v: view });
+      });
+    };
+    take(".m-tool", false, S.tool_options);
+    take(".m-view", true, S.options);
+    const name = bar.querySelector(".toolname");
+    const hint = bar.querySelector(".tool-hint");
+    // the side padding, the gaps round the name and the spacer, the
+    // divider between the groups, and room for a little of the hint
+    const fixed = 20 + w(name) + 3 * 8 + 13 + (hint ? 120 : 0);
+    const msg = { t: "bar", avail: bar.clientWidth - fixed, gap: 6, more: w(m.querySelector(".m-more button")) + 6, items };
+    const key = JSON.stringify(msg);
+    if (key !== local.bar) {
+      local.bar = key;
+      post(msg);
+    }
+  }
+
+  window.addEventListener("resize", () => { if (pane === "top" && S) measureBar(); });
 
   // ---- left pane: project browser ----
 
   function drawLeft() {
     const f = local.filter.trim().toLowerCase();
-    let html = `<div class="browser"><div class="browser-head"><div class="title">${icon("layout-dashboard")}Project<span class="count">${esc(S.count)}</span></div>` +
+    const anyOpen = S.groups.some((g) => (local.open[g.key] !== undefined ? local.open[g.key] : g.open));
+    let html = `<div class="browser"><div class="browser-head"><div class="title">${icon("layout-dashboard")}Project<span class="count">${esc(S.count)}</span>` +
+      `<button class="gact fold" data-fold="${anyOpen ? 0 : 1}" title="${anyOpen ? "Collapse every group" : "Expand every group"}">${icon(anyOpen ? "chevrons-down-up" : "chevrons-up-down")}</button></div>` +
       `<label class="search">${icon("search")}<input data-key="filter" data-live="1" placeholder="Find views and elements" value="${esc(local.filter)}"></label></div><div class="tree">`;
     let any = false;
     for (const g of S.groups) {
@@ -251,6 +318,8 @@
 
   function drawPopup() {
     if (S.key === "palette" && S.items && S.items.length) return drawPalette();
+    if (S.controls && S.controls.length) return drawPanel(controlsHtml());
+    if (S.help) return drawPanel(helpHtml());
     if (!S.items || S.items.length === 0) {
       root.innerHTML = "";
       local.stack = [];
@@ -299,6 +368,38 @@
     local.sentH = local.sentW = null;
     reportSize();
     showMore();
+  }
+
+  // A popup that is a small panel rather than a list: the strip's
+  // overflow, or a tool's quick help.
+  function drawPanel(inner) {
+    local.key = S.key;
+    local.stack = [];
+    local.hot = -1;
+    keepFocus(() => { root.innerHTML = `<div class="mwrap"><div class="menu panel">${inner}</div><div class="more">${icon("chevron-down")}</div></div>`; });
+    root.querySelector(".menu").addEventListener("scroll", showMore);
+    local.sentH = local.sentW = null;
+    reportSize();
+    showMore();
+  }
+
+  // The tool options strip's controls that don't fit there, one a row.
+  function controlsHtml() {
+    return S.controls.map((c) => {
+      if (c.kind === "head") return `<div class="mhead">${esc(c.label)}</div>`;
+      if (c.kind === "sep") return `<div class="msep"></div>`;
+      return `<div class="prow">${control(c, true)}</div>`;
+    }).join("");
+  }
+
+  // How to use a tool or an element, in a few lines, and its guide page.
+  function helpHtml() {
+    const h = S.help;
+    return `<div class="hp"><div class="hp-title">${h.icon ? icon(h.icon) : icon("circle-help")}<b>${esc(h.title)}</b>` +
+      (h.keys ? `<span class="hp-key">${esc(h.keys)}</span>` : "") + `</div>` +
+      h.lines.map((l) => `<p>${inline(l)}</p>`).join("") +
+      (h.page ? `<button class="hp-more" data-act="help:${esc(h.page)}">${icon("book-open")}<span>Read more in the guide</span>${icon("arrow-right")}</button>` : "") +
+      `</div>`;
   }
 
   // Split a menu at its headers into `n` columns of about equal height,
@@ -410,13 +511,15 @@
   }
 
   function mdLink(text, href) {
-    if (/^https?:/.test(href)) return `${text} <span class="url">(${href})</span>`;
+    // a website opens in the system's browser
+    if (/^https?:/.test(href)) return `<a class="ext" data-act="url:${href}" title="${href}">${text}</a>`;
     return `<a data-act="help:${href}">${text}</a>`;
   }
 
   function mdImage(alt, src) {
     const url = S && S.images && S.images[src];
-    return url ? `<figure><img src="${url}" alt="${alt}"><figcaption>${alt}</figcaption></figure>` : "";
+    // click a picture to see it as wide as the panel lets it, again to go back
+    return url ? `<figure class="zoomable" title="Click to enlarge"><img src="${url}" alt="${alt}"><figcaption>${alt}</figcaption></figure>` : "";
   }
 
   // Inline marks, on text already escaped.
@@ -660,6 +763,14 @@
 
   document.addEventListener("click", (e) => {
     if (local.dragged) return;
+    const fig = e.target.closest("figure.zoomable");
+    if (fig) { fig.classList.toggle("big"); return; }
+    const fold = e.target.closest("[data-fold]");
+    if (fold && S && S.groups) {
+      for (const g of S.groups) local.open[g.key] = fold.dataset.fold === "1";
+      drawLeft();
+      return focusViews(e);
+    }
     const t = e.target.closest("button, .row, .group, a[data-act]");
     if (!t || t.disabled) return focusViews(e);
     if (t.dataset.popup) {
@@ -693,6 +804,13 @@
       post({ t: "pick", id: t.dataset.id, add: e.shiftKey || e.ctrlKey || e.metaKey });
     }
     focusViews(e);
+  });
+
+  // Double-click a row of the project browser: a type opens on its own,
+  // an element is framed in the 3D view.
+  document.addEventListener("dblclick", (e) => {
+    const row = e.target.closest(".row");
+    if (row && row.dataset.id && !local.dragged) post({ t: "open", id: row.dataset.id });
   });
 
   // Slide between menus while one is open, like a menu bar.

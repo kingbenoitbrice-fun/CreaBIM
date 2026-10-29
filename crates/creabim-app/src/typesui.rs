@@ -683,9 +683,9 @@ impl CreaBimApp {
         let mut asks = vec![];
         let mut chosen = current;
         ui.horizontal(|ui| {
-            egui::ComboBox::from_label("Type")
+            crate::app::helpui::combo(ui, "Type")
                 .selected_text(shown)
-                .width(180.0)
+                .width(ui.available_width().min(180.0))
                 .show_ui(ui, |ui| {
                     // an object is its type: it can change type, not lose it
                     if cat != TypeCategory::Object {
@@ -802,9 +802,19 @@ impl CreaBimApp {
                 asks.push(TypeAsk::SelectInstances(id));
             }
         });
-        if ui.button("Open in the Types window").clicked() {
-            self.open_types(Some(id));
-        }
+        self.show_in_model_ui(ui, id);
+        ui.horizontal(|ui| {
+            if ui
+                .button("Open preview")
+                .on_hover_text("The type on its own, in 3D, plan and section, beside its values (or double-click it in the project browser)")
+                .clicked()
+            {
+                self.open_type_preview(id);
+            }
+            if ui.button("Types window").clicked() {
+                self.open_types(Some(id));
+            }
+        });
         if !label.is_empty() {
             asks.push(TypeAsk::Edit(id, label, t));
         }
