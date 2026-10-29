@@ -321,8 +321,9 @@ pub fn perimeter(poly: &[DVec2]) -> f64 {
 
 /// The lines that bound rooms on `level`: both faces of every wall, run on
 /// at their ends far enough to meet the faces of the walls they stop
-/// against, and every room separator, run on a little so that one drawn
-/// to a face crosses it.
+/// against, and every room separator, run on as far as the walls are so
+/// that one drawn to a face, to a wall's centre line or a snap short of
+/// the face still crosses it.
 fn bounding_lines(model: &Model, level: ElementId) -> Vec<(DVec2, DVec2, ElementId)> {
     let walls: Vec<(ElementId, &crate::Wall)> = model
         .iter()
@@ -348,7 +349,7 @@ fn bounding_lines(model: &Model, level: ElementId) -> Vec<(DVec2, DVec2, Element
         if let ElementKind::RoomSeparator(s) = &e.kind {
             if s.level == level && s.a.distance(s.b) > 1e-6 {
                 let d = (s.b - s.a).normalize();
-                out.push((s.a - d * 0.02, s.b + d * 0.02, e.id));
+                out.push((s.a - d * reach.max(0.1), s.b + d * reach.max(0.1), e.id));
             }
         }
     }
@@ -765,6 +766,30 @@ mod tests {
         // a room outside the walls isn't enclosed
         let out = Room::new(l, DVec2::new(-3.0, 1.0));
         assert!(shape_of(doc.model(), &out).is_none());
+    }
+
+    #[test]
+    fn a_separator_drawn_a_little_short_of_the_walls_still_splits_a_room() {
+        let (mut doc, l, _) = house();
+        let room = Element::new(
+            "Room",
+            ElementKind::Room(Room::new(l, DVec2::new(1.0, 2.0))),
+        );
+        let rid = room.id;
+        doc.commit(Transaction::new("room").insert(room)).unwrap();
+        let whole = area(doc.model(), rid);
+        // a snap 50 mm short of each face
+        let sep = Element::new(
+            "Separator",
+            ElementKind::RoomSeparator(Separator {
+                level: l,
+                a: DVec2::new(3.0, 0.15),
+                b: DVec2::new(3.02, 3.85),
+            }),
+        );
+        doc.commit(Transaction::new("sep").insert(sep)).unwrap();
+        let split = area(doc.model(), rid);
+        assert!(split < whole * 0.6, "{split} of {whole}");
     }
 
     #[test]

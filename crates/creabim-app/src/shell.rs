@@ -193,6 +193,9 @@ fn group_title(class: &str) -> String {
         "TextStyle" => "Text styles".into(),
         "CropBox" => "Crop boxes".into(),
         "IfcFurniture" => "Furniture and fixtures".into(),
+        "IfcSpace" => "Rooms".into(),
+        "IfcVirtualElement" => "Room separators".into(),
+        "IfcCovering" => "Ceilings".into(),
         c => {
             let c = c.strip_prefix("Ifc").unwrap_or(c);
             if c.ends_with('s') {

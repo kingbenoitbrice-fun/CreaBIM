@@ -49,6 +49,19 @@ impl SlabMode {
         }
     }
 
+    /// [`SlabMode::hint`] for the tool drawing: a room or a ceiling is
+    /// placed to the walls' faces, not their centre lines.
+    pub fn hint_for(self, tool: crate::planview::Tool) -> &'static str {
+        use crate::planview::Tool;
+        match (tool, self) {
+            (Tool::Room, SlabMode::FillRoom) => "Click inside walls: the room fills the space to their inner faces and follows them when they move.",
+            (Tool::Room, SlabMode::FromSketch) => "Click inside a closed sketch lying flat: it becomes a room with its outline, and the sketch is used up.",
+            (Tool::Ceiling, SlabMode::FillRoom) => "Click inside a room: the ceiling goes over it and follows it.",
+            (Tool::Ceiling, SlabMode::FromSketch) => "Click inside a closed sketch lying flat: it becomes a ceiling with its outline, and the sketch is used up.",
+            _ => self.hint(),
+        }
+    }
+
     pub fn hint(self) -> &'static str {
         match self {
             SlabMode::Polygon => "Click the slab's corners; click the first one again, or press Enter, to close it. A draws arcs (click the end, then a point on the arc), L lines. Esc or right-click takes back a point.",
@@ -171,7 +184,7 @@ pub fn controls(
         if state.outline.as_ref().is_some_and(|o| o.target.is_none()) {
             state.outline = None;
         }
-        msg = Some(mode.hint().to_string());
+        msg = Some(mode.hint_for(state.tool).to_string());
         if mode == SlabMode::FromSketch {
             if let Some(id) = selection.active {
                 if matches!(
