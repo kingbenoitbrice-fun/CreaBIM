@@ -228,6 +228,7 @@ pub fn level_datums(model: &Model, span: (f64, f64), scale: f64) -> Vec<PlanItem
                 shape: crate::annotation::Shape::Level {
                     at: DVec2::new(x1, l.elevation),
                     elevation: units.elevation(l.elevation),
+                    line_end: None,
                 },
                 text: e.name.clone(),
                 look,
@@ -236,6 +237,99 @@ pub fn level_datums(model: &Model, span: (f64, f64), scale: f64) -> Vec<PlanItem
         });
     }
     items
+}
+
+/// Lay out the level heads of a section or elevation drawn at `scale`:
+/// heads the view turns off are left out, dragged ones go where they were
+/// dragged, and the rest are spread apart where levels are too close for
+/// their text, each joined to its datum line by a dog-leg.
+pub fn lay_out_level_heads(
+    items: &mut Vec<PlanItem>,
+    heads: &std::collections::BTreeMap<ElementId, creabim_core::LevelHead>,
+    scale: f64,
+) {
+    use crate::annotation::Shape;
+    let mm = scale / 1000.0;
+    items.retain(|it| match it {
+        PlanItem::Annotation { id, item } if matches!(item.shape, Shape::Level { .. }) => {
+            !heads.get(id).is_some_and(|h| h.hidden)
+        }
+        _ => true,
+    });
+    // (index, datum end, text size) of the heads left to place
+    let mut auto: Vec<(usize, DVec2, f64)> = Vec::new();
+    for (i, it) in items.iter_mut().enumerate() {
+        let PlanItem::Annotation { id, item } = it else {
+            continue;
+        };
+        let size = item.look.size;
+        let Shape::Level { at, line_end, .. } = &mut item.shape else {
+            continue;
+        };
+        match heads.get(id).and_then(|h| h.offset) {
+            Some(off) if off.length() > 1e-9 => {
+                *line_end = Some(*at);
+                *at += off;
+            }
+            _ => auto.push((i, *at, size)),
+        }
+    }
+    auto.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
+    // the height a head's two lines of text take, with a little air
+    let gap = |size: f64| (size * 2.6 + 2.4) * mm;
+    let ys = spread(
+        &auto.iter().map(|a| a.1.y).collect::<Vec<_>>(),
+        auto.iter().map(|a| gap(a.2)).fold(0.0, f64::max),
+    );
+    // heads too near another step out a little, so each has its dog-leg
+    let crowded: Vec<bool> = (0..auto.len())
+        .map(|k| {
+            (0..auto.len())
+                .any(|j| j != k && (auto[j].1.y - auto[k].1.y).abs() < gap(auto[k].2) - 1e-9)
+        })
+        .collect();
+    for (k, (i, end, _)) in auto.iter().enumerate() {
+        if !crowded[k] {
+            continue;
+        }
+        if let PlanItem::Annotation { item, .. } = &mut items[*i] {
+            if let Shape::Level { at, line_end, .. } = &mut item.shape {
+                *line_end = Some(*end);
+                *at = DVec2::new(end.x + 4.0 * mm, ys[k]);
+            }
+        }
+    }
+}
+
+/// Heights for labels wanted at the sorted heights `want`, at least `gap`
+/// apart: each crowd of labels is spread evenly about where it wants to be.
+pub fn spread(want: &[f64], gap: f64) -> Vec<f64> {
+    // clusters of (first index, count), merged until none overlap
+    let mut clusters: Vec<(usize, usize, f64)> = want
+        .iter()
+        .enumerate()
+        .map(|(i, y)| (i, 1, *y))
+        .collect();
+    let bottom = |c: &(usize, usize, f64)| c.2 - gap * (c.1 as f64 - 1.0) / 2.0;
+    let top = |c: &(usize, usize, f64)| c.2 + gap * (c.1 as f64 - 1.0) / 2.0;
+    loop {
+        let clash = clusters
+            .windows(2)
+            .position(|w| bottom(&w[1]) - top(&w[0]) < gap - 1e-9);
+        let Some(k) = clash else { break };
+        let (a, b) = (clusters[k], clusters[k + 1]);
+        let n = a.1 + b.1;
+        let mean = want[a.0..a.0 + n].iter().sum::<f64>() / n as f64;
+        clusters[k] = (a.0, n, mean);
+        clusters.remove(k + 1);
+    }
+    let mut out = Vec::with_capacity(want.len());
+    for c in &clusters {
+        for j in 0..c.1 {
+            out.push(bottom(c) + gap * j as f64);
+        }
+    }
+    out
 }
 
 /// Section of a view element, if it is a section or elevation.
@@ -568,6 +662,9 @@ pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<D
                 r.key = view_key(view);
             }
         }
+    }
+    if let creabim_core::ViewKind::Section { .. } = v.kind {
+        lay_out_level_heads(&mut d.items, &v.level_heads, v.scale);
     }
     d.items.extend(crate::annotate::annotations(model, view, v));
     if !hidden.is_empty() {

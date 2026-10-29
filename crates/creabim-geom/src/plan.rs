@@ -526,6 +526,9 @@ pub enum PlanItem {
         text: String,
         look: crate::annotation::TextLook,
         witness: Option<[DVec2; 2]>,
+        /// Stretches of the dimension line left out where tags and notes
+        /// sit across it, as fractions of the way from `a` to `b`.
+        breaks: Vec<[f64; 2]>,
     },
     /// A tag: `text` in a bubble at `at`, with a leader back to `anchor`.
     Tag {

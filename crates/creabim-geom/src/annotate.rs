@@ -339,7 +339,7 @@ fn measured(
         return None;
     }
     let shape = match d.kind {
-        DimensionKind::Linear => return None,
+        DimensionKind::Linear | DimensionKind::Spot => return None,
         DimensionKind::Angular => {
             if c.distance(b) < 1e-6 {
                 return None;
@@ -369,6 +369,52 @@ fn measured(
         item: Box::new(Annotation {
             shape,
             text: measure(&model.units(), d.kind, c, a, b),
+            look: look_of(model, d.style, d.color),
+            mm: view.scale / 1000.0,
+        }),
+    })
+}
+
+/// The height a spot level reads at `at`: in a section or elevation the
+/// point's own height; in a plan the top of the slab it was put on, or
+/// else the plan's level (a level marker).
+pub fn spot_height(
+    model: &Model,
+    view: &View,
+    d: &creabim_core::Dimension,
+    at: DVec2,
+) -> Option<f64> {
+    match view.kind {
+        ViewKind::Section { .. } => Some(at.y),
+        ViewKind::Plan { level, .. } => {
+            let elevation = |l: ElementId| model.level(l).map(|l| l.elevation);
+            match d.a.host.and_then(|h| model.get(h)).map(|e| &e.kind) {
+                Some(ElementKind::Slab(s)) => Some(s.top(elevation(s.level)?)),
+                _ => elevation(level),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// A spot level as a drawing item, if it can be drawn in the view.
+fn spot(model: &Model, view: &View, id: ElementId, d: &creabim_core::Dimension) -> Option<PlanItem> {
+    let at = resolve(model, view, &d.a)?;
+    let text_at = resolve(model, view, &d.b)?;
+    let z = spot_height(model, view, d, at)?;
+    let pattern = d
+        .pattern
+        .as_deref()
+        .unwrap_or(creabim_core::annotation::SPOT_PATTERN);
+    Some(PlanItem::Annotation {
+        id,
+        item: Box::new(Annotation {
+            shape: Shape::Spot {
+                at,
+                text_at,
+                plan: matches!(view.kind, ViewKind::Plan { .. }),
+            },
+            text: creabim_core::annotation::spot_text(model, pattern, z),
             look: look_of(model, d.style, d.color),
             mm: view.scale / 1000.0,
         }),
@@ -421,6 +467,9 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
     let mut out = Vec::new();
     for e in model.iter() {
         match &e.kind {
+            ElementKind::Dimension(d) if d.view == view_id && d.kind == DimensionKind::Spot => {
+                out.extend(spot(model, view, e.id, d));
+            }
             ElementKind::Dimension(d) if d.view == view_id && !d.kind.is_linear() => {
                 out.extend(measured(model, view, e.id, d));
             }
@@ -444,6 +493,7 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
                     text: dimension_text(&model.units(), a, b2),
                     look: look_of(model, d.style, d.color),
                     witness,
+                    breaks: vec![],
                 });
             }
             ElementKind::Tag(t) if t.view == view_id => {
@@ -467,7 +517,119 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
             _ => {}
         }
     }
+    break_dimensions(&mut out, view.scale / 1000.0);
     out
+}
+
+/// Where a dimension line `p` → `q` crosses the box `corners` (grown by
+/// `pad`), as fractions of the way along it.
+fn crossing(p: DVec2, q: DVec2, corners: &[DVec2], pad: f64) -> Option<[f64; 2]> {
+    let lo = corners.iter().copied().reduce(DVec2::min)? - DVec2::splat(pad);
+    let hi = corners.iter().copied().reduce(DVec2::max)? + DVec2::splat(pad);
+    let d = q - p;
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for (o, v, a, b) in [(p.x, d.x, lo.x, hi.x), (p.y, d.y, lo.y, hi.y)] {
+        if v.abs() < 1e-12 {
+            if o < a || o > b {
+                return None;
+            }
+            continue;
+        }
+        let (mut s0, mut s1) = ((a - o) / v, (b - o) / v);
+        if s0 > s1 {
+            std::mem::swap(&mut s0, &mut s1);
+        }
+        t0 = t0.max(s0);
+        t1 = t1.min(s1);
+    }
+    (t1 - t0 > 1e-9).then_some([t0, t1])
+}
+
+/// Give each dimension whose style breaks at tags the gaps where the
+/// tags' bubbles and the notes' text sit across its line; `mm` is drawing
+/// units per paper mm.
+pub fn break_dimensions(items: &mut [PlanItem], mm: f64) {
+    let mut boxes: Vec<Vec<DVec2>> = Vec::new();
+    for it in items.iter() {
+        match it {
+            PlanItem::Tag {
+                anchor,
+                at,
+                elbow,
+                text,
+                round,
+                look,
+                ..
+            } => boxes.push(tag_geometry(*anchor, *at, *elbow, text, *round, look, mm).outline),
+            PlanItem::Annotation { item, .. } if matches!(item.shape, Shape::Note { .. }) => {
+                boxes.extend(item.text_boxes().iter().map(|b| b.to_vec()))
+            }
+            _ => {}
+        }
+    }
+    boxes.retain(|b| !b.is_empty());
+    for it in items.iter_mut() {
+        let PlanItem::Dimension {
+            a,
+            b,
+            offset,
+            look,
+            breaks,
+            ..
+        } = it
+        else {
+            continue;
+        };
+        breaks.clear();
+        if !look.breaks {
+            continue;
+        }
+        let n = (*b - *a).normalize_or_zero().perp() * *offset;
+        let (p, q) = (*a + n, *b + n);
+        let mut gaps: Vec<[f64; 2]> = boxes
+            .iter()
+            .filter_map(|c| crossing(p, q, c, 0.8 * mm))
+            .collect();
+        gaps.sort_by(|x, y| x[0].total_cmp(&y[0]));
+        for g in gaps {
+            match breaks.last_mut() {
+                Some(last) if g[0] <= last[1] => last[1] = last[1].max(g[1]),
+                _ => breaks.push(g),
+            }
+        }
+    }
+}
+
+impl DimensionGeometry {
+    /// Leave the stretches `breaks` (fractions of the way from `pa` to
+    /// `pb`, the dimension line's measured ends) out of its line.
+    pub fn break_line(&mut self, breaks: &[[f64; 2]]) {
+        if breaks.is_empty() || self.lines.is_empty() {
+            return;
+        }
+        let (s, e) = self.lines[0];
+        let (pa, pb) = self.ends_at;
+        let len = pa.distance(pb);
+        if len < 1e-12 {
+            return;
+        }
+        let u = (pb - pa) / len;
+        let t = |p: DVec2| (p - pa).dot(u) / len;
+        let at = |f: f64| pa + (pb - pa) * f;
+        let mut pieces = vec![];
+        let mut from = t(s);
+        for br in breaks {
+            if br[0] > from {
+                pieces.push((at(from), at(br[0].min(t(e)))));
+            }
+            from = from.max(br[1]);
+        }
+        if t(e) > from {
+            pieces.push((at(from), e));
+        }
+        pieces.retain(|(p, q)| p.distance(*q) > 1e-9);
+        self.lines.splice(0..1, pieces);
+    }
 }
 
 /// Linework of a dimension, in drawing units; `mm` is drawing units per
@@ -480,6 +642,8 @@ pub struct DimensionGeometry {
     pub text_at: DVec2,
     /// Text angle in radians, kept readable (never upside down).
     pub angle: f64,
+    /// Where the dimension line meets its witness lines.
+    pub ends_at: (DVec2, DVec2),
 }
 
 /// A linear dimension's linework: its line `offset` to the left of `a` →
@@ -526,6 +690,7 @@ pub fn dimension_geometry(
         // 1.8 mm off the line for the default 2.5 mm text
         text_at: (pa + pb) / 2.0 + up * (0.55 + look.size / 2.0) * mm,
         angle,
+        ends_at: (pa, pb),
     }
 }
 
@@ -916,7 +1081,9 @@ mod tests {
                 g.closed,
                 !matches!(shape, TagShape::Underline | TagShape::TextOnly)
             );
-            let (from, to) = g.leader.expect("a leader to the far anchor");
+            let [from, to] = g.leader[..] else {
+                panic!("a leader to the far anchor")
+            };
             assert_eq!(to, anchor);
             assert!(from.y < 0.0 && from.y > -0.05, "{shape:?} {from}");
         }

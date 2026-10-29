@@ -26,6 +26,8 @@ pub struct TextLook {
     /// Size of the ends, paper mm.
     pub end_size: f64,
     pub shape: TagShape,
+    /// A dimension line leaves gaps where tags and notes cross it.
+    pub breaks: bool,
 }
 
 /// Size of dimension ticks and arrows, paper mm.
@@ -49,6 +51,7 @@ impl From<TextStyle> for TextLook {
             leader_end: s.leader_end,
             end_size: s.end_size.unwrap_or(END_SIZE),
             shape: s.tag_shape,
+            breaks: s.break_at_tags,
         }
     }
 }
@@ -221,6 +224,8 @@ pub fn measure(units: &Units, kind: DimensionKind, center: DVec2, a: DVec2, b: D
         DimensionKind::Radius => format!("R{}", l(center.distance(a))),
         DimensionKind::Diameter => format!("Ø{}", l(2.0 * center.distance(a))),
         DimensionKind::ArcLength => l(center.distance(a) * sweep(center, a, b)),
+        // its height comes from the model, not its points
+        DimensionKind::Spot => String::new(),
     }
 }
 
@@ -260,10 +265,25 @@ pub enum Shape {
         leader: Option<DVec2>,
         elbow: Option<DVec2>,
     },
+    /// A spot level: a mark on the point `at` (a triangle standing on it
+    /// in a section or elevation, a target in a plan, where it is a level
+    /// marker) and a leader to `text_at`, where its height (the
+    /// annotation's text) sits on a short line.
+    Spot {
+        at: DVec2,
+        text_at: DVec2,
+        plan: bool,
+    },
     /// A level's head where its datum line ends at `at`, Revit style: a
     /// target symbol, the level's name (the annotation's text) above the
     /// line and its `elevation` below.
-    Level { at: DVec2, elevation: String },
+    Level {
+        at: DVec2,
+        elevation: String,
+        /// Where the datum line ends, when the head was moved off it (to
+        /// clear another level's, or by a drag): a dog-leg joins the two.
+        line_end: Option<DVec2>,
+    },
 }
 
 /// Radius of a level head's target symbol, paper mm.
@@ -487,20 +507,55 @@ impl Annotation {
                         .collect(),
                 );
             }
-            Shape::Level { at, ref elevation } => {
-                let r = LEVEL_HEAD * mm;
-                out.lines.push(arc_points(at, r, 0.0, TAU));
-                // two opposite quarters filled in
-                for q in [0.0, PI] {
-                    for i in 0..4 {
-                        let t = |k: usize| q + FRAC_PI_2 * k as f64 / 4.0;
-                        out.arrows.push([
-                            at,
-                            at + DVec2::from_angle(t(i)) * r,
-                            at + DVec2::from_angle(t(i + 1)) * r,
-                        ]);
-                    }
+            Shape::Spot { at, text_at, plan } => {
+                let w = look.width(&self.text) * mm;
+                let dir = if text_at.x >= at.x { 1.0 } else { -1.0 };
+                let shoulder = text_at + DVec2::X * dir * (w + 2.0 * TEXT_GAP * mm);
+                let from = if plan {
+                    target(&mut out, at, LEVEL_HEAD * mm);
+                    at + (text_at - at).normalize_or(DVec2::X) * LEVEL_HEAD * mm
+                } else {
+                    // a filled triangle standing on the point
+                    let (h, half) = (2.0 * mm, 1.15 * mm);
+                    out.arrows.push([
+                        at,
+                        at + DVec2::new(-half, h),
+                        at + DVec2::new(half, h),
+                    ]);
+                    at + DVec2::Y * h
+                };
+                if from.distance(text_at) > 0.5 * mm {
+                    out.lines.push(vec![from, text_at, shoulder]);
+                } else {
+                    out.lines.push(vec![text_at, shoulder]);
                 }
+                out.texts.push(MarkText {
+                    at: text_at
+                        + DVec2::new(dir * TEXT_GAP * mm, (look.size * 0.5 + 0.6) * mm),
+                    text: self.text.clone(),
+                    angle: 0.0,
+                    anchor: if dir > 0.0 { Anchor::Start } else { Anchor::End },
+                });
+            }
+            Shape::Level {
+                at,
+                ref elevation,
+                line_end,
+            } => {
+                let r = LEVEL_HEAD * mm;
+                if let Some(end) = line_end {
+                    // a dog-leg from the datum's end across to the head
+                    let s = if at.x < end.x { -1.0 } else { 1.0 };
+                    let x = DVec2::X * s;
+                    out.lines.push(vec![
+                        end,
+                        end + x * 0.75 * mm,
+                        at - x * (r + 0.75 * mm),
+                        at - x * r,
+                    ]);
+                }
+                // a target: two opposite quarters filled in
+                target(&mut out, at, r);
                 let x = at.x + r + TEXT_GAP * mm;
                 let dy = (look.size * 0.5 + 0.8) * mm;
                 for (y, text) in [(dy, self.text.clone()), (-dy, elevation.clone())] {
@@ -596,6 +651,33 @@ impl Annotation {
             Shape::Note { at, .. } => Some(at),
             _ => self.marks(mm).texts.first().map(|t| t.at),
         }
+    }
+}
+
+/// A level target at `at`: a circle with two opposite quarters filled.
+fn target(out: &mut Marks, at: DVec2, r: f64) {
+    out.lines.push(arc_points(at, r, 0.0, TAU));
+    for q in [0.0, PI] {
+        for i in 0..4 {
+            let t = |k: usize| q + FRAC_PI_2 * k as f64 / 4.0;
+            out.arrows.push([
+                at,
+                at + DVec2::from_angle(t(i)) * r,
+                at + DVec2::from_angle(t(i + 1)) * r,
+            ]);
+        }
+    }
+}
+
+impl Annotation {
+    /// The boxes of its text, at its own view's scale: what a dimension
+    /// line breaks around.
+    pub fn text_boxes(&self) -> Vec<[DVec2; 4]> {
+        self.marks(self.mm)
+            .texts
+            .iter()
+            .map(|t| text_box(t, &self.look, self.mm))
+            .collect()
     }
 }
 

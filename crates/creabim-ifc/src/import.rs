@@ -512,6 +512,7 @@ impl<'a> Importer<'a> {
             let eid = self.new_id(e);
             let name = Self::name(e, "Type");
             self.type_elems.push(Element {
+                mark: None,
                 id: eid,
                 name,
                 kind: ElementKind::ElementType(t),
@@ -579,6 +580,7 @@ impl<'a> Importer<'a> {
             },
         );
         self.wall_elems.push(Element {
+            mark: None,
             source: None,
             of_type: self.type_ref(id),
             id: eid,
@@ -603,6 +605,7 @@ impl<'a> Importer<'a> {
         let eid = self.new_id(e);
         let name = Self::name(e, f.kind.label());
         self.opening_elems.push(Element {
+            mark: None,
             source: None,
             of_type: self.type_ref(id),
             id: eid,
@@ -640,6 +643,7 @@ impl<'a> Importer<'a> {
                 };
                 let eid = self.new_id(o);
                 self.opening_elems.push(Element {
+                    mark: None,
                     source: None,
                     of_type: None,
                     id: eid,
@@ -819,6 +823,7 @@ impl<'a> Importer<'a> {
                     .unwrap_or_else(|| format!("Level {i}"));
             }
             self.level_elems.push(Element {
+                mark: None,
                 source: None,
                 id: lid,
                 name,
@@ -1291,6 +1296,7 @@ impl<'a> Importer<'a> {
                 },
             );
             self.wall_elems.push(Element {
+                mark: None,
                 source: None,
                 of_type: self.type_ref(id),
                 id: eid,
@@ -1388,6 +1394,7 @@ impl<'a> Importer<'a> {
         let eid = self.new_id(e);
         self.slabs.insert(id, self.wall_elems.len());
         self.wall_elems.push(Element {
+            mark: None,
             source: None,
             of_type: self.type_ref(id),
             id: eid,
@@ -1476,6 +1483,7 @@ impl<'a> Importer<'a> {
             "Window"
         };
         self.opening_elems.push(Element {
+            mark: None,
             source: None,
             of_type: self.type_ref(id),
             id: eid,
@@ -1541,6 +1549,7 @@ impl<'a> Importer<'a> {
         let material = self.material_for(id);
         let eid = self.new_id(e);
         self.other_elems.push(Element {
+            mark: None,
             source: None,
             id: eid,
             name: Self::name(e, class),
