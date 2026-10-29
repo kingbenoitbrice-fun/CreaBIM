@@ -213,7 +213,10 @@ impl CreaBimApp {
 
     /// The crop boxes of `owner`, each with its switches, in Properties.
     pub(super) fn crop_list(&mut self, ui: &mut egui::Ui, owner: Option<ElementId>) {
-        ui.label(egui::RichText::new(format!("Crop boxes of {}", self.owner_name(owner))).strong());
+        let title = format!("Crop boxes of {}", self.owner_name(owner));
+        if !self.prop_header(ui, "crops", &title, true, Some("crop-boxes")) {
+            return;
+        }
         let rows: Vec<(ElementId, String, bool, bool)> =
             cropbox::crop_boxes(self.doc.model(), owner)
                 .into_iter()
