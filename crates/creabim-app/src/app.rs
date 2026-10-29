@@ -1435,6 +1435,7 @@ impl CreaBimApp {
                         | PlanItem::Tag { .. }
                         | PlanItem::Annotation { .. }
                         | PlanItem::Tint { .. }
+                        | PlanItem::Shade { .. }
                         | PlanItem::Image { .. } => {}
                     }
                 }
@@ -3766,6 +3767,20 @@ impl CreaBimApp {
                     gridvis::VisTarget::View(v),
                     Some(&format!("View: {name}")),
                 );
+                // a plan's graphics: weights, below-cut tint, view depth
+                if let Some(ElementKind::View(view)) = self.doc.model().get(v).map(|e| &e.kind) {
+                    if matches!(view.kind, ViewKind::Plan { .. }) {
+                        let (mut g, scale) = (view.graphics.clone(), view.scale);
+                        if let Some(label) = plan_graphics_ui(ui, &mut g, scale) {
+                            let r = self.doc.edit_merged(v, label, |e| {
+                                if let ElementKind::View(x) = &mut e.kind {
+                                    x.graphics = g;
+                                }
+                            });
+                            self.report(r, "View changed.");
+                        }
+                    }
+                }
             }
             ui.add_space(8.0);
             self.visibility_panel(ui, gridvis::VisTarget::Window3d, Some("3D view"));
@@ -4157,6 +4172,9 @@ impl CreaBimApp {
                             )
                             .weak(),
                         );
+                            if let Some(l) = plan_graphics_ui(ui, &mut v.graphics, v.scale) {
+                                label = l;
+                            }
                         }
                         ViewKind::Section {
                             start,
@@ -5493,6 +5511,127 @@ fn draw_guide_3d(
     if run.len() > 1 {
         painter.extend(egui::Shape::dashed_line(&run, stroke, 6.0, 4.0));
     }
+}
+
+/// A plan's graphics in its Properties: the tint of what lies below the
+/// cut, how far below its floor it looks, and its pens' line weights.
+/// Returns the undo label of a change.
+fn plan_graphics_ui(
+    ui: &mut egui::Ui,
+    g: &mut creabim_core::PlanGraphics,
+    scale: f64,
+) -> Option<&'static str> {
+    let mut label = None;
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Graphics").strong());
+    if ui
+        .checkbox(&mut g.below_fill, "Tint what lies below the cut")
+        .on_hover_text("Furniture, fittings and imported meshes under the cut get a light fill.")
+        .changed()
+    {
+        label = Some("Below-cut fill");
+    }
+    if g.below_fill {
+        ui.horizontal(|ui| {
+            ui.label("Strength");
+            if ui
+                .add(egui::Slider::new(&mut g.below_strength, 0.05..=1.0))
+                .changed()
+            {
+                label = Some("Below-cut fill");
+            }
+        });
+        if ui
+            .checkbox(&mut g.below_grey, "In grey, not material colours")
+            .changed()
+        {
+            label = Some("Below-cut fill");
+        }
+    }
+    let mut to_level = g.range.view_depth.is_none();
+    if ui
+        .checkbox(&mut to_level, "View depth: down to the level below")
+        .on_hover_text(
+            "How far below its floor the plan looks, through holes in the floor such as a stair well.",
+        )
+        .changed()
+    {
+        g.range.view_depth = if to_level { None } else { Some(1.0) };
+        label = Some("View depth");
+    }
+    if let Some(d) = &mut g.range.view_depth {
+        ui.horizontal(|ui| {
+            ui.label("View depth below the floor");
+            if ui.add(crate::units::drag(d).range(0.0..=100.0)).changed() {
+                label = Some("View depth");
+            }
+        });
+    }
+    let mut auto = g.weights.is_none();
+    if ui
+        .checkbox(&mut auto, "Line weights from the scale")
+        .on_hover_text("Heavier pens at 1:50 and larger, lighter at 1:100 and smaller.")
+        .changed()
+    {
+        g.weights = if auto {
+            None
+        } else {
+            Some(creabim_core::LineWeights::for_scale(scale))
+        };
+        label = Some("Line weights");
+    }
+    egui::CollapsingHeader::new("Pens by category")
+        .id_salt("plan_category_pens")
+        .show(ui, |ui| {
+            use creabim_core::graphics::{CategoryPen, PenClass};
+            use creabim_core::Category as C;
+            for c in [
+                C::Objects,
+                C::Railings,
+                C::Stairs,
+                C::Slabs,
+                C::Roofs,
+                C::FreeMeshes,
+            ] {
+                let current = g.pen_of(c);
+                let mut pick = current;
+                egui::ComboBox::from_label(c.label())
+                    .selected_text(current.map_or("As drawn", |p| p.label()))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut pick, None, "As drawn");
+                        for p in PenClass::ALL {
+                            ui.selectable_value(&mut pick, Some(p), p.label());
+                        }
+                    });
+                if pick != current {
+                    g.category_pens.retain(|x| x.category != c);
+                    if let Some(pen) = pick {
+                        g.category_pens.push(CategoryPen { category: c, pen });
+                    }
+                    label = Some("Pens by category");
+                }
+            }
+        });
+    if let Some(w) = &mut g.weights {
+        for (name, v) in w.fields_mut() {
+            ui.horizontal(|ui| {
+                ui.label(name);
+                if ui
+                    .add(
+                        egui::DragValue::new(v)
+                            .speed(0.01)
+                            .range(0.02..=2.0)
+                            .max_decimals(2)
+                            .suffix(" mm"),
+                    )
+                    .changed()
+                {
+                    label = Some("Line weights");
+                }
+            });
+        }
+    }
+    label
 }
 
 /// A drop-down of the ways a section, elevation or 3D view draws.

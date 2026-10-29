@@ -15,6 +15,7 @@ pub mod document;
 pub mod editmesh;
 pub mod element;
 pub mod footing;
+pub mod graphics;
 pub mod grids;
 pub mod id;
 pub mod joins;
@@ -56,6 +57,7 @@ pub use element::{
 };
 pub use element::{LocationLine, WallTop};
 pub use footing::{Footing, FootingKind};
+pub use graphics::{LineWeights, PlanGraphics};
 pub use id::ElementId;
 pub use joins::{wall_joins, Gap, WallEnds};
 pub use marks::{marks, material_of};
