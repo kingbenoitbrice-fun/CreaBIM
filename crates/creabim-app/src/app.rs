@@ -45,6 +45,8 @@ mod levelsui;
 mod materials;
 #[path = "objectsui.rs"]
 mod objectsui;
+#[path = "selectsimilar.rs"]
+mod selectsimilar;
 #[path = "shell.rs"]
 mod shell;
 #[path = "typepreview.rs"]
@@ -663,6 +665,9 @@ impl CreaBimApp {
                     self.paste(self.clipboard.clone());
                 }
             }
+            // in Edit mode Delete takes the picked corners away, never the
+            // element being edited
+            Command::Delete if self.plan.edit.is_some() => self.delete_grips(),
             Command::Delete => self.delete_selected(),
             Command::Hide => self.hide_selected(),
             Command::Isolate => self.isolate_selected(),
@@ -748,16 +753,20 @@ impl CreaBimApp {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
+        // a length typed into a grip's drag takes the keys
+        if ctx.egui_wants_keyboard_input() || self.plan.grips.typing {
             return;
         }
+        let editing = self.plan.edit.is_some();
         let (undo, redo, delete, extrude) = ctx.input(|i| {
             let cmd = i.modifiers.command;
             (
                 cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z),
                 cmd && (i.key_pressed(egui::Key::Y)
                     || (i.modifiers.shift && i.key_pressed(egui::Key::Z))),
-                i.key_pressed(egui::Key::Delete),
+                // in Edit mode Backspace removes picked corners too
+                i.key_pressed(egui::Key::Delete)
+                    || (editing && i.key_pressed(egui::Key::Backspace)),
                 !cmd && i.key_pressed(egui::Key::E),
             )
         });
@@ -859,7 +868,7 @@ impl CreaBimApp {
             let (cmd, alt, shift) = (i.modifiers.command, i.modifiers.alt, i.modifiers.shift);
             let h = i.key_pressed(egui::Key::H);
             (
-                cmd && i.key_pressed(egui::Key::A),
+                cmd && !shift && i.key_pressed(egui::Key::A),
                 alt && i.key_pressed(egui::Key::A),
                 h && !cmd && !alt && !shift,
                 h && shift && !cmd && !alt,
@@ -882,6 +891,16 @@ impl CreaBimApp {
         }
         if all {
             self.select_all();
+        }
+        // Shift+A: all of the selection's type in the view; Ctrl+Shift+A
+        // in the project
+        let similar = ctx.input(|i| {
+            let m = i.modifiers;
+            (m.shift && !m.alt && i.key_pressed(egui::Key::A)).then_some(m.command)
+        });
+        if let Some(project) = similar.filter(|_| self.plan.tool == Tool::Select) {
+            self.shell.context_3d = !self.last_in_2d;
+            self.select_similar(if project { "type.project" } else { "type.view" });
         }
         if none {
             self.selection.clear();
@@ -911,7 +930,7 @@ impl CreaBimApp {
             self.run_command(ctx, Command::Redo, None);
         }
         if delete {
-            self.delete_selected();
+            self.run_command(ctx, Command::Delete, None);
         }
         if extrude {
             let sketch = self
@@ -1844,8 +1863,16 @@ impl CreaBimApp {
         // tool; in Select, right-click opens the menu
         if self.plan.sketch.is_none() && self.plan.outline.is_none() {
             let (esc, shift) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.modifiers.shift));
-            let esc = esc && response.hovered() && !ui.ctx().egui_wants_keyboard_input();
-            let right = response.secondary_clicked() && !shift;
+            // a grip being dragged takes Esc itself; in Edit mode a
+            // right-click opens the grips' menu
+            let esc = esc
+                && response.hovered()
+                && !ui.ctx().egui_wants_keyboard_input()
+                && self.handle_drag.is_none()
+                && !self.plan.grips.busy();
+            let right = response.secondary_clicked()
+                && !shift
+                && !(self.plan.edit.is_some() && self.plan.tool == Tool::Select);
             if esc || right {
                 if self.pending_3d.take().is_some() || self.guide_from.take().is_some() {
                     self.plan.cancel();
@@ -2043,6 +2070,7 @@ impl CreaBimApp {
                     self.face,
                     edit,
                     &mut self.handle_drag,
+                    &mut self.plan.grips,
                     &input,
                     &mut status,
                 );

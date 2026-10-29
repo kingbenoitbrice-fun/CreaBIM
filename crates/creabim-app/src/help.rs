@@ -444,6 +444,7 @@ const SELECT: &str = "Selecting";
 const EDIT: &str = "Move, rotate and scale";
 const DRAW: &str = "While drawing";
 const MENUS: &str = "Menus and the command palette";
+const EDITING: &str = "In Edit mode";
 
 /// Every key the app reads outside its menus. The menus' own shortcuts are
 /// read from the menus themselves.
@@ -513,6 +514,30 @@ pub const KEYS: &[Binding] = &[
     key(EDIT, "Backspace", "Take back the last digit typed"),
     key(EDIT, "Esc", "Step back, then cancel"),
     key(EDIT, "E", "Extrude the selected face or sketch"),
+    key(EDITING, "click", "On a corner: pick it (Shift+click picks more)"),
+    key(
+        EDITING,
+        "drag",
+        "Off the grips: pick the corners in a box; inside a hole: move it",
+    ),
+    key(
+        EDITING,
+        "Del",
+        "Remove the picked corners or hole, never the element",
+    ),
+    key(EDITING, "Backspace", "Remove the picked corners, as Delete"),
+    key(EDITING, "Double-click", "On a corner: remove it"),
+    key(
+        EDITING,
+        "right-click",
+        "On a corner, an edge or a hole: add or remove corners, make an arc, remove the hole",
+    ),
+    key(EDITING, "Tab", "While dragging a grip: type a length"),
+    key(
+        EDITING,
+        "Esc",
+        "Cancel the drag; then drop the picks; then finish editing",
+    ),
     key(DRAW, "Shift (hold)", "Keep lines square"),
     key(
         DRAW,

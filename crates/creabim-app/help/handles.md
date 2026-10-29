@@ -7,17 +7,27 @@ A selected element shows small handles you can drag to change it directly, in 3D
 
 Grips snap to what they land on, and the readout shows the new value. Every drag is one undo step.
 
+## Turning, sliding and sizing
+
+- A selected **object** (furniture or a fixture) has a square grip in front of it: drag it round to turn the object about its middle, in steps of 5°. The arrow beside it turns it round to face the other way.
+- A **column** has a turning grip beside it, and round grips on its sides for its width and depth (a round column's diameter); it stays on its point.
+- A **stair** has a turning grip behind its first riser.
+- A **door or window** has a round grip in its middle to slide it along its wall at the same width; a **beam** has a round grip on its side for its width.
+- A **wall** has a round grip off the face opposite its thickness grip: drag it to slide the whole wall square to itself, and the walls joined to it stretch to stay joined. Right-click a wall and pick *Split wall here* to make two walls meeting at that point; doors and windows stay where they are.
+
 ## Walls stay joined
 
 Drag a wall's end and the walls joined to it follow, so the corner stays closed. To drag an end on its own, hold `Ctrl` or `Alt` while dragging, or disallow the join at that end (see [Walls](walls#joins)).
 
-## Slab and roof corners
+## Outline corners
 
-Double-click an edge's handle to add a corner there; double-click a corner to take it away. [Edit mode](edit-mode) shows every corner and edge of an outline and of its holes, with a diamond in each edge to add a corner.
+Slabs, roofs, shafts, sketches and railing paths all show the same grips on their outline: a square on each corner to move it and, on a closed outline, a round grip on each edge to push it. To add or remove corners, or reshape holes, open the element in [Edit mode](edit-mode) (`Enter` or a double-click): pick corners and press `Delete`, drag a ◇ to add one, or right-click for more.
+
+Rest the pointer on any grip for a tip saying what it does. During a drag, press `Tab` to type a length.
 
 ## Shafts
 
-A selected shaft has a square grip on each corner and round grips for its base and its top, in every plan, section and 3D view it passes through.
+A selected shaft has a square grip on each corner, a round one on each edge and round grips for its base and its top, in every plan, section and 3D view it passes through.
 
 ## In sections
 

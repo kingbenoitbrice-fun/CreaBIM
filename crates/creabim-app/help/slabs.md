@@ -19,7 +19,7 @@ In a section, click the two ends of the slab's edge: its top snaps to the neares
 
 ## Changing a slab
 
-- Drag its corner and edge grips. Double-click an edge's grip to add a corner there, a corner to remove it.
+- Drag its corner and edge grips. To add or remove corners, open it in [Edit mode](edit-mode) (`Enter`): pick a corner and press `Delete`, drag a ◇ to add one, right-click an edge to bend it into an arc.
 - *Properties*: thickness, material or assembly, *Top offset*, and *Keep: Top / Bottom* (which face stays put when the thickness changes).
 - *Redraw outline* to click a new outline.
 - In a section, use [Stretch](align#stretch-to-it) or [Move face](move#move-a-face-push-and-pull) on its top or underside.
