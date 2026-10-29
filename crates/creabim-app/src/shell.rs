@@ -103,6 +103,7 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Diameter => "diameter",
         Tool::ArcLength => "spline",
         Tool::Note => "message-square-text",
+        Tool::SpotLevel => "spot-level",
         Tool::Sketch => "pen-tool",
         Tool::Guide => "slash",
         Tool::Grid => "grid-3x3",
@@ -142,7 +143,8 @@ fn tool_group(t: Tool) -> u8 {
         | Tool::Radius
         | Tool::Diameter
         | Tool::ArcLength
-        | Tool::Note => 3,
+        | Tool::Note
+        | Tool::SpotLevel => 3,
         Tool::Sketch | Tool::Guide | Tool::Grid | Tool::Level => 4,
     }
 }

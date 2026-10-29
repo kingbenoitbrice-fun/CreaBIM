@@ -1,6 +1,6 @@
 # Tags
 
-A **tag** is a label that reads from the element it points at: a door's mark (D01), a window's (W01), a wall's material and thickness, a roof's thickness and pitch, a column's profile, a beam's size, a piece of furniture's or a fixture's type mark (E01 for a socket type, L01 for a light). Change the element, and its tag changes.
+A **tag** is a label that reads from the element it points at: a door's [mark](marks) (D01), a window's (W01), a wall's material and thickness, a roof's thickness and pitch, a column's profile, a beam's size, a piece of furniture's or a fixture's type mark (E01 for a socket type, L01 for a light). Change the element, and its tag changes.
 
 ## Tagging
 
@@ -15,6 +15,10 @@ An object's mark belongs to its type, so every double socket reads the same mark
 ## Moving and styling
 
 - Drag a tag to move it. It moves with its element too.
+- Select a tag to see the grips on its leader: drag the square one to point the leader at another spot, and the round one to bend the leader at an elbow. **Straighten the leader** and **Leader back to the centre** in *Properties* undo them.
+- **Leader end** in *Properties* puts an arrow, a dot or another end on the leader; *Style's* leaves it to the tag's style, which draws a plain line unless it sets a leader end.
 - Pick a **Style** in the tool options for new tags, or change a tag's style in *Properties*. A style sets the tag's shape (circle, hexagon and others), text and colour. See [Annotation styles](styles).
+
+An element with a typed [mark](marks) shows that mark in its tags, whatever kind it is: a wall marked WT1 reads WT1 instead of its thickness.
 
 Deleting an element deletes its tags.

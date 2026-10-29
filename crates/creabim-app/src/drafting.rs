@@ -65,7 +65,12 @@ impl CreaBimApp {
             out.push(seg(items));
         }
         let style_menu = match tool {
-            Tool::Dimension | Tool::Angle | Tool::Radius | Tool::Diameter | Tool::ArcLength => {
+            Tool::Dimension
+            | Tool::Angle
+            | Tool::Radius
+            | Tool::Diameter
+            | Tool::ArcLength
+            | Tool::SpotLevel => {
                 Some(("dimstyle", self.plan.anno.dim_style))
             }
             Tool::Note => Some(("notestyle", self.plan.anno.note_style)),

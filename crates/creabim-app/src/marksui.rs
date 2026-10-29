@@ -310,3 +310,54 @@ fn rules_grid(ui: &mut egui::Ui, rules: &mut MarkRules) {
             }
         });
 }
+
+impl CreaBimApp {
+    /// For a level selected while a section or elevation is the active
+    /// view: show its head there or not, and put a dragged head back.
+    pub(super) fn level_head_controls(&mut self, ui: &mut egui::Ui, level: ElementId) {
+        let Some(view) = self.active_view else { return };
+        let Some(e) = self.doc.model().get(view) else {
+            return;
+        };
+        let ElementKind::View(v) = &e.kind else { return };
+        if !matches!(v.kind, ViewKind::Section { .. }) {
+            return;
+        }
+        let name = e.name.clone();
+        let head = v.level_heads.get(&level).copied().unwrap_or_default();
+        let mut shown = !head.hidden;
+        let mut edited = head;
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui
+                .checkbox(&mut shown, format!("Head in {name}"))
+                .on_hover_text(
+                    "Show this level's name and elevation in this view; its line stays either way",
+                )
+                .changed()
+            {
+                edited.hidden = !shown;
+            }
+            if head.offset.is_some()
+                && ui
+                    .small_button("Put it back")
+                    .on_hover_text("Undo the drag: the automatic layout places it again")
+                    .clicked()
+            {
+                edited.offset = None;
+            }
+        });
+        if edited != head {
+            let r = self.doc.edit(view, "Level head", |e| {
+                if let ElementKind::View(v) = &mut e.kind {
+                    if edited.is_default() {
+                        v.level_heads.remove(&level);
+                    } else {
+                        v.level_heads.insert(level, edited);
+                    }
+                }
+            });
+            self.report(r, "Level head changed.");
+        }
+    }
+}

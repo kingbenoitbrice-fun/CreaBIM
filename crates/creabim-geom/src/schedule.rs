@@ -401,6 +401,23 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
     rows.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     let mut columns = columns;
     let mut totals = totals;
+    // walls, slabs and structure get a mark column once one of them has a
+    // mark, typed or numbered by the project's rules
+    if matches!(
+        category,
+        ScheduleCategory::Walls | ScheduleCategory::Slabs | ScheduleCategory::Structure
+    ) {
+        let marks = creabim_core::marks(model);
+        if rows.iter().any(|(_, _, r)| marks.contains_key(&r.id)) {
+            columns.insert(1, col("Mark", None, 16.0, false));
+            for (_, _, r) in &mut rows {
+                r.cells.insert(1, marks.get(&r.id).cloned().unwrap_or_default());
+            }
+            if totals.len() > 1 {
+                totals.insert(1, String::new());
+            }
+        }
+    }
     // the type column shows up once anything listed has a type
     let type_of = |id: ElementId| {
         model
@@ -525,14 +542,16 @@ fn object_rows(
             col("IFC", None, 50.0, false),
         ];
         for (t, tid, o, e) in found {
+            // an object with a mark of its own shows it
+            let m = creabim_core::marks::manual(e).map_or_else(|| mark(tid), str::to_string);
             rows.push((
                 elevation(o.level),
-                mark(tid),
+                m.clone(),
                 Row {
                     id: e.id,
                     group: false,
                     cells: vec![
-                        mark(tid),
+                        m,
                         level_name(o.level),
                         mounting(&units, t.mount == objects::Mount::Ceiling, o.offset),
                         ifc(t),

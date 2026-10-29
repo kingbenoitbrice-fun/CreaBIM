@@ -27,6 +27,7 @@ CUSTOM={
  "snap-quadrant": '<path d="M12 4.5 19.5 12 12 19.5 4.5 12z" />',
  "snap-axis": '<path d="M3 12h18M12 3v18" stroke-dasharray="2.5 2.5" />',
  # the Level tool and the project browser's group buttons
+ "spot-level": '<path d="M8 16l-3.5-5h7z" fill="currentColor" stroke="none" /> <path d="M2 16h20" /> <path d="M8 11L13 6h9" /> <path d="M15 3.5h2" />',
  "level": '<path d="M2 14h12" stroke-dasharray="3 2" /> <circle cx="18" cy="14" r="3.5" /> <path d="M18 10.5V14h3.5M18 14v3.5h-3.5" /> <path d="M3 7h9" />',
  "plus": '<path d="M5 12h14M12 5v14" />',
  # the project browser's sort button, and alignment tracking in the snap list

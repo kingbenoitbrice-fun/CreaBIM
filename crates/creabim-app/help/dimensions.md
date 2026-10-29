@@ -34,4 +34,10 @@ Pick **Arc length**. Click an arc, or its start, a point on it and its end, then
 
 Pick a **Style** in the tool options for new dimensions; change a placed one's style or *Own colour* in *Properties*. See [Annotation styles](styles).
 
+## Breaking around tags
+
+A style with **Break dimension lines at tags** on leaves a gap in its dimension lines wherever a tag's bubble or a note's text sits across them, so a chain of dimensions stays readable past the door tags on it. Dimensions in other styles run straight through.
+
+To write the height of a point rather than a distance, use a [spot level](spot-levels).
+
 Dimensions work in plans, sections and elevations, show on sheets and print in PDF and SVG.

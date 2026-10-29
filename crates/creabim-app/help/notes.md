@@ -16,6 +16,6 @@ Pick the Note tool on a sheet, outside any viewport, to write on the paper itsel
 
 ## Moving and styling
 
-With the Select tool, drag a note's text to move it, and its square grip at the arrow to move the leader. Pick a **Style**, or an *Own colour*, as for dimensions. See [Annotation styles](styles).
+With the Select tool, drag a note's text to move it, its square grip at the arrow to move the leader's end, and its round grip to bend the leader at an elbow (**Straighten the leader** in *Properties* takes the elbow out). **Leader end** in *Properties* picks an arrow, a dot or nothing for this note. Pick a **Style**, or an *Own colour*, as for dimensions. See [Annotation styles](styles).
 
 Notes are a visibility category: a view can hide them (see [Visibility](visibility)).

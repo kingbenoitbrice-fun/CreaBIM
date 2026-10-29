@@ -3898,6 +3898,7 @@ impl CreaBimApp {
                     {
                         self.open_levels();
                     }
+                    self.level_head_controls(ui, id);
                 }
                 ElementKind::Wall(w) => {
                     let mut curtain = w.curtain.is_some();
@@ -4414,9 +4415,25 @@ impl CreaBimApp {
                         })
                         .weak(),
                     );
-                    let what = crate::annotate::offset_label(d.kind);
-                    if num(ui, what, &mut d.offset, -100.0, 100.0) {
-                        label = "Move dimension line"
+                    if d.kind == creabim_core::DimensionKind::Spot {
+                        let mut pattern = d
+                            .pattern
+                            .clone()
+                            .unwrap_or_else(|| creabim_core::annotation::SPOT_PATTERN.into());
+                        ui.horizontal(|ui| {
+                            ui.label("Reads").on_hover_text(
+                                "{elevation} in the project's units, {m} in metres (+0.45), {m3} to three places, {mm} in millimetres, {level} the level's name. For example: {m} FFL",
+                            );
+                            if ui.text_edit_singleline(&mut pattern).changed() {
+                                d.pattern = Some(pattern.clone());
+                                label = "Spot level text";
+                            }
+                        });
+                    } else {
+                        let what = crate::annotate::offset_label(d.kind);
+                        if num(ui, what, &mut d.offset, -100.0, 100.0) {
+                            label = "Move dimension line"
+                        }
                     }
                     if d.kind == creabim_core::DimensionKind::Linear {
                         crate::app::helpui::combo(ui, "Measures")
@@ -4452,6 +4469,23 @@ impl CreaBimApp {
                     if ui.button("Select the tagged element").clicked() {
                         self.selection.only(t.host);
                     }
+                    if let Some(l) = crate::annotate::leader_ui(
+                        ui,
+                        &mut t.leader_end,
+                        "Style's (a plain line)",
+                        &mut t.elbow,
+                    ) {
+                        label = l;
+                    }
+                    if t.end.is_some()
+                        && ui
+                            .button("Leader back to the centre")
+                            .on_hover_text("Its leader points at the middle of what it tags again")
+                            .clicked()
+                    {
+                        t.end = None;
+                        label = "Move leader";
+                    }
                     match crate::annotate::look_ui(ui, self.doc.model(), &mut t.style, &mut t.color)
                     {
                         crate::annotate::LookEdit::Changed(l) => label = l,
@@ -4469,6 +4503,16 @@ impl CreaBimApp {
                         crate::annotate::note_ui(ui, n, &mut self.plan.anno.focus_text, unit)
                     {
                         label = l;
+                    }
+                    if n.leader.is_some() {
+                        if let Some(l) = crate::annotate::leader_ui(
+                            ui,
+                            &mut n.leader_end,
+                            "Style's (an arrow)",
+                            &mut n.elbow,
+                        ) {
+                            label = l;
+                        }
                     }
                     match crate::annotate::look_ui(ui, self.doc.model(), &mut n.style, &mut n.color)
                     {

@@ -138,7 +138,12 @@ pub fn paint_ends(painter: &egui::Painter, xf: &Xf, ends: &Ends, color: Color32)
 pub fn is_tool(t: Tool) -> bool {
     matches!(
         t,
-        Tool::Angle | Tool::Radius | Tool::Diameter | Tool::ArcLength | Tool::Note
+        Tool::Angle
+            | Tool::Radius
+            | Tool::Diameter
+            | Tool::ArcLength
+            | Tool::Note
+            | Tool::SpotLevel
     )
 }
 
@@ -165,6 +170,11 @@ enum Ready {
     },
     Leader {
         target: Picked,
+    },
+    /// The point a spot level measures.
+    Spot {
+        point: Picked,
+        plan: bool,
     },
 }
 
@@ -398,7 +408,22 @@ pub fn click(
     };
     if let Some(ready) = d.ready.take() {
         d.clear();
-        let e = d.styled(place(model, view_id, view, ready, tool, raw));
+        let mut e = d.styled(place(model, view_id, view, ready, tool, raw));
+        if let ElementKind::Dimension(dim) = &mut e.kind {
+            if dim.kind == DimensionKind::Spot {
+                // a new spot level reads like the last one made
+                dim.pattern = model
+                    .iter()
+                    .filter_map(|e| match &e.kind {
+                        ElementKind::Dimension(d) if d.kind == DimensionKind::Spot => {
+                            Some(d.pattern.clone())
+                        }
+                        _ => None,
+                    })
+                    .last()
+                    .flatten();
+            }
+        }
         let id = e.id;
         let label = match &e.kind {
             ElementKind::Note(_) => "Add note",
@@ -417,6 +442,18 @@ pub fn click(
             selection.only(e.id);
             doc.commit(Transaction::new("Add note").insert(e))?;
             Ok(added(tool, d))
+        }
+        Tool::SpotLevel => {
+            let point = match view.kind {
+                // in a plan, the top of the slab under the click
+                creabim_core::ViewKind::Plan { level, .. } => {
+                    (attach(model, view, slab_under(model, level, raw), raw), raw)
+                }
+                _ => (hp, p),
+            };
+            let plan = matches!(view.kind, creabim_core::ViewKind::Plan { .. });
+            d.ready = Some(Ready::Spot { point, plan });
+            Ok("Now click where its text goes.".into())
         }
         Tool::Note => {
             d.ready = Some(Ready::Leader { target: (hp, p) });
@@ -527,10 +564,28 @@ pub fn click(
     }
 }
 
+/// The topmost slab on `level` whose outline holds `p`.
+fn slab_under(model: &Model, level: ElementId, p: DVec2) -> Option<ElementId> {
+    model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Slab(s)
+                if s.level == level && creabim_core::polygon::contains(&s.boundary, p) =>
+            {
+                Some((e.id, s.top_offset))
+            }
+            _ => None,
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|s| s.0)
+}
+
 fn added(tool: Tool, d: &mut Draft) -> String {
     if tool == Tool::Note {
         d.focus_text = true;
         "Note added. Type its text in Properties; drag it to move it.".into()
+    } else if tool == Tool::SpotLevel {
+        "Spot level added. Its text pattern is in Properties; drag its text to move it.".into()
     } else {
         "Dimension added. Drag it to move its line; its style is in Properties.".into()
     }
@@ -584,6 +639,15 @@ fn place(
                 ElementKind::Dimension(Dimension::about(kind, view_id, center.0, on, on, extra)),
             )
         }
+        Ready::Spot { point, .. } => Element::new(
+            "Spot level",
+            ElementKind::Dimension(Dimension::spot(
+                view_id,
+                point.0,
+                attach(model, view, point.0.host, at),
+                None,
+            )),
+        ),
         Ready::Arc { center, a, b } => {
             let offset = at.distance(center.1) - center.1.distance(a.1);
             Element::new(
@@ -610,6 +674,14 @@ fn place(
 /// The annotation a placing click at `at` would make, for the preview.
 fn shape_of(ready: Ready, at: DVec2) -> (Shape, String) {
     match ready {
+        Ready::Spot { point, plan } => (
+            Shape::Spot {
+                at: point.1,
+                text_at: at,
+                plan,
+            },
+            "Spot level".into(),
+        ),
         Ready::Angle { vertex, a, b } => {
             let (a, b) = if sweep(vertex.1, a.1, at) > sweep(vertex.1, a.1, b.1) {
                 (b.1, a.1)
@@ -1228,6 +1300,32 @@ fn terminator_combo(
     changed
 }
 
+/// The end of one tag's or note's leader, and its elbow: picked here or
+/// left to its style. Returns the undo label of a change.
+pub fn leader_ui(
+    ui: &mut egui::Ui,
+    end: &mut Option<Terminator>,
+    usual: &str,
+    elbow: &mut Option<DVec2>,
+) -> Option<&'static str> {
+    let mut label = None;
+    ui.horizontal(|ui| {
+        if terminator_combo(ui, "leader_end_own", "Leader end", usual, end) {
+            label = Some("Leader end");
+        }
+    });
+    if elbow.is_some()
+        && ui
+            .button("Straighten the leader")
+            .on_hover_text("Take its elbow out; drag the round grip on the leader to bend it again")
+            .clicked()
+    {
+        *elbow = None;
+        label = Some("Straighten leader");
+    }
+    label
+}
+
 /// A style's line ends, tag shape and what it is for.
 pub fn ends_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
     let mut label = None;
@@ -1281,6 +1379,13 @@ pub fn ends_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
                 }
             }
         });
+    if ui
+        .checkbox(&mut s.break_at_tags, "Break dimension lines at tags")
+        .on_hover_text("Dimension lines in this style leave a gap where a tag or a note sits across them")
+        .changed()
+    {
+        label = Some("Dimension breaks");
+    }
     crate::app::helpui::combo(ui, "Meant for")
         .selected_text(s.purpose.label())
         .show_ui(ui, |ui| {
@@ -1356,7 +1461,7 @@ pub fn offset_label(kind: DimensionKind) -> &'static str {
         DimensionKind::Angular => "Arc radius",
         DimensionKind::Radius | DimensionKind::Diameter => "Line past circle",
         DimensionKind::ArcLength => "Line offset",
-        DimensionKind::Spot => "Offset (unused)",
+        DimensionKind::Spot => "Offset",
     }
 }
 

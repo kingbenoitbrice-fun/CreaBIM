@@ -46,6 +46,8 @@ pub enum Tool {
     Diameter,
     ArcLength,
     Note,
+    /// A spot level or a level marker: the height of a point.
+    SpotLevel,
     Sketch,
     Guide,
     Grid,
@@ -63,7 +65,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 29] = [
+    pub const ALL: [Tool; 30] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
@@ -88,6 +90,7 @@ impl Tool {
         Tool::Diameter,
         Tool::ArcLength,
         Tool::Note,
+        Tool::SpotLevel,
         Tool::Sketch,
         Tool::Guide,
         Tool::Grid,
@@ -119,6 +122,7 @@ impl Tool {
             Tool::Diameter => "Diameter",
             Tool::ArcLength => "Arc length",
             Tool::Note => "Note",
+            Tool::SpotLevel => "Spot level",
             Tool::Sketch => "Sketch",
             Tool::Guide => "Guide",
             Tool::Grid => "Grid",
@@ -152,6 +156,7 @@ impl Tool {
             Tool::Radius => "Click an arc or circle, or three points on one. Then click where the dimension line goes.",
             Tool::Diameter => "Click an arc or circle, or three points on one. Then click where the dimension line goes.",
             Tool::ArcLength => "Click an arc, or its start, a point on it and its end. Then click where the dimension line goes.",
+            Tool::SpotLevel => "Click a point on a floor, slab or roof in a section or elevation, or on a slab in a plan (elsewhere in a plan it marks the plan's level), then click where its text goes. Its text pattern is in Properties.",
             Tool::Note => "Click what the note points at, then where its text goes (turn Leader off to just click). Type its text in Properties. Works on sheets too.",
             Tool::Sketch => "Click the corners of a sketch on this level. Click the first corner to close it, Enter or right-click to leave it open, Esc to cancel. L, A and C draw lines, arcs and circles. Then E extrudes it.",
             Tool::Guide => "Click two points for a guide through them. Or click an edge, then click where its parallel guide goes. Everything snaps to guides.",
@@ -1960,6 +1965,7 @@ fn plan_click(
         | Tool::Diameter
         | Tool::ArcLength
         | Tool::Note
+        | Tool::SpotLevel
         | Tool::Sketch => Ok(()),
         Tool::Slab | Tool::Roof | Tool::Shaft => {
             crate::slabtool::click(doc, level, p, state, selection)
