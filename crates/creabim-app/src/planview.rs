@@ -270,6 +270,8 @@ pub struct PlanState {
     /// The element open in Edit mode (see [`crate::editmode`]): all its
     /// grips show, in every view.
     pub edit: Option<ElementId>,
+    /// The corners and holes picked in Edit mode, in every view.
+    pub grips: handles::GripSel,
     /// Snaps for each 2D view: built from its drawing without the listed
     /// elements, at a model revision.
     snaps: HashMap<ElementId, (u64, Vec<ElementId>, Snapper)>,
@@ -399,6 +401,7 @@ impl Default for PlanState {
             sketch: None,
             grip: None,
             edit: None,
+            grips: Default::default(),
             snaps: HashMap::new(),
             status: None,
             guide_edge: None,
@@ -491,7 +494,12 @@ impl PlanState {
         } else if self.clear_references() > 0 {
             self.status = Some("Guide lines cleared. Esc again leaves the tool.".into());
             true
+        } else if self.edit.is_some() && !self.grips.is_empty() {
+            self.grips.clear();
+            self.status = Some("Corners deselected. Esc again finishes editing.".into());
+            true
         } else if self.edit.take().is_some() {
+            self.grips.clear();
             self.status = Some("Finished editing.".into());
             true
         } else if self.tool != Tool::Select {
@@ -1138,6 +1146,7 @@ pub fn show(
                 None,
                 edit,
                 &mut state.grip,
+                &mut state.grips,
                 &input,
                 &mut status,
             );

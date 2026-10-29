@@ -11,13 +11,15 @@ Grips snap to what they land on, and the readout shows the new value. Every drag
 
 Drag a wall's end and the walls joined to it follow, so the corner stays closed. To drag an end on its own, hold `Ctrl` or `Alt` while dragging, or disallow the join at that end (see [Walls](walls#joins)).
 
-## Slab and roof corners
+## Outline corners
 
-Double-click an edge's handle to add a corner there; double-click a corner to take it away. [Edit mode](edit-mode) shows every corner and edge of an outline and of its holes, with a diamond in each edge to add a corner.
+Slabs, roofs, shafts, sketches and railing paths all show the same grips on their outline: a square on each corner to move it and, on a closed outline, a round grip on each edge to push it. To add or remove corners, or reshape holes, open the element in [Edit mode](edit-mode) (`Enter` or a double-click): pick corners and press `Delete`, drag a ◇ to add one, or right-click for more.
+
+Rest the pointer on any grip for a tip saying what it does. During a drag, press `Tab` to type a length.
 
 ## Shafts
 
-A selected shaft has a square grip on each corner and round grips for its base and its top, in every plan, section and 3D view it passes through.
+A selected shaft has a square grip on each corner, a round one on each edge and round grips for its base and its top, in every plan, section and 3D view it passes through.
 
 ## In sections
 
