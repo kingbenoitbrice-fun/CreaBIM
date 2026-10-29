@@ -43,6 +43,10 @@ In plan, each plant is a symbol as wide as its canopy: a scalloped crown with it
 
 *Create › Site › Cars and people…* opens the [Catalogue](furniture) at **Entourage**: a car, a person and a child, for scale. Place them like any other object.
 
+## Reshaping
+
+Terrain and hard landscape areas have the same grips as a slab: drag a corner or an edge, and open them in [Edit mode](edit-mode) (`Enter`) to add or remove corners or change an area's holes. Move plants with the [Move](move) tool.
+
 ## Exchange and visibility
 
 Terrain exports to IFC as *IfcGeographicElement* (TERRAIN), plants as *IfcGeographicElement*, and hard landscape as *IfcCivilElement*. The IFCX format reads them back as the same editable elements. Views can hide them through the *Terrain and hard landscape* and *Planting* categories (see [Visibility](visibility)).

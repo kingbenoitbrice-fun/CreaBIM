@@ -24,6 +24,7 @@ mod paneface;
 mod partstool;
 mod planview;
 mod render3d;
+mod roomtool;
 mod schedulepane;
 mod selection;
 mod sheetview;

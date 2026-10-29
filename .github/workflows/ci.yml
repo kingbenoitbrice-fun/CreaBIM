@@ -67,8 +67,10 @@ jobs:
       - run: cargo run -q -p creabim-cli -- view house.creabim.json "South Elevation" south-elevation.svg
       - run: cargo run -q -p creabim-cli -- pdf house.creabim.json house.pdf
       - run: cargo run -q -p creabim-cli -- schedule house.creabim.json windows windows.csv
+      - run: cargo run -q -p creabim-cli -- schedule house.creabim.json rooms rooms.csv
+      - run: cargo run -q -p creabim-cli -- check house.creabim.json
       - name: PDF opens with a page per sheet
-        run: python -c "import pypdf; r = pypdf.PdfReader('house.pdf', strict=True); n = len(r.pages); print(n, 'pages'); assert n == 11; assert 'Ground Floor Plan' in r.pages[1].extract_text(); assert 'DOOR SCHEDULE' in r.pages[8].extract_text()"
+        run: python -c "import pypdf; r = pypdf.PdfReader('house.pdf', strict=True); n = len(r.pages); print(n, 'pages'); assert n == 12; assert 'ROOM SCHEDULE' in r.pages[10].extract_text().upper(); assert 'Ground Floor Plan' in r.pages[1].extract_text(); assert 'DOOR SCHEDULE' in r.pages[8].extract_text()"
       - uses: actions/upload-artifact@v4
         with:
           name: sample-exports

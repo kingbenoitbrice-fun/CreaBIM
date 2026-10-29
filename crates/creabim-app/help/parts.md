@@ -43,6 +43,10 @@ A **void** cuts every wall, slab, roof, terrain, hard landscape area and solid e
 
 The void is worked out from where things are. Move the void and the hole moves with it. Move it clear of an element and that element is no longer cut. In 3D the void shows as a see-through orange outline that you can click. In plans and sections you see only the hole it leaves. To make a solid part into a void, or a void back into a solid, tick or untick **Void** in *Properties*.
 
+## Reshaping
+
+An extrusion, a void and a sweep through points have the same grips as a slab. Drag a corner or an edge to reshape it. To add or remove corners, or to change an extrusion's holes, open it in [Edit mode](edit-mode) (`Enter`). A sweep along a wall has no corners of its own: it follows the wall.
+
 ## Exchange
 
 In IFC, an extrusion or a sweep is written as the class you picked, with its shape as built. A void is written as an *IfcOpeningElement* in each element it cuts. Those elements keep their uncut shape, so other tools see a proper opening. The IFCX format carries every part's own parameters, so CreaBIM reads it back as the same editable extrusion, sweep or void. See [IFC](ifc).

@@ -13,10 +13,21 @@ What goes out: levels (storeys), walls with their location line and layers, slab
 
 *File › Open…* reads IFC2X3, IFC4 and IFC4X3 files, and `.ifcx`.
 
-- Straight walls, slabs on a storey and the doors and windows in those walls become native, editable CreaBIM elements. Types, assemblies, materials and grid systems come back too.
-- Furniture and fixtures with an IfcFurnitureType, IfcSanitaryTerminalType, IfcElectricApplianceType or IfcSystemFurnitureElementType that has a body map come in as [objects](furniture) of that type.
-- Everything else with a shape (terrain, curved walls…) comes in as a mesh that keeps its IFC class.
+- **Walls** become native, editable walls when their body is a straight upright prism, whether the file writes it as an extrusion or as a faceted B-rep or face set (as FreeCAD and many other tools do). A B-rep wall may already have its door and window holes cut: they are read back as openings. A wall drawn round a room along a polyline axis, perhaps one extrusion per layer, becomes one wall per straight run, meeting at the corners.
+- **Slabs** become native when they are flat upright prisms, with any holes, and with their top at any height: off a storey, the slab sits on the storey below with a top offset.
+- **Doors and windows** become native in a native wall: through the file's opening relationships (`IfcRelVoidsElement`, `IfcRelFillsElement`), or, when the file has none, in the wall their body sits in. They take the size of the hole cut in the wall when there is one, so they show in the door and window schedules and get marks. A hole nothing fills becomes a wall opening.
+- **Columns and beams** become native when they are straight prisms: an upright one with a rectangular or round section, a level bar with a rectangular section. Their types come back. Columns, beams, roofs, stairs and railings CreaBIM wrote come back exactly as they were.
+- Types, assemblies, materials and grid systems come back too. Furniture and fixtures with an IfcFurnitureType, IfcSanitaryTerminalType, IfcElectricApplianceType or IfcSystemFurnitureElementType that has a body map come in as [objects](furniture) of that type.
+- Everything else with a shape (a gable wall, a sloped roof slab, stairs and railings from other tools, terrain…) comes in as a mesh that keeps its IFC class. Openings in a mesh are cut into it, and its corners are joined up, so it is closed.
 - Units, placements and IFC ids are kept, and a plan is made for each storey.
+
+## The import report
+
+When an import has anything to say, the **Import report** opens: how many elements of each IFC class came in native and how many as meshes, the notes grouped by kind with a count, and below them every element that could not come in natively, by class, name and GlobalId, with the reason, for example:
+
+> IfcWall 'Wall-Gable-E' (0NBfRAfdjALxRLSMXhQcSA) is an IfcFacetedBrep that has 2 sloped faces (a raked or gable top, or a battered face); imported as a mesh
+
+*Copy report* copies it all as text, to fix the model in the program that wrote it or to send with a question. *File › Import report* opens it again. `creabim import-ifc` prints the same notes and list.
 
 ## Materials only
 

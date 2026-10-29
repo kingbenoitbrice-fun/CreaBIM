@@ -38,7 +38,7 @@ pub fn room_outline(model: &Model, level: ElementId, p: DVec2) -> Option<Vec<DVe
 }
 
 /// The smallest closed face of the line arrangement `segs` around `p`.
-fn room_in_lines(segs: &[(DVec2, DVec2)], p: DVec2) -> Option<Vec<DVec2>> {
+pub(crate) fn room_in_lines(segs: &[(DVec2, DVec2)], p: DVec2) -> Option<Vec<DVec2>> {
     // split every segment where others cross it
     let mut nodes: Vec<DVec2> = Vec::new();
     let mut node = |q: DVec2| -> usize {
@@ -57,6 +57,14 @@ fn room_in_lines(segs: &[(DVec2, DVec2)], p: DVec2) -> Option<Vec<DVec2>> {
             if i != j {
                 if let Some(t) = crossing(a, b, c, d) {
                     ts.push(t);
+                }
+                // and where another one, running along it, ends on it
+                let len2 = (b - a).length_squared();
+                for q in [c, d] {
+                    let t = (q - a).dot(b - a) / len2;
+                    if (0.0..=1.0).contains(&t) && a.lerp(b, t).distance(q) < 1e-9 {
+                        ts.push(t);
+                    }
                 }
             }
         }
@@ -500,6 +508,67 @@ pub fn check_holes(holes: &[Vec<DVec2>]) -> Result<(), String> {
     Ok(())
 }
 
+/// What is wrong with an outline and its holes, if anything: an outline or
+/// hole crossing itself, a hole outside or across the outline, two holes
+/// overlapping. `closed` is false for an open path (a railing's), which
+/// has no holes. Checked live while an outline is reshaped, so a shape
+/// like this is never kept.
+pub fn outline_problem(outline: &[DVec2], closed: bool, holes: &[Vec<DVec2>]) -> Option<String> {
+    use crate::polygon::{inside, outlines_cross, overlap, self_intersects};
+    if self_intersects(outline, closed) {
+        return Some("the outline would cross itself".into());
+    }
+    for (k, h) in holes.iter().enumerate() {
+        if self_intersects(h, true) {
+            return Some(format!("hole {} would cross itself", k + 1));
+        }
+        if closed && outlines_cross(h, outline) {
+            return Some(format!("hole {} would cross the outline", k + 1));
+        }
+        if closed && !inside(h, outline) {
+            return Some(format!("hole {} would be outside the outline", k + 1));
+        }
+        if let Some(j) = holes[..k].iter().position(|o| overlap(o, h)) {
+            return Some(format!("holes {} and {} would overlap", j + 1, k + 1));
+        }
+    }
+    None
+}
+
+/// The slabs and roofs a shaft passes through but doesn't cut because it
+/// crosses their edge: it only cuts those whose outline holds it whole.
+pub fn shaft_misses(model: &Model, shaft: &Shaft) -> Vec<ElementId> {
+    let (b, t) = shaft.span(model);
+    model
+        .iter()
+        .filter(|e| {
+            let (outline, z0, z1) = match &e.kind {
+                ElementKind::Slab(s) => {
+                    let top = s.top(model.level(s.level).map_or(0.0, |l| l.elevation));
+                    (s.outline(), top - s.thickness, top)
+                }
+                ElementKind::Roof(r) => {
+                    let base = r.base(model);
+                    (
+                        r.eave_outline(),
+                        base - r.vertical_thickness(),
+                        base + r.peak(),
+                    )
+                }
+                _ => return false,
+            };
+            let through = b < z1 - 1e-6 && t > z0 + 1e-6;
+            through
+                && crate::polygon::overlap(&shaft.boundary, &outline)
+                && !shaft
+                    .boundary
+                    .iter()
+                    .all(|p| crate::polygon::contains(&outline, *p))
+        })
+        .map(|e| e.id)
+        .collect()
+}
+
 /// The outlines of the model's shafts passing through the heights `z0..z1`.
 fn shafts_through(model: &Model, z0: f64, z1: f64) -> Vec<Vec<DVec2>> {
     model
@@ -606,5 +675,76 @@ mod shaft_tests {
         let plain = serde_json::to_string(&Slab::new(levels[0].id, outline, 0.25)).unwrap();
         assert!(!plain.contains("holes"));
         assert!(check_holes(&[vec![DVec2::ZERO, DVec2::X]]).is_err());
+    }
+
+    #[test]
+    fn a_shaft_across_a_slab_edge_is_reported_not_silently_ignored() {
+        let mut model = Model::new();
+        let level = Element::new(
+            "L0",
+            ElementKind::Level(Level {
+                elevation: 0.0,
+                height: 3.0,
+            }),
+        );
+        let upper = Element::new(
+            "L1",
+            ElementKind::Level(Level {
+                elevation: 3.0,
+                height: 3.0,
+            }),
+        );
+        let outline = crate::polygon::rectangle(DVec2::ZERO, DVec2::new(8.0, 6.0));
+        let floor = Element::new(
+            "Floor",
+            ElementKind::Slab(Slab::new(upper.id, outline.clone(), 0.25)),
+        );
+        // half in, half out of the floor above
+        let well = crate::polygon::rectangle(DVec2::new(7.0, 1.0), DVec2::new(9.0, 3.0));
+        let shaft = Shaft::new(level.id, well, Some(upper.id));
+        let tx = Transaction::new("setup")
+            .insert(level.clone())
+            .insert(upper.clone())
+            .insert(floor.clone())
+            .insert(Element::new("Shaft", ElementKind::Shaft(shaft.clone())));
+        tx.apply(&mut model).unwrap();
+        assert!(cut_by_shaft(&model, &shaft).is_empty());
+        assert_eq!(shaft_misses(&model, &shaft), vec![floor.id]);
+        // moved inside, it cuts and nothing is reported
+        let inner = Shaft::new(
+            level.id,
+            crate::polygon::rectangle(DVec2::new(5.0, 1.0), DVec2::new(6.0, 3.0)),
+            Some(upper.id),
+        );
+        assert!(shaft_misses(&model, &inner).is_empty());
+    }
+
+    #[test]
+    fn crossing_outlines_and_stray_holes_are_problems() {
+        let sq = crate::polygon::rectangle(DVec2::ZERO, DVec2::new(4.0, 4.0));
+        let h = |a: f64, b: f64, c: f64, d: f64| {
+            crate::polygon::rectangle(DVec2::new(a, b), DVec2::new(c, d))
+        };
+        assert!(outline_problem(&sq, true, &[h(1.0, 1.0, 2.0, 2.0)]).is_none());
+        let bow = vec![
+            DVec2::ZERO,
+            DVec2::new(4.0, 4.0),
+            DVec2::new(4.0, 0.0),
+            DVec2::new(0.0, 4.0),
+        ];
+        assert!(outline_problem(&bow, true, &[])
+            .unwrap()
+            .contains("cross itself"));
+        assert!(outline_problem(&sq, true, &[h(3.0, 1.0, 5.0, 2.0)])
+            .unwrap()
+            .contains("cross the outline"));
+        assert!(outline_problem(&sq, true, &[h(6.0, 1.0, 7.0, 2.0)])
+            .unwrap()
+            .contains("outside"));
+        assert!(
+            outline_problem(&sq, true, &[h(1.0, 1.0, 2.0, 2.0), h(1.5, 1.5, 3.0, 3.0)])
+                .unwrap()
+                .contains("overlap")
+        );
     }
 }

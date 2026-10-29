@@ -44,6 +44,9 @@ pub enum Category {
     Site,
     /// Trees and shrubs.
     Planting,
+    /// Rooms (their colours and picking areas) and room separators.
+    Rooms,
+    Ceilings,
     /// A category from a newer CreaBIM, kept so older versions still read
     /// the file.
     #[serde(other)]
@@ -51,7 +54,7 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 24] = [
+    pub const ALL: [Category; 26] = [
         Category::Walls,
         Category::Slabs,
         Category::Doors,
@@ -76,6 +79,8 @@ impl Category {
         Category::Parts,
         Category::Site,
         Category::Planting,
+        Category::Rooms,
+        Category::Ceilings,
     ];
 
     pub fn label(self) -> &'static str {
@@ -104,6 +109,8 @@ impl Category {
             Category::Parts => "Extrusions and sweeps",
             Category::Site => "Terrain and hard landscape",
             Category::Planting => "Planting",
+            Category::Rooms => "Rooms and room separators",
+            Category::Ceilings => "Ceilings",
             Category::Other => "Other",
         }
     }
@@ -143,6 +150,8 @@ impl Category {
             ElementKind::Part(_) => Category::Parts,
             ElementKind::Site(s) if s.is_plant() => Category::Planting,
             ElementKind::Site(_) => Category::Site,
+            ElementKind::Room(_) | ElementKind::RoomSeparator(_) => Category::Rooms,
+            ElementKind::Ceiling(_) => Category::Ceilings,
             _ => return None,
         })
     }
@@ -267,6 +276,8 @@ pub fn without(model: &Model, hidden: &HashSet<ElementId>) -> Model {
                     | ElementKind::Sheet(_)
                     | ElementKind::Viewport(_)
                     | ElementKind::Material(_)
+                    // ceilings over a hidden room still take its outline
+                    | ElementKind::Room(_)
             ) && !keep_cutters.contains(&e.id)
         })
         .map(|e| e.id)

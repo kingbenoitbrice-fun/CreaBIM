@@ -121,6 +121,9 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Terrain => "terrain",
         Tool::Paving => "paving",
         Tool::Planting => "tree",
+        Tool::Room => "room",
+        Tool::RoomSeparator => "room-separator",
+        Tool::Ceiling => "ceiling",
     }
 }
 
@@ -143,7 +146,10 @@ fn tool_group(t: Tool) -> u8 {
         | Tool::Object
         | Tool::Extrusion
         | Tool::Sweep
-        | Tool::Void => 1,
+        | Tool::Void
+        | Tool::Room
+        | Tool::RoomSeparator
+        | Tool::Ceiling => 1,
         Tool::Terrain | Tool::Paving | Tool::Planting => 5,
         Tool::Section | Tool::Elevation => 2,
         Tool::Dimension
@@ -210,6 +216,9 @@ fn group_title(class: &str) -> String {
         "TextStyle" => "Text styles".into(),
         "CropBox" => "Crop boxes".into(),
         "IfcFurniture" => "Furniture and fixtures".into(),
+        "IfcSpace" => "Rooms".into(),
+        "IfcVirtualElement" => "Room separators".into(),
+        "IfcCovering" => "Ceilings".into(),
         c => {
             let c = c.strip_prefix("Ifc").unwrap_or(c);
             if c.ends_with('s') {
@@ -231,6 +240,7 @@ fn schedule_icon(c: ScheduleCategory) -> &'static str {
         ScheduleCategory::Structure => "rectangle-vertical",
         ScheduleCategory::Furniture => "sofa",
         ScheduleCategory::Fixtures => "fixtures",
+        ScheduleCategory::Rooms => "room",
     }
 }
 
@@ -434,6 +444,8 @@ impl CreaBimApp {
                         items.push(Item::Separator);
                     }
                     items.extend(self.hide_in_view_items(self.shell.context_3d));
+                    items.extend(self.similar_items());
+                    items.push(Item::Separator);
                 }
                 items.extend([
                     ctx(Command::Paste),
@@ -604,6 +616,13 @@ impl CreaBimApp {
                 .hint("Bring in the objects of a .blend or .FCStd file. Saving it in Blender or FreeCAD updates them here."),
             Item::new("live", "Reload linked files when saved").checked(self.live_reload),
         ]);
+        if self.import_report.is_some() {
+            items.push(
+                Item::new("import.report", "Import report")
+                    .icon("file-text")
+                    .hint("What the last IFC import brought in as native elements and as meshes, and why, element by element. It can be copied."),
+            );
+        }
         let linked = crate::files::linked_files(self.doc.model());
         if !linked.is_empty() {
             items.push(
@@ -652,6 +671,9 @@ impl CreaBimApp {
             &[Command::Hide, Command::Isolate, Command::ShowAll],
         ] {
             items.extend(group.iter().map(|c| self.cmd_item(*c)));
+            if group.contains(&Command::SelectNone) {
+                items.extend(self.similar_items());
+            }
             if group.contains(&Command::Paste) {
                 items.push(
                     Item::sub("Paste aligned to level", self.paste_level_items())
@@ -716,6 +738,16 @@ impl CreaBimApp {
                         .hint(
                             "Wall, curtain wall, door, window, slab, roof, column, beam and object types",
                         ),
+                );
+                items.push(
+                    Item::new("rooms.fromnotes", "Rooms from room notes")
+                        .icon("room")
+                        .hint("Turn room labels written as notes (a name over an area) into rooms with tags, wherever walls close them off"),
+                );
+                items.push(
+                    Item::new("check.doorways", "Check doorways")
+                        .icon("door-open")
+                        .hint("List and select the furniture and fixtures standing in a doorway, a window or a door's swing"),
                 );
                 items.push(
                     Item::new("level.add", "Level above the top one")
@@ -1242,6 +1274,11 @@ impl CreaBimApp {
                 }
             }
             "live" => self.live_reload = !self.live_reload,
+            "import.report" => {
+                if let Some(r) = &mut self.import_report {
+                    r.open = true;
+                }
+            }
             "reload" => {
                 let linked = crate::files::linked_files(self.doc.model());
                 if let Some(f) = index.and_then(|i| linked.get(i)) {
@@ -1335,7 +1372,19 @@ impl CreaBimApp {
                 }
             }
             "view.shaded" | "view.tag" | "view.tagfixtures" | "view.reveal" | "view.colour"
-            | "view.xray" => self.view_action(head),
+            | "view.xray" | "view.rooms" | "view.ceiling" | "view.tagrooms" => {
+                self.view_action(head)
+            }
+            "rooms.fromnotes" => {
+                self.status = crate::roomtool::rooms_from_notes(&mut self.doc);
+            }
+            "check.doorways" => {
+                let (ids, msg) = crate::roomtool::check_doorways(self.doc.model());
+                if !ids.is_empty() {
+                    self.selection.extend(ids, false);
+                }
+                self.status = msg;
+            }
             "hidden.colour3d" => self.set_hidden_colour_3d(!self.shell.settings.hidden_colour_3d),
             "object" => {
                 if crate::objecttool::toggle_option(&mut self.plan, arg) {
@@ -1362,6 +1411,7 @@ impl CreaBimApp {
             }
             "note.leader" => self.plan.anno.leader = !self.plan.anno.leader,
             _ if self.crop_action(head, arg) => {}
+            _ if self.similar_action(head, arg) => {}
             _ if self.help_action(head, arg) => {}
             _ if self.wall_action(head, arg) => {}
             _ if self.level_action(head, arg) => {}
@@ -1619,6 +1669,27 @@ impl CreaBimApp {
                     .doc
                     .edit_merged(id, "Change view", |e| e.kind = ElementKind::View(v.clone()));
                 self.report(r, "View changed.");
+            }
+            "view.rooms" | "view.ceiling" => {
+                let Some(mut v) = self.view(id).cloned() else {
+                    return;
+                };
+                if what == "view.rooms" {
+                    v.room_colours = !v.room_colours;
+                } else {
+                    v.ceiling_plan = !v.ceiling_plan;
+                }
+                let r = self
+                    .doc
+                    .edit_merged(id, "Change view", |e| e.kind = ElementKind::View(v.clone()));
+                self.report(r, "View changed.");
+            }
+            "view.tagrooms" => {
+                self.status = match crate::roomtool::tag_rooms(&mut self.doc, id) {
+                    Ok(0) => "Every room on this plan is tagged already.".into(),
+                    Ok(n) => format!("Tagged {n} rooms. Drag a tag to move it; pick what it shows in Properties."),
+                    Err(e) => format!("Couldn't do that: {e}"),
+                };
             }
             "view.reveal" => self.toggle_hidden_elements(id),
             "view.colour" => self.toggle_hidden_colour(id),
@@ -1980,6 +2051,24 @@ impl CreaBimApp {
                 options.push(json!({
                     "kind": "button", "id": "view.tagfixtures", "label": "Tag fixtures", "icon": "fixtures",
                     "hint": "Tag every socket, switch, light, drain, radiator and other fixture on this plan with its type's mark",
+                }));
+                let shown = self.active_view.and_then(|id| self.view(id)).cloned();
+                let (ceiling, colours) = shown
+                    .as_ref()
+                    .map_or((false, false), |v| (v.ceiling_plan, v.room_colours));
+                options.push(json!({
+                    "kind": "button", "id": "view.tagrooms", "label": "Tag rooms", "icon": "room",
+                    "hint": "Tag every room on this plan that has no tag here yet",
+                }));
+                options.push(json!({
+                    "kind": "toggle", "id": "view.ceiling", "label": "Ceiling plan",
+                    "on": ceiling, "icon": "ceiling",
+                    "hint": "A reflected ceiling plan: the ceilings, their grids and what hangs from them, not the floor and furniture",
+                }));
+                options.push(json!({
+                    "kind": "toggle", "id": "view.rooms", "label": "Room colours",
+                    "on": colours, "icon": "palette",
+                    "hint": "Fill each room with a colour of its own, the same in every view",
                 }));
             }
         }

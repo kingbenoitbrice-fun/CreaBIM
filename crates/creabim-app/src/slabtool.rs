@@ -49,6 +49,19 @@ impl SlabMode {
         }
     }
 
+    /// [`SlabMode::hint`] for the tool drawing: a room or a ceiling is
+    /// placed to the walls' faces, not their centre lines.
+    pub fn hint_for(self, tool: crate::planview::Tool) -> &'static str {
+        use crate::planview::Tool;
+        match (tool, self) {
+            (Tool::Room, SlabMode::FillRoom) => "Click inside walls: the room fills the space to their inner faces and follows them when they move.",
+            (Tool::Room, SlabMode::FromSketch) => "Click inside a closed sketch lying flat: it becomes a room with its outline, and the sketch is used up.",
+            (Tool::Ceiling, SlabMode::FillRoom) => "Click inside a room: the ceiling goes over it and follows it.",
+            (Tool::Ceiling, SlabMode::FromSketch) => "Click inside a closed sketch lying flat: it becomes a ceiling with its outline, and the sketch is used up.",
+            _ => self.hint(),
+        }
+    }
+
     pub fn hint(self) -> &'static str {
         match self {
             SlabMode::Polygon => "Click the slab's corners; click the first one again, or press Enter, to close it. A draws arcs (click the end, then a point on the arc), L lines. Esc or right-click takes back a point.",
@@ -171,7 +184,7 @@ pub fn controls(
         if state.outline.as_ref().is_some_and(|o| o.target.is_none()) {
             state.outline = None;
         }
-        msg = Some(mode.hint().to_string());
+        msg = Some(mode.hint_for(state.tool).to_string());
         if mode == SlabMode::FromSketch {
             if let Some(id) = selection.active {
                 if matches!(
@@ -275,6 +288,7 @@ pub fn click(
                 o.roof = Some((state.members.roof_shape, state.members.roof_pitch));
             }
             o.shaft = state.tool == crate::planview::Tool::Shaft;
+            o.space = crate::roomtool::Space::of(state.tool);
             let cat = if o.roof.is_some() {
                 creabim_core::TypeCategory::Roof
             } else {
@@ -308,6 +322,12 @@ pub fn click(
                     state.status = Some(msg);
                     return Ok(());
                 }
+                let rect = vec![lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)];
+                if let Some(space) = crate::roomtool::Space::of(state.tool) {
+                    state.status =
+                        Some(crate::roomtool::drawn(doc, space, level, rect, selection)?);
+                    return Ok(());
+                }
                 let (e, label) = crate::memberstool::outline_element(
                     doc.model(),
                     state,
@@ -323,6 +343,10 @@ pub fn click(
             }
         },
         SlabMode::FillRoom => {
+            if let Some(space) = crate::roomtool::Space::of(state.tool) {
+                state.status = Some(crate::roomtool::fill(doc, space, level, p, selection)?);
+                return Ok(());
+            }
             let Some(outline) = creabim_core::room_outline(doc.model(), level, p) else {
                 state.status = Some(
                     "That spot isn't closed in by walls on this level, so there's no room to fill. Click inside a room, or draw a polygon (1).".into(),
@@ -376,6 +400,24 @@ pub fn click(
                     tx = tx.insert(e);
                 }
                 return doc.commit(tx);
+            }
+            if let Some(space) = crate::roomtool::Space::of(state.tool) {
+                let Some(ElementKind::Sketch(sk)) = doc.model().get(id).map(|e| &e.kind) else {
+                    return Ok(());
+                };
+                match creabim_core::slab_from_sketch(doc.model(), sk, NEW_SLAB_THICKNESS) {
+                    Ok(slab) => {
+                        state.status = Some(crate::roomtool::drawn(
+                            doc,
+                            space,
+                            slab.level,
+                            slab.outline(),
+                            selection,
+                        )?);
+                    }
+                    Err(m) => state.status = Some(m),
+                }
+                return Ok(());
             }
             if state.tool == crate::planview::Tool::Shaft {
                 let Some(ElementKind::Sketch(sk)) = doc.model().get(id).map(|e| &e.kind) else {

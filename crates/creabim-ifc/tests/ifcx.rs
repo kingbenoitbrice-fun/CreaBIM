@@ -156,6 +156,7 @@ fn layered_file_with_types_and_transforms() {
     assert_eq!(f.level, Some(w.level));
     assert!((f.origin - DVec3::new(3.0, 2.0, 0.0)).length() < 1e-9);
     assert!((f.mesh.volume() - 1.0 / 6.0).abs() < 1e-9);
+    // its space has no body of its own, so there is no outline to make a room of
     assert!(r.warnings.iter().any(|w| w.contains("spaces")));
 }
 

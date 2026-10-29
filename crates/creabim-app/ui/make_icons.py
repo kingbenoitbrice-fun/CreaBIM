@@ -75,6 +75,10 @@ CUSTOM={
  "paving": '<rect x="3" y="3" width="18" height="18" /> <path d="M3 9h18M3 15h18M9 3v6M15 3v6M6 9v6M12 9v6M18 9v6M9 15v6M15 15v6" />',
  "tree": '<circle cx="12" cy="10" r="7" /> <path d="M12 17v5M9 22h6" /> <path d="M9 10h6M12 7v6" />',
  "car": '<path d="M3 16v-4l2-4h10l3 4h3v4z" /> <circle cx="7" cy="17" r="2" /> <circle cx="17" cy="17" r="2" /> <path d="M6 12h11" />',
+ # rooms, room separators and ceilings
+ "room": '<path d="M3 3h18v18H3z" /> <path d="M3 13h6M14 3v6" stroke-dasharray="2 1.5" /> <path d="M10 15.5h7M10 18.5h4" />',
+ "room-separator": '<path d="M3 3h18v18H3z" /> <path d="M12 3v18" stroke-dasharray="3 2" /> <circle cx="12" cy="3" r="1.5" /> <circle cx="12" cy="21" r="1.5" />',
+ "ceiling": '<path d="M2 4h20" /> <path d="M3 8h18" /> <path d="M7 8v3M17 8v3" /> <path d="M9.5 15a2.5 2.5 0 0 0 5 0z" /> <path d="M12 8v7M4 20h16" stroke-dasharray="2 1.5" />',
 }
 out={}
 for n in names:

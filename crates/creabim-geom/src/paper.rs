@@ -6,7 +6,7 @@ use crate::annotate::{dimension_geometry, tag_geometry};
 use crate::annotation::{Ends, Marks, TextLook};
 use crate::plan::{hatch_lines, Hatch, Pen, PlanItem, PlanView};
 use crate::raster::Raster;
-use creabim_core::Font;
+use creabim_core::{Font, LineWeights};
 use glam::DVec2;
 use std::fmt::Write;
 use std::sync::Arc;
@@ -127,7 +127,7 @@ impl PaperMap {
 }
 
 pub const CUT: Stroke = Stroke::solid(0.5, 0.0);
-pub const PROJECTION: Stroke = Stroke::solid(0.18, 0.25);
+pub const PROJECTION: Stroke = Stroke::solid(0.25, 0.2);
 pub const SYMBOL: Stroke = Stroke::solid(0.18, 0.0);
 pub const GRID: Stroke = Stroke {
     width: 0.13,
@@ -136,25 +136,49 @@ pub const GRID: Stroke = Stroke {
 };
 /// Lines above the cut plane.
 pub const HIDDEN: Stroke = Stroke {
-    width: 0.18,
+    width: 0.13,
     gray: 0.25,
     dash: Some([2.0, 1.0]),
 };
-const HATCH: Stroke = Stroke::solid(0.1, 0.2);
+const HATCH: Stroke = Stroke::solid(0.09, 0.2);
 /// Dimension and leader lines.
 pub const DIMENSION: Stroke = Stroke::solid(0.13, 0.0);
 pub const TICK: Stroke = Stroke::solid(0.35, 0.0);
 /// Hatch line spacing on paper, mm.
 pub const HATCH_SPACING: f64 = 1.2;
 
+/// A pen's stroke at 1:100.
 pub fn pen_stroke(pen: Pen) -> Stroke {
+    pen_stroke_with(pen, &LineWeights::for_scale(100.0))
+}
+
+/// A pen's stroke with a view's line weights: cut heavy, projection
+/// medium, symbols, furniture and hatching light, hidden lines light and
+/// dashed.
+pub fn pen_stroke_with(pen: Pen, w: &LineWeights) -> Stroke {
     match pen {
-        Pen::Cut => CUT,
-        Pen::Projection => PROJECTION,
-        Pen::Symbol => SYMBOL,
+        Pen::Cut => Stroke {
+            width: w.cut,
+            ..CUT
+        },
+        Pen::Projection => Stroke {
+            width: w.projection,
+            ..PROJECTION
+        },
+        Pen::Symbol => Stroke {
+            width: w.symbol,
+            ..SYMBOL
+        },
+        Pen::Fine => Stroke::solid(w.fine, 0.15),
         Pen::Grid | Pen::Guide => GRID,
-        Pen::Hidden => HIDDEN,
-        Pen::Underlay => HATCH,
+        Pen::Hidden => Stroke {
+            width: w.hidden,
+            ..HIDDEN
+        },
+        Pen::Underlay => Stroke {
+            width: w.hatch,
+            ..HATCH
+        },
     }
 }
 
@@ -170,9 +194,20 @@ pub fn hatch_fill(h: Hatch) -> f64 {
 /// How strongly a [`PlanItem::Tint`] shows over what it lies on.
 pub const TINT_ALPHA: f32 = 0.55;
 
-/// Draw a generated drawing onto a canvas.
+/// Draw a generated drawing onto a canvas, with the line weights of its
+/// scale.
 pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
+    draw_with(canvas, drawing, map, &LineWeights::for_scale(map.scale));
+}
+
+/// [`draw`] with a view's own line weights.
+pub fn draw_with(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap, w: &LineWeights) {
     let to = |p: DVec2| map.to_paper(p);
+    let pen_stroke = |pen: Pen| pen_stroke_with(pen, w);
+    let hatch_stroke = Stroke {
+        width: w.hatch,
+        ..HATCH
+    };
     for it in &drawing.items {
         match it {
             // guides and underlays are for working, not for print
@@ -187,12 +222,22 @@ pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
                 let pts: Vec<DVec2> = points.iter().map(|p| to(*p)).collect();
                 canvas.fill(&pts, hatch_fill(*hatch));
                 for (a, b) in hatch_lines(*hatch, points, HATCH_SPACING / map.k()) {
-                    canvas.line(&[to(a), to(b)], HATCH);
+                    canvas.line(&[to(a), to(b)], hatch_stroke);
                 }
             }
-            PlanItem::Tint { points, rgb, .. } => {
+            PlanItem::Tint { points, rgb, .. }
+            | PlanItem::Room {
+                points,
+                rgb: Some(rgb),
+                ..
+            } => {
                 let pts: Vec<DVec2> = points.iter().map(|p| to(*p)).collect();
                 canvas.tint(&pts, *rgb);
+            }
+            PlanItem::Room { rgb: None, .. } => {}
+            PlanItem::Shade { points, rgb, .. } => {
+                let pts: Vec<DVec2> = points.iter().map(|p| to(*p)).collect();
+                canvas.fill_rgb(&pts, *rgb);
             }
             PlanItem::Polygon { pen, points, .. } => {
                 let pts: Vec<DVec2> = points.iter().map(|p| to(*p)).collect();

@@ -74,6 +74,8 @@ pub const PAGES: &[(&str, &str, &str)] = &[
     page!("Building the model", "grids"),
     page!("Building the model", "furniture"),
     page!("Building the model", "fixtures"),
+    page!("Building the model", "rooms"),
+    page!("Building the model", "ceilings"),
     page!("Views and drawings", "views"),
     page!("Views and drawings", "sections"),
     page!("Views and drawings", "visibility"),
@@ -229,6 +231,8 @@ pub fn tool_page(t: Tool) -> &'static str {
         Tool::Extrusion | Tool::Sweep => "parts",
         Tool::Void => "parts#voids",
         Tool::Terrain | Tool::Paving | Tool::Planting => "site",
+        Tool::Room | Tool::RoomSeparator => "rooms",
+        Tool::Ceiling => "ceilings",
     }
 }
 
@@ -258,6 +262,8 @@ pub fn element_page(kind: &ElementKind) -> &'static str {
         ElementKind::Shaft(_) => "holes#shafts",
         ElementKind::CropBox(_) => "crop-boxes",
         ElementKind::Object(_) => "furniture",
+        ElementKind::Room(_) | ElementKind::RoomSeparator(_) => "rooms",
+        ElementKind::Ceiling(_) => "ceilings",
         ElementKind::Dimension(_) => "dimensions",
         ElementKind::Tag(_) => "tags",
         ElementKind::Note(_) => "notes",
@@ -446,6 +452,7 @@ const SELECT: &str = "Selecting";
 const EDIT: &str = "Move, rotate and scale";
 const DRAW: &str = "While drawing";
 const MENUS: &str = "Menus and the command palette";
+const EDITING: &str = "In Edit mode";
 
 /// Every key the app reads outside its menus. The menus' own shortcuts are
 /// read from the menus themselves.
@@ -515,6 +522,30 @@ pub const KEYS: &[Binding] = &[
     key(EDIT, "Backspace", "Take back the last digit typed"),
     key(EDIT, "Esc", "Step back, then cancel"),
     key(EDIT, "E", "Extrude the selected face or sketch"),
+    key(EDITING, "click", "On a corner: pick it (Shift+click picks more)"),
+    key(
+        EDITING,
+        "drag",
+        "Off the grips: pick the corners in a box; inside a hole: move it",
+    ),
+    key(
+        EDITING,
+        "Del",
+        "Remove the picked corners or hole, never the element",
+    ),
+    key(EDITING, "Backspace", "Remove the picked corners, as Delete"),
+    key(EDITING, "Double-click", "On a corner: remove it"),
+    key(
+        EDITING,
+        "right-click",
+        "On a corner, an edge or a hole: add or remove corners, make an arc, remove the hole",
+    ),
+    key(EDITING, "Tab", "While dragging a grip: type a length"),
+    key(
+        EDITING,
+        "Esc",
+        "Cancel the drag; then drop the picks; then finish editing",
+    ),
     key(DRAW, "Shift (hold)", "Keep lines square"),
     key(
         DRAW,

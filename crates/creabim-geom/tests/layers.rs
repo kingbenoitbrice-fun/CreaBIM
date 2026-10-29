@@ -28,7 +28,10 @@ fn a_layered_wall_has_a_solid_per_layer_but_its_air_gap() {
     let m = layered_house();
     let wall = id_of(&m, "GF Wall 1");
     let scene = build_scene(&m);
-    let parts: Vec<_> = scene.iter().filter(|i| i.id == wall).collect();
+    let parts: Vec<_> = scene
+        .iter()
+        .filter(|i| i.id == wall && !i.is_lining())
+        .collect();
     assert_eq!(parts.len(), 4, "five layers, one an air gap");
     assert!(parts.iter().all(|p| p.layer.is_some()));
     assert!(parts

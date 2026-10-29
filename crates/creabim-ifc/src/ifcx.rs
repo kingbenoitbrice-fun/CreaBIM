@@ -137,6 +137,10 @@ pub fn export_ifcx(model: &Model) -> String {
                 (f.level.map_or(Parent::Building, Parent::Level), None)
             }
             ElementKind::GridGroup(_) => (Parent::Building, None),
+            // rooms and separators have no body; a ceiling has its slab
+            ElementKind::Room(r) => (Parent::Level(r.level), None),
+            ElementKind::RoomSeparator(s) => (Parent::Level(s.level), None),
+            ElementKind::Ceiling(c) => (Parent::Level(c.level), Some(elevation(Some(c.level)))),
             ElementKind::Grid(g) => {
                 attrs.insert(
                     "bsi::ifc::prop::AxisTag".into(),
@@ -818,9 +822,11 @@ pub fn import_ifcx(json: &str) -> Result<ImportResult, ImportError> {
     ]
     .concat();
     let model = build_model(elements, &mut warnings)?;
+    let (warnings, details) = warnings.into_parts();
     Ok(ImportResult {
         model,
-        warnings: warnings.into_vec(),
+        warnings,
+        details,
         schema,
     })
 }
@@ -1020,17 +1026,15 @@ impl Builder {
             }
             match o.class.as_str() {
                 "IfcProject" | "IfcSite" | "IfcBuilding" if o.mesh.faces.is_empty() => continue,
-                "IfcSpace" => {
-                    spaces += 1;
-                    continue;
-                }
                 "IfcOpeningElement" | "IfcGrid" | "IfcGridAxis" | "IfcAnnotation" => continue,
                 _ => {}
             }
             let name = o.name.replace('_', " ");
             let class = o.class.clone();
             let Some((lo, _)) = bounds(o.mesh.vertices.iter().copied()) else {
-                if !o.class.starts_with("IfcBuilding") {
+                if class == "IfcSpace" {
+                    spaces += 1;
+                } else if !o.class.starts_with("IfcBuilding") {
                     self.warnings.add(format!(
                         "{} {name:?} has no geometry CreaBIM can read",
                         o.class
@@ -1039,6 +1043,37 @@ impl Builder {
                 continue;
             };
             let (level, elev) = level_for(&objects, i, lo.z);
+            // a space from another tool: a room with the outline of its body
+            if class == "IfcSpace" {
+                match prism_of_mesh(o.mesh.clone()) {
+                    Some(p) if p.footprint.len() >= 3 => {
+                        let mut r = creabim_core::Room::new(
+                            level,
+                            p.footprint.iter().copied().sum::<DVec2>() / p.footprint.len() as f64,
+                        );
+                        if !creabim_core::polygon::contains(&p.footprint, r.at) {
+                            if let Some(t) =
+                                creabim_core::polygon::triangulate(&p.footprint).first()
+                            {
+                                r.at = (p.footprint[t[0]] + p.footprint[t[1]] + p.footprint[t[2]])
+                                    / 3.0;
+                            }
+                        }
+                        r.boundary = p.footprint;
+                        r.height = Some(p.z1 - elev).filter(|h| *h > 0.1);
+                        let id = self.id(&o.path.clone());
+                        self.main.push(Element {
+                            source: None,
+                            id,
+                            name,
+                            kind: ElementKind::Room(r),
+                            of_type: None,
+                        });
+                    }
+                    _ => spaces += 1,
+                }
+                continue;
+            }
             // native walls: an axis and every vertex on the two faces along it
             if class.starts_with("IfcWall") {
                 if let Some((start, end, thickness, z0, z1)) = o
@@ -1054,6 +1089,7 @@ impl Builder {
                             end,
                             thickness,
                             base_z: z0,
+                            top_z: z1,
                         },
                     );
                     self.main.push(Element {
@@ -1167,7 +1203,7 @@ impl Builder {
         }
         if spaces > 0 {
             self.warnings.add(format!(
-                "{spaces} spaces were not imported (CreaBIM has no rooms yet)"
+                "{spaces} spaces have no flat outline CreaBIM can read and were left out"
             ));
         }
     }
