@@ -384,6 +384,8 @@ impl CreaBimApp {
                         items.push(Item::Separator);
                     }
                     items.extend(self.hide_in_view_items(self.shell.context_3d));
+                    items.extend(self.similar_items());
+                    items.push(Item::Separator);
                 }
                 items.extend([
                     ctx(Command::Paste),
@@ -599,6 +601,9 @@ impl CreaBimApp {
             &[Command::Hide, Command::Isolate, Command::ShowAll],
         ] {
             items.extend(group.iter().map(|c| self.cmd_item(*c)));
+            if group.contains(&Command::SelectNone) {
+                items.extend(self.similar_items());
+            }
             if group.contains(&Command::Paste) {
                 items.push(
                     Item::sub("Paste aligned to level", self.paste_level_items())
@@ -1234,6 +1239,7 @@ impl CreaBimApp {
             }
             "note.leader" => self.plan.anno.leader = !self.plan.anno.leader,
             _ if self.crop_action(head, arg) => {}
+            _ if self.similar_action(head, arg) => {}
             _ if self.help_action(head, arg) => {}
             _ if self.wall_action(head, arg) => {}
             _ if self.level_action(head, arg) => {}

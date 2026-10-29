@@ -43,6 +43,8 @@ mod levelsui;
 mod materials;
 #[path = "objectsui.rs"]
 mod objectsui;
+#[path = "selectsimilar.rs"]
+mod selectsimilar;
 #[path = "shell.rs"]
 mod shell;
 #[path = "typesui.rs"]
@@ -851,7 +853,7 @@ impl CreaBimApp {
             let (cmd, alt, shift) = (i.modifiers.command, i.modifiers.alt, i.modifiers.shift);
             let h = i.key_pressed(egui::Key::H);
             (
-                cmd && i.key_pressed(egui::Key::A),
+                cmd && !shift && i.key_pressed(egui::Key::A),
                 alt && i.key_pressed(egui::Key::A),
                 h && !cmd && !alt && !shift,
                 h && shift && !cmd && !alt,
@@ -874,6 +876,16 @@ impl CreaBimApp {
         }
         if all {
             self.select_all();
+        }
+        // Shift+A: all of the selection's type in the view; Ctrl+Shift+A
+        // in the project
+        let similar = ctx.input(|i| {
+            let m = i.modifiers;
+            (m.shift && !m.alt && i.key_pressed(egui::Key::A)).then_some(m.command)
+        });
+        if let Some(project) = similar.filter(|_| self.plan.tool == Tool::Select) {
+            self.shell.context_3d = !self.last_in_2d;
+            self.select_similar(if project { "type.project" } else { "type.view" });
         }
         if none {
             self.selection.clear();
