@@ -818,9 +818,11 @@ pub fn import_ifcx(json: &str) -> Result<ImportResult, ImportError> {
     ]
     .concat();
     let model = build_model(elements, &mut warnings)?;
+    let (warnings, details) = warnings.into_parts();
     Ok(ImportResult {
         model,
-        warnings: warnings.into_vec(),
+        warnings,
+        details,
         schema,
     })
 }
@@ -1053,6 +1055,7 @@ impl Builder {
                             end,
                             thickness,
                             base_z: z0,
+                            top_z: z1,
                         },
                     );
                     self.main.push(Element {

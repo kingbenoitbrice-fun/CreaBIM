@@ -56,6 +56,33 @@ impl TriMesh {
         Some(it.fold((first, first), |(lo, hi), p| (lo.min(p), hi.max(p))))
     }
 
+    /// Is every edge shared by exactly two triangles, running opposite
+    /// ways? Vertices at the same position count as one corner, whatever
+    /// their normals, so a flat-shaded box is closed.
+    pub fn is_closed(&self) -> bool {
+        use std::collections::HashMap;
+        let mut corner: HashMap<[u32; 3], u32> = HashMap::new();
+        let ids: Vec<u32> = self
+            .positions
+            .iter()
+            .map(|p| {
+                let n = corner.len() as u32;
+                *corner.entry(p.map(f32::to_bits)).or_insert(n)
+            })
+            .collect();
+        let mut edges: HashMap<(u32, u32), i32> = HashMap::new();
+        for t in self.indices.chunks_exact(3) {
+            for k in 0..3 {
+                let (a, b) = (ids[t[k] as usize], ids[t[(k + 1) % 3] as usize]);
+                if a == b {
+                    continue;
+                }
+                *edges.entry((a.min(b), a.max(b))).or_insert(0) += if a < b { 1 } else { -1 };
+            }
+        }
+        !self.indices.is_empty() && edges.values().all(|&n| n == 0)
+    }
+
     /// Enclosed volume, for tests: positive when the mesh is closed and outward-facing.
     pub fn volume(&self) -> f64 {
         self.indices

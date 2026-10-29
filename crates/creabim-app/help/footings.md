@@ -10,7 +10,14 @@ A **footing** is the foundation under the building. A **strip footing** runs und
    - **Strip:** click a wall to put a strip under it. To draw a strip on its own, click its two ends anywhere else.
    - **Pad:** click a column to put a pad under it, or click anywhere to place one on its own.
 
-To add footings under many elements at once, select walls and columns, right-click and choose **Footings under selection**. Each wall gets a strip and each column gets a pad. Anything that already has a footing is skipped, and curtain walls never get one.
+Keep clicking walls (or columns) to give each its footing: the tool stays on until you press `Esc`.
+
+To add footings under many elements at once:
+
+- **Drag a box** with the Footing tool, as in Select. Every wall it touches gets a strip (with *Strip* picked), or every column a pad (with *Pad* picked), all in one undo step.
+- Or select walls and columns first, then click **Under N selected** in the tool options, or right-click and choose **Footings under selection**. Each wall gets a strip and each column gets a pad.
+
+Anything that already has a footing is skipped, and curtain walls never get one.
 
 ## Footings follow what they carry
 

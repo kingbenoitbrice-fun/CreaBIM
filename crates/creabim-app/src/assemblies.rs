@@ -438,9 +438,9 @@ impl CreaBimApp {
         let mut create = false;
         let mut edit = false;
         ui.horizontal(|ui| {
-            egui::ComboBox::from_label("Assembly")
+            crate::app::helpui::combo(ui, "Assembly")
                 .selected_text(shown)
-                .width(150.0)
+                .width(ui.available_width().min(150.0))
                 .show_ui(ui, |ui| {
                     changed |= ui
                         .selectable_value(current, None, "None (single material)")
