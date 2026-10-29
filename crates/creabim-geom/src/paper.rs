@@ -253,12 +253,13 @@ pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
             PlanItem::Tag {
                 anchor,
                 at,
+                elbow,
                 text,
                 round,
                 look,
                 ..
             } => {
-                let g = tag_geometry(*anchor, *at, text, *round, look, 1.0 / map.k());
+                let g = tag_geometry(*anchor, *at, *elbow, text, *round, look, 1.0 / map.k());
                 let mut pts: Vec<DVec2> = g.outline.iter().map(|p| to(*p)).collect();
                 if g.closed {
                     canvas.fill(&pts, 1.0);
@@ -267,8 +268,10 @@ pub fn draw(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap) {
                 if pts.len() > 1 {
                     ink_line(canvas, &pts, SYMBOL, look);
                 }
-                if let Some((p, q)) = g.leader {
-                    ink_line(canvas, &[to(p), to(q)], DIMENSION, look);
+                if !g.leader.is_empty() {
+                    let pts: Vec<DVec2> = g.leader.iter().map(|p| to(*p)).collect();
+                    ink_line(canvas, &pts, DIMENSION, look);
+                    draw_ends(canvas, &g.ends, look, &to);
                 }
                 canvas.styled_text(to(*at), text, Anchor::Middle, 0.0, look);
             }

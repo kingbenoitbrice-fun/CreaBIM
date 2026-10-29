@@ -62,7 +62,8 @@ pub fn import_ifc(text: &str) -> Result<ImportResult, ImportError> {
         ));
     }
     imp.run();
-    let elements = std::mem::take(&mut imp.out);
+    let mut elements = std::mem::take(&mut imp.out);
+    read_tags(&file, &mut elements);
     let mut warnings = std::mem::take(&mut imp.g.warnings);
     let model = build_model(elements, &mut warnings)?;
     Ok(ImportResult {
@@ -120,6 +121,41 @@ pub(crate) fn build_model(
     doc.commit(tx)
         .map_err(|e| ImportError::Model(e.to_string()))?;
     Ok(doc.model().clone())
+}
+
+/// Give elements the marks their IFC entities carry as their Tag (the
+/// attribute after Representation, on every IfcElement). Tags of bare
+/// digits are left out: some programs write their own element numbers there.
+fn read_tags(f: &StepFile, elements: &mut [Element]) {
+    const SPATIAL: &[&str] = &[
+        "IFCPROJECT",
+        "IFCSITE",
+        "IFCBUILDING",
+        "IFCBUILDINGSTOREY",
+        "IFCSPACE",
+        "IFCSPATIALZONE",
+        "IFCEXTERNALSPATIALELEMENT",
+    ];
+    let mut tags: HashMap<ElementId, String> = HashMap::new();
+    for e in f.entities.values() {
+        if SPATIAL.contains(&e.class.as_str()) || crate::classes::product_class(&e.class).is_none() {
+            continue;
+        }
+        let Some(tag) = e.arg(7).as_str().map(str::trim) else {
+            continue;
+        };
+        if tag.is_empty() || tag.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if let Some(id) = e.arg(0).as_str().and_then(ElementId::from_ifc_guid) {
+            tags.insert(id, tag.to_string());
+        }
+    }
+    for e in elements {
+        if let Some(t) = tags.remove(&e.id) {
+            e.mark = Some(t);
+        }
+    }
 }
 
 /// Classes with no physical body of their own, or handled separately.

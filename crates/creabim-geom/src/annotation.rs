@@ -253,8 +253,13 @@ pub enum Shape {
         b: DVec2,
         offset: f64,
     },
-    /// Lines of text from `at`, with a leader to `leader`.
-    Note { at: DVec2, leader: Option<DVec2> },
+    /// Lines of text from `at`, with a leader to `leader`, bent at
+    /// `elbow` when it has one.
+    Note {
+        at: DVec2,
+        leader: Option<DVec2>,
+        elbow: Option<DVec2>,
+    },
     /// A level's head where its datum line ends at `at`, Revit style: a
     /// target symbol, the level's name (the annotation's text) above the
     /// line and its `elevation` below.
@@ -507,7 +512,7 @@ impl Annotation {
                     });
                 }
             }
-            Shape::Note { at, leader } => {
+            Shape::Note { at, leader, elbow } => {
                 let lines: Vec<&str> = self.text.split('\n').collect();
                 let step = look.size * 1.5 * mm;
                 let width = lines.iter().map(|l| look.width(l)).fold(0.0, f64::max) * mm;
@@ -520,7 +525,7 @@ impl Annotation {
                     });
                 }
                 if let Some(target) = leader {
-                    out.lines.extend(note_leader(at, width, target, mm));
+                    out.lines.extend(note_leader(at, width, target, elbow, mm));
                     let from = out
                         .lines
                         .last()
@@ -617,15 +622,30 @@ fn text_box(t: &MarkText, look: &TextLook, mm: f64) -> [DVec2; 4] {
 }
 
 /// A note's leader: from beside its first line (left or right, whichever
-/// faces the target) along a short shoulder, then to the target.
-pub fn note_leader(at: DVec2, width: f64, target: DVec2, mm: f64) -> Vec<Vec<DVec2>> {
-    let left = target.x < at.x + width / 2.0;
+/// faces the target, or the elbow) along a short shoulder, then to the
+/// target; through `elbow` when it has one.
+pub fn note_leader(
+    at: DVec2,
+    width: f64,
+    target: DVec2,
+    elbow: Option<DVec2>,
+    mm: f64,
+) -> Vec<Vec<DVec2>> {
+    let toward = elbow.unwrap_or(target);
+    let left = toward.x < at.x + width / 2.0;
     let (start, dir) = if left {
         (at - DVec2::X * mm, -1.0)
     } else {
         (at + DVec2::X * (width + mm), 1.0)
     };
     let shoulder = start + DVec2::X * dir * 2.5 * mm;
+    if let Some(elbow) = elbow {
+        // a shoulder only when the elbow is out past it
+        if (elbow.x - start.x) * dir < 3.0 * mm {
+            return vec![vec![start, elbow, target]];
+        }
+        return vec![vec![start, shoulder, elbow, target]];
+    }
     // no shoulder when the target is right beside the text
     if (target.x - start.x) * dir < 3.0 * mm {
         return vec![vec![start, target]];
@@ -712,6 +732,7 @@ mod tests {
     fn note(text: &str, leader: Option<DVec2>) -> Annotation {
         Annotation {
             shape: Shape::Note {
+                elbow: None,
                 at: DVec2::new(10.0, 5.0),
                 leader,
             },

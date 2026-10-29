@@ -248,13 +248,15 @@ pub fn tag_text(model: &Model, id: ElementId) -> (String, bool) {
         Some(m) => format!("{m} {}", units.dimension(t)),
         None => units.dimension(t),
     };
+    // a mark, typed or numbered by the project's rules, is what it reads
+    if !matches!(e.kind, ElementKind::Object(_)) {
+        if let Some(m) = creabim_core::marks::mark_of(model, id) {
+            let round = matches!(&e.kind, ElementKind::Opening(o) if o.kind == OpeningKind::Door);
+            return (m, round);
+        }
+    }
     match &e.kind {
-        ElementKind::Opening(o) => (
-            creabim_core::marks(model)
-                .remove(&id)
-                .unwrap_or_else(|| e.name.clone()),
-            o.kind == OpeningKind::Door,
-        ),
+        ElementKind::Opening(o) => (e.name.clone(), o.kind == OpeningKind::Door),
         ElementKind::Wall(w) => (with_material(w.thickness), false),
         ElementKind::Slab(s) => (with_material(s.thickness), false),
         ElementKind::Column(c) => (c.profile.label_in(&units), false),
@@ -381,12 +383,18 @@ pub fn note_item(
     leader: Option<DVec2>,
     mm: f64,
 ) -> PlanItem {
+    let mut look = look_of(model, n.style, n.color);
+    look.leader_end = n.leader_end.or(look.leader_end);
     PlanItem::Annotation {
         id,
         item: Box::new(Annotation {
-            shape: Shape::Note { at: n.at, leader },
+            shape: Shape::Note {
+                at: n.at,
+                leader,
+                elbow: leader.and(n.elbow),
+            },
             text: n.text.clone(),
-            look: look_of(model, n.style, n.color),
+            look,
             mm,
         }),
     }
@@ -442,15 +450,18 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
                 let Some(c) = centre(model, t.host) else {
                     continue;
                 };
-                let anchor = project.project(c);
+                let centre = project.project(c);
                 let (text, round) = tag_text(model, t.host);
+                let mut look = look_of(model, t.style, t.color);
+                look.leader_end = t.leader_end.or(look.leader_end);
                 out.push(PlanItem::Tag {
                     id: e.id,
-                    anchor,
-                    at: anchor + t.offset,
+                    anchor: centre + t.end.unwrap_or(DVec2::ZERO),
+                    at: centre + t.offset,
+                    elbow: t.elbow.map(|p| centre + p),
                     text,
                     round,
-                    look: look_of(model, t.style, t.color),
+                    look,
                 });
             }
             _ => {}
@@ -524,7 +535,11 @@ pub struct TagGeometry {
     /// The outline is a closed shape, filled white under the text (else an
     /// underline, or nothing for text alone).
     pub closed: bool,
-    pub leader: Option<(DVec2, DVec2)>,
+    /// The leader from the bubble's edge (through its elbow) to the host,
+    /// as a polyline; empty when the tag sits on its host.
+    pub leader: Vec<DVec2>,
+    /// The mark at the leader's end: an arrow, a dot, or nothing.
+    pub ends: Ends,
 }
 
 /// Text height of tags and dimensions, paper mm.
@@ -621,6 +636,7 @@ fn tag_outline(shape: TagShape, at: DVec2, half: DVec2) -> (Vec<DVec2>, bool) {
 pub fn tag_geometry(
     anchor: DVec2,
     at: DVec2,
+    elbow: Option<DVec2>,
     text: &str,
     round: bool,
     look: &TextLook,
@@ -635,8 +651,9 @@ pub fn tag_geometry(
     };
     let (outline, closed) = tag_outline(shape, at, half);
     // a leader back to the host, from the edge of the bubble (or of the
-    // text's box when there is no bubble)
-    let d = anchor - at;
+    // text's box when there is no bubble), towards its elbow if it has one
+    let first = elbow.unwrap_or(anchor);
+    let d = first - at;
     let edge = if closed {
         outline.clone()
     } else {
@@ -656,11 +673,28 @@ pub fn tag_geometry(
             t = t.min(s);
         }
     }
-    let leader = (t < 1.0 && d.length() * (1.0 - t) > 1.0 * mm).then(|| (at + d * t, anchor));
+    let mut leader = vec![];
+    if t < 1.0 && d.length() * (1.0 - t) > 1.0 * mm {
+        leader.push(at + d * t);
+        leader.extend(elbow);
+        leader.push(anchor);
+    } else if elbow.is_some() {
+        // the elbow is inside the bubble: run straight on from it
+        leader = vec![first, anchor];
+    }
+    leader.dedup_by(|a, b| a.distance(*b) < 1e-9);
+    let mut ends = Ends::default();
+    if let (Some(end), [.., from, tip]) = (look.leader_end, leader.as_slice()) {
+        ends = end_marks(end, *tip, *tip - *from, look.end_size, mm);
+    }
+    if leader.len() < 2 {
+        leader.clear();
+    }
     TagGeometry {
         outline,
         closed,
         leader,
+        ends,
     }
 }
 
@@ -877,7 +911,7 @@ mod tests {
         let anchor = DVec2::new(0.0, -1.0);
         for shape in TagShape::ALL {
             look.shape = shape;
-            let g = tag_geometry(anchor, DVec2::ZERO, "D01", false, &look, 0.01);
+            let g = tag_geometry(anchor, DVec2::ZERO, None, "D01", false, &look, 0.01);
             assert_eq!(
                 g.closed,
                 !matches!(shape, TagShape::Underline | TagShape::TextOnly)
@@ -887,7 +921,7 @@ mod tests {
             assert!(from.y < 0.0 && from.y > -0.05, "{shape:?} {from}");
         }
         look.shape = TagShape::Auto;
-        let round = tag_geometry(anchor, DVec2::ZERO, "D01", true, &look, 0.01);
+        let round = tag_geometry(anchor, DVec2::ZERO, None, "D01", true, &look, 0.01);
         assert_eq!(round.outline.len(), 24, "openings stay round");
     }
 }
