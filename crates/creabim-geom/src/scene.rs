@@ -626,15 +626,58 @@ pub fn slab_mesh(boundary: &[DVec2], top_z: f64, thickness: f64) -> TriMesh {
     m
 }
 
-/// Flat-shaded triangles from a polygon mesh, offset to `origin`.
+/// Flat-shaded triangles from a polygon mesh, offset to `origin`, face by
+/// face (so triangle k still maps back to its face).
+///
+/// Coincident corners are welded: corners closer than a micron become one
+/// position, and faces lying in one plane share the vertex itself. A
+/// corner on a crease is still one vertex per face direction, so every
+/// face keeps its own flat normal, but they all sit at exactly the same
+/// point, so the mesh is closed wherever the edit mesh is (see
+/// [`TriMesh::is_closed`]).
 pub fn edit_mesh_to_tri(mesh: &creabim_core::EditMesh, origin: DVec3) -> TriMesh {
+    use std::collections::HashMap;
+    const TOL: f64 = 1e-6;
+    let key = |p: DVec3| {
+        (
+            (p.x / TOL).round() as i64,
+            (p.y / TOL).round() as i64,
+            (p.z / TOL).round() as i64,
+        )
+    };
+    let mut first: HashMap<(i64, i64, i64), usize> = HashMap::new();
+    let corner: Vec<usize> = (0..mesh.vertices.len())
+        .map(|v| *first.entry(key(mesh.vertices[v])).or_insert(v))
+        .collect();
     let mut m = TriMesh::default();
+    let mut shared: HashMap<(usize, [i64; 3]), u32> = HashMap::new();
     for f in 0..mesh.faces.len() {
-        let pts: Vec<DVec3> = mesh.faces[f]
-            .iter()
-            .map(|&v| mesh.vertices[v as usize] + origin)
+        let face = &mesh.faces[f];
+        let n = mesh.face_normal(f);
+        let nk = (n * 1e5).round().as_i64vec3().to_array();
+        let mut index = |k: usize| -> (u32, DVec3) {
+            let c = corner[face[k] as usize];
+            let p = mesh.vertices[c] + origin;
+            let i = *shared.entry((c, nk)).or_insert_with(|| {
+                m.positions.push(p.as_vec3().to_array());
+                m.normals.push(n.as_vec3().to_array());
+                (m.positions.len() - 1) as u32
+            });
+            (i, p)
+        };
+        let tris: Vec<[(u32, DVec3); 3]> = mesh
+            .face_corners(f)
+            .into_iter()
+            .map(|t| t.map(&mut index))
             .collect();
-        m.add_polygon(&pts, &mesh.face_corners(f), mesh.face_normal(f));
+        for [(a, pa), (b, pb), (c, pc)] in tris {
+            // keep the winding consistent with the normal
+            if (pb - pa).cross(pc - pa).dot(n) >= 0.0 {
+                m.indices.extend([a, b, c]);
+            } else {
+                m.indices.extend([a, c, b]);
+            }
+        }
     }
     m
 }
@@ -709,6 +752,51 @@ mod tests {
         assert_eq!(cut.len(), 1);
         let area = crate::triangulate::signed_area2(&cut[0]) / 2.0;
         assert!((area - 14.0).abs() < 1e-5, "{area}");
+    }
+
+    #[test]
+    fn edit_mesh_corners_are_welded_and_faces_stay_flat() {
+        // a box whose faces each carry their own copies of the corners, as
+        // an imported mesh does
+        let cube = creabim_core::EditMesh::cuboid(DVec3::new(2.0, 2.0, 2.0));
+        let mut split = creabim_core::EditMesh::default();
+        for f in &cube.faces {
+            let base = split.vertices.len() as u32;
+            split
+                .vertices
+                .extend(f.iter().map(|&v| cube.vertices[v as usize]));
+            split
+                .faces
+                .push((0..f.len() as u32).map(|i| base + i).collect());
+        }
+        let m = edit_mesh_to_tri(&split, DVec3::ZERO);
+        assert!(m.is_closed());
+        // eight corners, three face directions each
+        assert_eq!(m.positions.len(), 24);
+        let mut corners: Vec<[u32; 3]> = m.positions.iter().map(|p| p.map(f32::to_bits)).collect();
+        corners.sort_unstable();
+        corners.dedup();
+        assert_eq!(corners.len(), 8);
+        for t in m.indices.chunks(3) {
+            let n = |i: u32| m.normals[i as usize];
+            assert!(n(t[0]) == n(t[1]) && n(t[1]) == n(t[2]), "flat faces");
+        }
+        // a face split in two shares the corners along the split
+        let mut halves = cube.clone();
+        let top = halves
+            .faces
+            .iter()
+            .position(|f| f.iter().all(|&v| cube.vertices[v as usize].z > 1.0))
+            .unwrap();
+        let q = halves.faces.remove(top);
+        halves.faces.push(vec![q[0], q[1], q[2]]);
+        halves.faces.push(vec![q[0], q[2], q[3]]);
+        let m = edit_mesh_to_tri(&halves, DVec3::ZERO);
+        assert_eq!(m.positions.len(), 24);
+        assert!(m.is_closed());
+        // and the plan cut of the closed box is one loop
+        let cut = crate::slice::slice(&m, 1.0);
+        assert_eq!(cut.len(), 1);
     }
 
     #[test]

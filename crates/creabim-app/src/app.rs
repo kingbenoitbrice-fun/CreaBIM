@@ -35,6 +35,8 @@ mod editui;
 mod gridvis;
 #[path = "helpui.rs"]
 pub(crate) mod helpui;
+#[path = "importui.rs"]
+mod importui;
 #[path = "levelcopy.rs"]
 mod levelcopy;
 #[path = "levelsui.rs"]
@@ -182,6 +184,8 @@ pub struct CreaBimApp {
     levels: levelsui::LevelsUi,
     /// The Copy to levels and Move to level windows.
     level_copy: levelcopy::LevelCopyUi,
+    /// What the last IFC import brought across, and what it couldn't.
+    import_report: Option<importui::ImportReport>,
     /// The annotation styles and sheet templates windows.
     drafting: drafting::DraftingUi,
     /// Orbit about the selection rather than the middle of the view.
@@ -261,6 +265,7 @@ impl CreaBimApp {
             catalogue: Default::default(),
             levels: Default::default(),
             level_copy: Default::default(),
+            import_report: None,
             drafting: Default::default(),
             orbit_selection: false,
             rect_3d: None,
@@ -312,6 +317,14 @@ impl CreaBimApp {
                 Ok(imported) => {
                     let n = imported.model.len();
                     let warnings = imported.warnings.len();
+                    let report = importui::ImportReport::new(&file_label(path), &imported);
+                    for w in &imported.warnings {
+                        eprintln!("IFC import: {w}");
+                    }
+                    for d in &imported.details {
+                        eprintln!("IFC import:   {d}");
+                    }
+                    self.import_report = Some(report);
                     self.load_model(imported.model);
                     self.watch = Default::default();
                     self.recent.add(path);
@@ -321,15 +334,12 @@ impl CreaBimApp {
                         file_label(path),
                         imported.schema,
                         if warnings > 0 {
-                            format!(", {warnings} notes (see the terminal)")
+                            format!(", {warnings} notes (File › Import report)")
                         } else {
                             String::new()
                         },
                         file_label(&self.path)
                     );
-                    for w in &imported.warnings {
-                        eprintln!("IFC import: {w}");
-                    }
                 }
                 Err(e) => self.status = format!("Couldn't open {path}: {e}"),
             }
@@ -5160,6 +5170,7 @@ impl eframe::App for CreaBimApp {
         self.templates_window(&ctx);
         self.units_window(&ctx);
         self.ground_spacing_window(&ctx);
+        self.import_report_window(&ctx);
         self.help_window(&ctx);
         // a plan in its own window keeps egui's menus
         self.plan.web_menus = false;

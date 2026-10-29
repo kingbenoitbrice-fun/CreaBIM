@@ -591,6 +591,13 @@ impl CreaBimApp {
                 .hint("Bring in the objects of a .blend or .FCStd file. Saving it in Blender or FreeCAD updates them here."),
             Item::new("live", "Reload linked files when saved").checked(self.live_reload),
         ]);
+        if self.import_report.is_some() {
+            items.push(
+                Item::new("import.report", "Import report")
+                    .icon("file-text")
+                    .hint("What the last IFC import brought in as native elements and as meshes, and why, element by element. It can be copied."),
+            );
+        }
         let linked = crate::files::linked_files(self.doc.model());
         if !linked.is_empty() {
             items.push(
@@ -1210,6 +1217,11 @@ impl CreaBimApp {
                 }
             }
             "live" => self.live_reload = !self.live_reload,
+            "import.report" => {
+                if let Some(r) = &mut self.import_report {
+                    r.open = true;
+                }
+            }
             "reload" => {
                 let linked = crate::files::linked_files(self.doc.model());
                 if let Some(f) = index.and_then(|i| linked.get(i)) {
