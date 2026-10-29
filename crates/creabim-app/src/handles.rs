@@ -156,6 +156,10 @@ pub enum HandleKind {
     },
     /// Slide a whole wall square to itself; the walls joined to it stretch.
     WallSlide,
+    /// Slide a door or window along its wall at the same width.
+    OpeningSlide,
+    /// A beam's width, both sides at once.
+    BeamWidth,
 }
 
 impl HandleKind {
@@ -185,7 +189,8 @@ impl HandleKind {
             | HandleKind::Ring { .. } => "Reshape",
             HandleKind::Rotate => "Rotate",
             HandleKind::ColumnSize { .. } => "Resize",
-            HandleKind::WallSlide => "Slide",
+            HandleKind::WallSlide | HandleKind::OpeningSlide => "Slide",
+            HandleKind::BeamWidth => "Change width of",
             HandleKind::WallFace | HandleKind::SlabUnderside | HandleKind::SlabTop => {
                 "Change thickness of"
             }
@@ -241,6 +246,8 @@ impl HandleKind {
             HandleKind::ColumnSize { depth: false } => "Drag: change the width",
             HandleKind::ColumnSize { depth: true } => "Drag: change the depth",
             HandleKind::WallSlide => "Drag: slide the wall square to itself (joined walls follow)",
+            HandleKind::OpeningSlide => "Drag: slide it along the wall · Tab: type how far",
+            HandleKind::BeamWidth => "Drag: change the width",
             _ => "Drag to change it",
         }
     }
@@ -361,6 +368,12 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
             if matches!(o.kind, OpeningKind::Window | OpeningKind::Hole) {
                 out.push(line(HandleKind::OpeningSill, at(mid, o.sill), DVec3::Z));
             }
+            // in the middle, to slide it along its wall
+            out.push(line(
+                HandleKind::OpeningSlide,
+                at(mid, o.sill + o.height / 2.0),
+                u.extend(0.0),
+            ));
             out
         }
         ElementKind::Shaft(s) => {
@@ -494,6 +507,15 @@ fn member_extras(model: &Model, e: &Element) -> Vec<Handle> {
                 ));
             }
             out
+        }
+        ElementKind::Beam(b) => {
+            let n = (b.end - b.start).normalize_or_zero().perp();
+            let mid = (b.start + b.end) / 2.0;
+            vec![line(
+                HandleKind::BeamWidth,
+                (mid + n * b.width / 2.0).extend(b.top(model)),
+                n,
+            )]
         }
         ElementKind::Stair(s) => {
             let dir = DVec2::from_angle(s.direction.to_radians());
@@ -751,6 +773,17 @@ pub fn apply(
             let by = to - c.min;
             c.min += by;
             c.max += by;
+        }
+        (ElementKind::Opening(o), HandleKind::OpeningSlide) => {
+            let Some(ElementKind::Wall(w)) = model.get(o.host).map(|h| &h.kind) else {
+                return Err("its wall is gone".into());
+            };
+            let along = round(d.truncate().dot(w.direction()), step);
+            o.offset = (o.offset + along).clamp(0.0, (w.length() - o.width).max(0.0));
+        }
+        (ElementKind::Beam(b), HandleKind::BeamWidth) => {
+            let n = (b.end - b.start).normalize_or_zero().perp();
+            b.width = round(b.width + 2.0 * d.truncate().dot(n), step / 5.0).max(0.05);
         }
         (ElementKind::Wall(w), HandleKind::WallSlide) => {
             let n = w.direction().perp();
@@ -2920,5 +2953,27 @@ mod tests {
             .iter()
             .any(|h| h.kind == HandleKind::Rotate));
         assert!(flip_arrows(&m, e.id).iter().any(|f| f.flip == Flip::Object));
+    }
+
+    #[test]
+    fn a_door_slides_along_its_wall_at_the_same_width() {
+        let m = sample_house();
+        let (_, door) = wall_with_door(&m);
+        let ElementKind::Opening(o) = &m.get(door).unwrap().kind else {
+            panic!()
+        };
+        let h = handles(&m, door, None)
+            .into_iter()
+            .find(|h| h.kind == HandleKind::OpeningSlide)
+            .unwrap();
+        let Constraint::Line { dir, .. } = h.constraint else {
+            panic!()
+        };
+        let out = drag_to(&m, door, HandleKind::OpeningSlide, |h| h.at - dir * 0.1);
+        let ElementKind::Opening(n) = &out.kind else {
+            panic!()
+        };
+        assert!((n.offset - (o.offset - 0.1)).abs() < 1e-9);
+        assert!((n.width - o.width).abs() < 1e-12);
     }
 }
