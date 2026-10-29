@@ -353,6 +353,13 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
                 });
                 continue;
             }
+            ElementKind::Ceiling(c) => {
+                let Some(outline) = c.outline(model) else {
+                    continue;
+                };
+                let (_, top) = c.span(model);
+                (slab_mesh(&outline, top, c.thickness), [0.95, 0.95, 0.93])
+            }
             ElementKind::Opening(o) => {
                 let Some(ElementKind::Wall(w)) = model.get(o.host).map(|h| &h.kind) else {
                     continue;
@@ -412,7 +419,9 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             | ElementKind::Cut(_)
             | ElementKind::Guide(_)
             | ElementKind::CropBox(_)
-            | ElementKind::GridGroup(_) => continue,
+            | ElementKind::GridGroup(_)
+            | ElementKind::Room(_)
+            | ElementKind::RoomSeparator(_) => continue,
             ElementKind::Column(_)
             | ElementKind::Beam(_)
             | ElementKind::Roof(_)

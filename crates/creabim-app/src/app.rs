@@ -47,6 +47,8 @@ mod marksui;
 mod materials;
 #[path = "objectsui.rs"]
 mod objectsui;
+#[path = "selectsimilar.rs"]
+mod selectsimilar;
 #[path = "shell.rs"]
 mod shell;
 #[path = "typepreview.rs"]
@@ -667,6 +669,9 @@ impl CreaBimApp {
                     self.paste(self.clipboard.clone());
                 }
             }
+            // in Edit mode Delete takes the picked corners away, never the
+            // element being edited
+            Command::Delete if self.plan.edit.is_some() => self.delete_grips(),
             Command::Delete => self.delete_selected(),
             Command::Hide => self.hide_selected(),
             Command::Isolate => self.isolate_selected(),
@@ -752,16 +757,20 @@ impl CreaBimApp {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
+        // a length typed into a grip's drag takes the keys
+        if ctx.egui_wants_keyboard_input() || self.plan.grips.typing {
             return;
         }
+        let editing = self.plan.edit.is_some();
         let (undo, redo, delete, extrude) = ctx.input(|i| {
             let cmd = i.modifiers.command;
             (
                 cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z),
                 cmd && (i.key_pressed(egui::Key::Y)
                     || (i.modifiers.shift && i.key_pressed(egui::Key::Z))),
-                i.key_pressed(egui::Key::Delete),
+                // in Edit mode Backspace removes picked corners too
+                i.key_pressed(egui::Key::Delete)
+                    || (editing && i.key_pressed(egui::Key::Backspace)),
                 !cmd && i.key_pressed(egui::Key::E),
             )
         });
@@ -863,7 +872,7 @@ impl CreaBimApp {
             let (cmd, alt, shift) = (i.modifiers.command, i.modifiers.alt, i.modifiers.shift);
             let h = i.key_pressed(egui::Key::H);
             (
-                cmd && i.key_pressed(egui::Key::A),
+                cmd && !shift && i.key_pressed(egui::Key::A),
                 alt && i.key_pressed(egui::Key::A),
                 h && !cmd && !alt && !shift,
                 h && shift && !cmd && !alt,
@@ -886,6 +895,16 @@ impl CreaBimApp {
         }
         if all {
             self.select_all();
+        }
+        // Shift+A: all of the selection's type in the view; Ctrl+Shift+A
+        // in the project
+        let similar = ctx.input(|i| {
+            let m = i.modifiers;
+            (m.shift && !m.alt && i.key_pressed(egui::Key::A)).then_some(m.command)
+        });
+        if let Some(project) = similar.filter(|_| self.plan.tool == Tool::Select) {
+            self.shell.context_3d = !self.last_in_2d;
+            self.select_similar(if project { "type.project" } else { "type.view" });
         }
         if none {
             self.selection.clear();
@@ -915,7 +934,7 @@ impl CreaBimApp {
             self.run_command(ctx, Command::Redo, None);
         }
         if delete {
-            self.delete_selected();
+            self.run_command(ctx, Command::Delete, None);
         }
         if extrude {
             let sketch = self
@@ -1439,6 +1458,7 @@ impl CreaBimApp {
                         | PlanItem::Tag { .. }
                         | PlanItem::Annotation { .. }
                         | PlanItem::Tint { .. }
+                        | PlanItem::Room { .. }
                         | PlanItem::Shade { .. }
                         | PlanItem::Image { .. } => {}
                     }
@@ -1847,8 +1867,16 @@ impl CreaBimApp {
         // tool; in Select, right-click opens the menu
         if self.plan.sketch.is_none() && self.plan.outline.is_none() {
             let (esc, shift) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.modifiers.shift));
-            let esc = esc && response.hovered() && !ui.ctx().egui_wants_keyboard_input();
-            let right = response.secondary_clicked() && !shift;
+            // a grip being dragged takes Esc itself; in Edit mode a
+            // right-click opens the grips' menu
+            let esc = esc
+                && response.hovered()
+                && !ui.ctx().egui_wants_keyboard_input()
+                && self.handle_drag.is_none()
+                && !self.plan.grips.busy();
+            let right = response.secondary_clicked()
+                && !shift
+                && !(self.plan.edit.is_some() && self.plan.tool == Tool::Select);
             if esc || right {
                 if self.pending_3d.take().is_some() || self.guide_from.take().is_some() {
                     self.plan.cancel();
@@ -2046,6 +2074,7 @@ impl CreaBimApp {
                     self.face,
                     edit,
                     &mut self.handle_drag,
+                    &mut self.plan.grips,
                     &input,
                     &mut status,
                 );
@@ -2766,7 +2795,7 @@ impl CreaBimApp {
                         );
                     }
                 }
-                Tool::Slab | Tool::Roof | Tool::Shaft => {
+                Tool::Slab | Tool::Roof | Tool::Shaft | Tool::Room | Tool::Ceiling => {
                     let (lo, hi) = (a.truncate().min(p), a.truncate().max(p));
                     let pts = [lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y), lo];
                     let scr: Vec<egui::Pos2> =
@@ -2830,7 +2859,7 @@ impl CreaBimApp {
             } else {
                 self.status = match (tool, self.pending_3d) {
                     (Tool::Wall, Some(_)) => format!("Drawing walls on {level_name}. Click the next corner; Esc or right-click ends."),
-                    (Tool::Slab | Tool::Roof | Tool::Shaft, _) => {
+                    (Tool::Slab | Tool::Roof | Tool::Shaft | Tool::Room | Tool::Ceiling | Tool::RoomSeparator, _) => {
                         self.plan.status.take().unwrap_or_default()
                     }
                     (Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing | Tool::Footing | Tool::Object, _) => self
@@ -4233,6 +4262,26 @@ impl CreaBimApp {
                     }
                     if matches!(
                         v.kind,
+                        ViewKind::Plan { .. } | ViewKind::Section { cut: true, .. }
+                    ) && ui
+                        .checkbox(&mut v.room_colours, "Colour rooms")
+                        .on_hover_text(
+                            "Fill each room with a colour of its own, the same in every view",
+                        )
+                        .changed()
+                    {
+                        label = "Colour rooms"
+                    }
+                    if matches!(v.kind, ViewKind::Plan { .. })
+                        && ui
+                            .checkbox(&mut v.ceiling_plan, "Reflected ceiling plan")
+                            .on_hover_text("Draw the ceilings and what hangs from them, not the floor and furniture")
+                            .changed()
+                    {
+                        label = "Ceiling plan"
+                    }
+                    if matches!(
+                        v.kind,
                         ViewKind::Section { .. } | ViewKind::Axonometric { .. }
                     ) && view_style_combo(ui, "view_style", &mut v.style)
                     {
@@ -4497,22 +4546,34 @@ impl CreaBimApp {
                     if ui.button("Select the tagged element").clicked() {
                         self.selection.only(t.host);
                     }
-                    if let Some(l) = crate::annotate::leader_ui(
-                        ui,
-                        &mut t.leader_end,
-                        "Style's (a plain line)",
-                        &mut t.elbow,
+                    if matches!(
+                        self.doc.model().get(t.host).map(|e| &e.kind),
+                        Some(ElementKind::Room(_))
                     ) {
-                        label = l;
-                    }
-                    if t.end.is_some()
-                        && ui
-                            .button("Leader back to the centre")
-                            .on_hover_text("Its leader points at the middle of what it tags again")
-                            .clicked()
-                    {
-                        t.end = None;
-                        label = "Move leader";
+                        let l = crate::roomtool::tag_fields(ui, &mut t.fields);
+                        if !l.is_empty() {
+                            label = l;
+                        }
+                    } else {
+                        if let Some(l) = crate::annotate::leader_ui(
+                            ui,
+                            &mut t.leader_end,
+                            "Style's (a plain line)",
+                            &mut t.elbow,
+                        ) {
+                            label = l;
+                        }
+                        if t.end.is_some()
+                            && ui
+                                .button("Leader back to the centre")
+                                .on_hover_text(
+                                    "Its leader points at the middle of what it tags again",
+                                )
+                                .clicked()
+                        {
+                            t.end = None;
+                            label = "Move leader";
+                        }
                     }
                     match crate::annotate::look_ui(ui, self.doc.model(), &mut t.style, &mut t.color)
                     {
@@ -4906,6 +4967,21 @@ impl CreaBimApp {
                             label = "Change boolean";
                         }
                     }
+                }
+                ElementKind::Room(r) => {
+                    label = crate::roomtool::room_fields(ui, self.doc.model(), r);
+                }
+                ElementKind::Ceiling(c) => {
+                    label = crate::roomtool::ceiling_fields(ui, self.doc.model(), c);
+                    if self.material_combo(ui, &mut c.material) {
+                        label = "Material";
+                    }
+                }
+                ElementKind::RoomSeparator(sep) => {
+                    ui.label(format!(
+                        "{} long. Rooms on either side of it are measured apart.",
+                        crate::units::len(sep.a.distance(sep.b))
+                    ));
                 }
                 ElementKind::Object(o) => {
                     let hung = creabim_core::objects::hung(self.doc.model(), &e);
@@ -5496,6 +5572,9 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Railing(_) => "railing",
         ElementKind::CropBox(_) => "crop box",
         ElementKind::Object(_) => "object",
+        ElementKind::Room(_) => "room",
+        ElementKind::RoomSeparator(_) => "room separator",
+        ElementKind::Ceiling(_) => "ceiling",
         ElementKind::ElementType(_) => "type",
         ElementKind::Shaft(_) => "shaft",
         ElementKind::Footing(_) => "footing",

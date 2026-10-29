@@ -352,3 +352,57 @@ fn close_level_heads_spread_apart_and_follow_the_view() {
     assert!(v.level_heads.is_empty());
     assert!(!serde_json::to_string(&v).unwrap().contains("level_heads"));
 }
+
+#[test]
+fn room_labels_room_tags_and_bent_tags_clear_each_other_in_one_pass() {
+    use creabim_geom::declutter::{overlapping_labels, place_labels};
+    let mm = 0.05;
+    let look = TextLook::default();
+    let mut items = vec![
+        PlanItem::Label {
+            id: ElementId::new(),
+            at: DVec2::ZERO,
+            text: "LIVING".into(),
+        },
+        creabim_geom::annotate::room_tag_item(
+            ElementId::new(),
+            "DINING\n2  25.6 m²".into(),
+            DVec2::new(0.05, 0.0),
+            look,
+            mm,
+        ),
+        PlanItem::Tag {
+            id: ElementId::new(),
+            anchor: DVec2::new(0.0, -1.0),
+            at: DVec2::new(0.1, 0.05),
+            elbow: Some(DVec2::new(0.0, -0.5)),
+            text: "D-101".into(),
+            round: true,
+            look,
+        },
+    ];
+    assert!(!overlapping_labels(&items, mm).is_empty());
+    place_labels(&mut items, mm);
+    let clash = overlapping_labels(&items, mm);
+    assert!(clash.is_empty(), "{clash:?}");
+}
+
+#[test]
+fn the_starter_house_plans_with_level_marks_have_no_overlapping_labels() {
+    let mut doc = Document::from_model(starter::starter_house());
+    let tx = marks::set_rules(doc.model(), MarkRules::level_based());
+    doc.commit(tx).unwrap();
+    let m = doc.model();
+    for e in m.iter() {
+        let ElementKind::View(v) = &e.kind else {
+            continue;
+        };
+        if !matches!(v.kind, ViewKind::Plan { .. }) {
+            continue;
+        }
+        let mm = v.scale / 1000.0;
+        let items = view_drawing(m, e.id).unwrap().items;
+        let clash = creabim_geom::declutter::overlapping_labels(&items, mm);
+        assert!(clash.is_empty(), "{}: {clash:?}", e.name);
+    }
+}

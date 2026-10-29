@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 mod brep;
 mod members;
 mod objects;
+mod spaces;
 
 pub(crate) use members::MEMBER_PSET;
 
@@ -399,6 +400,7 @@ impl<'a> Importer<'a> {
         for &id in self.ids("IFCFOOTING") {
             self.import_footing(id);
         }
+        self.import_spaces();
         let mut rest: Vec<u64> = self
             .f
             .entities
@@ -441,12 +443,6 @@ impl<'a> Importer<'a> {
                 creabim_core::AssemblyUse::Wall
             };
             self.layer_set(set, usage);
-        }
-        let spaces = self.ids("IFCSPACE").len();
-        if spaces > 0 {
-            self.g.warnings.add(format!(
-                "{spaces} spaces were not imported (CreaBIM has no rooms yet)"
-            ));
         }
         self.out = [
             std::mem::take(&mut self.material_elems),

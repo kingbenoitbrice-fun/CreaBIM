@@ -308,6 +308,39 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
                 s.top_offset += d.z;
             }
         }
+        ElementKind::Room(r) => {
+            if !t.keeps_upright() {
+                return None;
+            }
+            r.at = t.point2(r.at);
+            for p in &mut r.boundary {
+                *p = t.point2(*p);
+            }
+            if crate::polygon::signed_area2(&r.boundary) < 0.0 {
+                r.boundary.reverse();
+            }
+        }
+        ElementKind::RoomSeparator(s) => {
+            if !t.keeps_upright() {
+                return None;
+            }
+            s.a = t.point2(s.a);
+            s.b = t.point2(s.b);
+        }
+        ElementKind::Ceiling(c) => {
+            if !t.keeps_upright() {
+                return None;
+            }
+            for p in &mut c.boundary {
+                *p = t.point2(*p);
+            }
+            if crate::polygon::signed_area2(&c.boundary) < 0.0 {
+                c.boundary.reverse();
+            }
+            if let Xform::Move(d) = t {
+                c.height += d.z;
+            }
+        }
         ElementKind::Object(o) => match t {
             // its shape is its type's: it moves and turns, but keeps its size
             Xform::Move(d) => {
@@ -412,6 +445,9 @@ pub fn duplicate(model: &Model, id: ElementId) -> Vec<Element> {
             | ElementKind::Guide(_)
             | ElementKind::Shaft(_)
             | ElementKind::Object(_)
+            | ElementKind::Room(_)
+            | ElementKind::RoomSeparator(_)
+            | ElementKind::Ceiling(_)
     ) && !crate::members::is_member(&e.kind)
     {
         return vec![];
@@ -552,6 +588,9 @@ pub fn fresh_copies(model: &Model, elements: &[Element]) -> (Vec<Element>, usize
                 ElementKind::Sketch(s) => s.level.iter_mut().for_each(fix),
                 ElementKind::Guide(g) => g.level.iter_mut().for_each(fix),
                 ElementKind::Object(o) => fix(&mut o.level),
+                ElementKind::Room(r) => fix(&mut r.level),
+                ElementKind::RoomSeparator(r) => fix(&mut r.level),
+                ElementKind::Ceiling(c) => fix(&mut c.level),
                 k => {
                     if let Some(l) = crate::members::level_mut(k) {
                         fix(l);

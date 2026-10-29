@@ -19,6 +19,7 @@ pub mod paper;
 pub mod pick;
 pub mod plan;
 pub mod raster;
+pub mod rooms;
 pub mod scene;
 pub mod schedule;
 pub mod section;

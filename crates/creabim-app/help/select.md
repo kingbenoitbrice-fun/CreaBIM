@@ -37,6 +37,18 @@ Dragged **left to right** (solid blue), the box takes only what lies wholly insi
 
 ![A box dragged in a plan](img/box-select.jpg)
 
+## Select similar
+
+Select one element (or a few), then right-click it, or open the *Edit* menu, and pick **Select similar**:
+
+- **All of this type in the view** (`Shift+A`): every element of the same [type](types) that the view shows. An element with no type goes with those of its kind and sizes (walls of one thickness, windows of one size).
+- **All of this type in the project** (`Ctrl+Shift+A`): the same, on every level.
+- **All of this category in the view**, or **in the project**: every wall, every door, every slab… as the selection.
+- **Similar tags**: with a tag selected, every tag of the same kind (door tags, window tags…) in the same view.
+- **Keep only**: with a mixed selection (walls, doors and tags, say), keep only one category of it, such as only the walls. Each entry counts how many there are.
+
+"The view" is the view the menu was opened in: the plan, section or elevation, or the 3D view without what is hidden there.
+
 ## Selecting by type or material
 
 - *Select all instances* in *Properties* selects every element of the same [type](types).

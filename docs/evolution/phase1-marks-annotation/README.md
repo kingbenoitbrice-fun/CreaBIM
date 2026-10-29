@@ -36,7 +36,7 @@ This round covers the editable marks of P3, the leaders, spot levels and dimensi
 - Spot levels work in plans, sections and elevations, but not in axonometric views.
 - The spot level tool takes its pattern from the last spot level made. The option bar has no pattern field, so the pattern is changed in *Properties*.
 - Level heads spread apart only up and down, and only in sections and elevations.
-- Dimension lines break only at tags and notes, not at room labels or other text. The label decluttering from the drawing-quality branch may still move a tag off a dimension line; the breaks are worked out after it has done so.
+- Dimension lines break only at tags and notes (room tags included), not at room names or other text. One declutter pass places room names, room tags, door and window tags (bent leaders too) and notes together. It may still move a tag off a dimension line on its own; the breaks are worked out after it has run, so they match where the tags end up.
 - The duplicates list in the Mark numbering dialog is the only place that lists all duplicates. There is no separate model-check window.
 - No new keyboard shortcuts were added.
 - The project browser search does not find elements by mark.

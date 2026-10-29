@@ -625,6 +625,15 @@ pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<D
             if reveal {
                 crate::plan::reveal_covered(model, &mut d.items);
             }
+            if v.ceiling_plan {
+                crate::rooms::as_ceiling_plan(model, &mut d.items);
+            }
+            // rooms under everything, separators and ceilings with them
+            let mut rooms = crate::rooms::plan_items(model, v, *level, *cut_height);
+            // with the pens the view's graphics give their categories
+            crate::plan::category_pens(model, &mut rooms, &v.graphics);
+            rooms.append(&mut d.items);
+            d.items = rooms;
             // another level traced underneath, drawn first so it stays below
             if let Some(under) = v.underlay.level(model, *level) {
                 let mut items = crate::plan::underlay_items(model, under, *cut_height);
@@ -638,7 +647,17 @@ pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<D
             end,
             depth,
             cut,
-        } => section_view_with(model, *start, *end, *depth, *cut, style, v.scale, reveal),
+        } => {
+            let mut d =
+                section_view_with(model, *start, *end, *depth, *cut, style, v.scale, reveal);
+            // rooms washed behind the cut, from floor to ceiling
+            if v.room_colours && *cut {
+                let mut rooms = crate::rooms::section_items(model, *start, *end);
+                rooms.append(&mut d.items);
+                d.items = rooms;
+            }
+            d
+        }
         creabim_core::ViewKind::Axonometric { azimuth, altitude } => {
             let crop = crate::cropbox::active(model, Some(view));
             axonometric_view_with(model, *azimuth, *altitude, style, reveal, &crop)
