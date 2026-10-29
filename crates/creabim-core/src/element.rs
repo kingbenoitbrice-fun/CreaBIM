@@ -1297,6 +1297,12 @@ pub struct View {
     /// inside a wall or a slab.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden_in_colour: bool,
+    /// A plan's line weights, below-cut fill and view depth.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::graphics::PlanGraphics::is_default"
+    )]
+    pub graphics: crate::graphics::PlanGraphics,
     /// How a section or elevation shows each level's head: turned off, or
     /// dragged away from where it would sit. Levels not listed show their
     /// heads where the automatic layout puts them.
@@ -1494,6 +1500,7 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            graphics: Default::default(),
             level_heads: BTreeMap::new(),
         }
     }
@@ -1513,6 +1520,7 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            graphics: Default::default(),
             level_heads: BTreeMap::new(),
         }
     }
@@ -1529,6 +1537,7 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            graphics: Default::default(),
             level_heads: BTreeMap::new(),
         }
     }
@@ -1546,6 +1555,7 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            graphics: Default::default(),
             level_heads: BTreeMap::new(),
         }
     }

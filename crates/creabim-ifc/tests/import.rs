@@ -299,39 +299,49 @@ fn check_ifcopenshell_fixture(name: &str, schema: &str) {
         / 2.0;
     assert!((area - 24.0).abs() < 1e-6, "{name}: {area}");
 
-    // the column: an extruded 300 mm square at (7, 1), 3 m high
-    for (class, volume, at) in [
-        ("IfcColumn", 0.3 * 0.3 * 3.0, DVec3::new(7.0, 1.0, 0.0)),
-        (
-            "IfcBuildingElementProxy",
-            1.0 / 6.0,
-            DVec3::new(8.0, 3.0, 3.2),
-        ),
-    ] {
-        let (e, f) = m
-            .iter()
-            .find_map(|e| match &e.kind {
-                ElementKind::FreeMesh(f) if f.ifc_class == class => Some((e, f)),
-                _ => None,
-            })
-            .unwrap();
-        assert!(
-            (f.mesh.volume() - volume).abs() < 1e-6,
-            "{name} {class}: {}",
-            f.mesh.volume()
-        );
-        let lo = f
-            .mesh
-            .vertices
-            .iter()
-            .fold(DVec3::INFINITY, |a, v| a.min(*v + f.origin));
-        let world = lo + DVec3::Z * level_elevation(m, e);
-        let expected = at - DVec3::new(0.15, 0.15, 0.0) * f64::from(class == "IfcColumn");
-        assert!(
-            (world - expected).length() < 1e-6,
-            "{name} {class}: {world}"
-        );
-    }
+    // the column: an extruded 300 mm square at (7, 1), 3 m high, native
+    let c = m
+        .iter()
+        .find_map(|e| match &e.kind {
+            ElementKind::Column(c) => Some(c),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{name}: no native column: {:?}", r.details));
+    assert!(
+        c.position.distance(glam::DVec2::new(7.0, 1.0)) < 1e-6,
+        "{name}: {}",
+        c.position
+    );
+    assert!(
+        matches!(c.profile, creabim_core::Profile::Rectangle { width, depth }
+            if (width - 0.3).abs() < 1e-6 && (depth - 0.3).abs() < 1e-6),
+        "{name}: {:?}",
+        c.profile
+    );
+    assert!((c.height.unwrap() - 3.0).abs() < 1e-6);
+    // the proxy stays a mesh
+    let (e, f) = m
+        .iter()
+        .find_map(|e| match &e.kind {
+            ElementKind::FreeMesh(f) if f.ifc_class == "IfcBuildingElementProxy" => Some((e, f)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        (f.mesh.volume() - 1.0 / 6.0).abs() < 1e-6,
+        "{name}: {}",
+        f.mesh.volume()
+    );
+    let lo = f
+        .mesh
+        .vertices
+        .iter()
+        .fold(DVec3::INFINITY, |a, v| a.min(*v + f.origin));
+    let world = lo + DVec3::Z * level_elevation(m, e);
+    assert!(
+        (world - DVec3::new(8.0, 3.0, 3.2)).length() < 1e-6,
+        "{name}: {world}"
+    );
 }
 
 #[test]
@@ -398,24 +408,14 @@ fn revit_ifc2x3_from_web_ifc() {
     assert!((level.elevation + w.base_offset + w.height - 5.3582).abs() < 1e-3);
     // a column: IfcOpenShell puts it at x -27.7603..-27.4555, y 104.2595..104.5643
     let id = creabim_core::ElementId::from_ifc_guid("20hzUDJSj9yPeKYPrwcRo3").unwrap();
-    let ElementKind::FreeMesh(f) = &m.get(id).unwrap().kind else {
-        panic!("the column is a mesh")
+    let ElementKind::Column(c) = &m.get(id).unwrap().kind else {
+        panic!("the column is native")
     };
-    let (lo, hi) = f
-        .mesh
-        .vertices
-        .iter()
-        .fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), v| {
-            (lo.min(*v + f.origin), hi.max(*v + f.origin))
-        });
-    assert!(
-        (lo - DVec3::new(-27.7603, 104.2595, 0.0)).length() < 1e-3,
-        "{lo}"
-    );
-    assert!(
-        (hi - DVec3::new(-27.4555, 104.5643, 3.1952)).length() < 1e-3,
-        "{hi}"
-    );
+    let centre = glam::DVec2::new((-27.7603 - 27.4555) / 2.0, (104.2595 + 104.5643) / 2.0);
+    assert!(c.position.distance(centre) < 1e-3, "{}", c.position);
+    let base = m.level(c.level).unwrap().elevation + c.base_offset;
+    assert!(base.abs() < 1e-3, "{base}");
+    assert!((c.height.unwrap() - 3.1952).abs() < 1e-3);
 }
 
 /// Bonsai's test file: IFC4, every body a mapped polygonal face set from a type.

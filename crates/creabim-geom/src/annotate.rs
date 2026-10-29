@@ -522,7 +522,6 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
             _ => {}
         }
     }
-    break_dimensions(&mut out, view.scale / 1000.0);
     out
 }
 
@@ -982,7 +981,9 @@ mod tests {
                 .items
                 .into_iter()
                 .find_map(|i| match i {
-                    PlanItem::Tag { at, text, .. } if text == "D01" => Some(at),
+                    // its leader's end, which follows the door (the text
+                    // may be nudged clear of other lines)
+                    PlanItem::Tag { anchor, text, .. } if text == "D01" => Some(anchor),
                     _ => None,
                 })
                 .expect("front door is tagged D01")

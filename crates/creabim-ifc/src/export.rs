@@ -569,6 +569,11 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                 let shape = c.shape("Tessellation", &[fs]);
                 let (class, tail) = free_mesh_entity(&f.ifc_class);
                 let r = product(&mut c, &class, e, pl, shape, &tail);
+                if crate::import::could_be_native(&class) {
+                    // so CreaBIM reads it back as the mesh it is
+                    let props = [("Kind", Prop::Label("FreeMesh".into()))];
+                    c.pset_on(&[r], crate::import::MEMBER_PSET, &props);
+                }
                 contained.entry(f.level).or_default().push(r);
                 if let Some((m, _)) = creabim_core::material_of(model, e) {
                     by_material.entry(m.id).or_default().push(r);
@@ -598,6 +603,11 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     let host = f.host.filter(|h| model.get(*h).is_some());
                     let props = footing_props(f, host.map(|h| h.ifc_guid()));
                     c.pset_on(&[r], FOOTING_PSET, &props);
+                } else if let Ok(json) = serde_json::to_string(k) {
+                    // its own definition, so CreaBIM reads it back as the
+                    // same column, beam, roof, stair or railing
+                    let props = [("Definition", Prop::Text(json))];
+                    c.pset_on(&[r], crate::import::MEMBER_PSET, &props);
                 }
                 if let ElementKind::Roof(roof) = k {
                     // the mesh has its holes already; say so for other tools

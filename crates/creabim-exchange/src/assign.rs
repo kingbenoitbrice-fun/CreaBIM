@@ -186,6 +186,10 @@ pub fn fit(
                 return Err("The shape is too narrow for an opening.".into());
             }
             let sill = (lo.z - base).max(0.0);
+            let height = (hi.z - base - sill).min(w.height - sill);
+            if height < 0.05 {
+                return Err("The shape is too short for an opening in its wall.".into());
+            }
             Ok(ElementKind::Opening(Opening {
                 host,
                 kind: if *kind == Assign::Door {
@@ -196,7 +200,7 @@ pub fn fit(
                 offset: u0,
                 sill,
                 width: u1 - u0,
-                height: (hi.z - base - sill).min(w.height - sill),
+                height,
                 material,
                 frame: Default::default(),
                 flip_hand: false,

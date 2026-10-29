@@ -333,6 +333,15 @@ pub fn member_plan(model: &Model, e: &Element, cut: f64) -> Vec<PlanItem> {
             for h in creabim_core::slab::holes_of(model, e) {
                 items.extend(crate::plan::hole_marks(e.id, &h, Pen::Projection));
             }
+            // seen from above the roof plan shows which way each face falls
+            let top = r
+                .faces()
+                .iter()
+                .flat_map(|f| f.outline.iter().map(|p| f.z(*p)).collect::<Vec<_>>())
+                .fold(0.0, f64::max);
+            if z > r.base(model) + top + r.vertical_thickness() {
+                slope_arrows(&mut items, e, r);
+            }
         }
         ElementKind::Stair(s) => stair_plan(&mut items, e, s, s.rise(model), cut - s.base_offset),
         ElementKind::Footing(f) => {
@@ -386,6 +395,70 @@ pub fn member_plan(model: &Model, e: &Element, cut: f64) -> Vec<PlanItem> {
         _ => {}
     }
     items
+}
+
+/// The pitch of a slope as roof plans write it: degrees, or for a slope
+/// too shallow to read in degrees a fall of one in so many.
+pub fn pitch_text(degrees: f64) -> String {
+    if degrees >= 5.0 {
+        format!("{}°", (degrees * 10.0).round() / 10.0)
+    } else {
+        format!("1:{}", (1.0 / degrees.to_radians().tan()).round())
+    }
+}
+
+/// An arrow down each sloping face of a roof, from near its top toward
+/// its eave, with the pitch written beside it.
+fn slope_arrows(items: &mut Vec<PlanItem>, e: &Element, r: &Roof) {
+    for f in r.faces() {
+        let n = f.outline.len();
+        if n < 3 || f.g.length() < 1e-6 {
+            continue;
+        }
+        // the face's centre, by area
+        let (mut c, mut area) = (DVec2::ZERO, 0.0);
+        for i in 0..n {
+            let (a, b) = (f.outline[i], f.outline[(i + 1) % n]);
+            let k = a.perp_dot(b);
+            c += (a + b) * k;
+            area += k;
+        }
+        if area.abs() < 1e-9 {
+            continue;
+        }
+        let c = c / (3.0 * area);
+        let down = -f.g.normalize();
+        // as long as the face is deep down its slope, up to 1.6 m
+        let depth = {
+            let ts = f.outline.iter().map(|p| (*p - c).dot(down));
+            let (lo, hi) = ts.fold((f64::MAX, f64::MIN), |(lo, hi), t| (lo.min(t), hi.max(t)));
+            hi - lo
+        };
+        let len = (depth * 0.5).min(1.6);
+        if len < 0.2 {
+            continue;
+        }
+        let (tail, head) = (c - down * len / 2.0, c + down * len / 2.0);
+        let line = |items: &mut Vec<PlanItem>, a, b| {
+            items.push(PlanItem::Line {
+                id: e.id,
+                pen: Pen::Symbol,
+                a,
+                b,
+            })
+        };
+        line(items, tail, head);
+        let (back, wing) = (-down * 0.25, down.perp() * 0.1);
+        line(items, head, head + back + wing);
+        line(items, head, head + back - wing);
+        // the pitch beside the shaft, on its right going down the slope
+        let slope = f.g.length().atan().to_degrees();
+        items.push(PlanItem::Label {
+            id: e.id,
+            at: c - down.perp() * 0.45,
+            text: pitch_text(slope),
+        });
+    }
 }
 
 /// A stair in plan: its sides and risers up to the cut, a break line where
@@ -470,6 +543,58 @@ fn stair_plan(items: &mut Vec<PlanItem>, e: &Element, s: &Stair, rise: f64, cut:
             at: f.start - f.dir * 0.35,
             text: "UP".into(),
         });
+    }
+}
+
+/// A whole stair seen from above, as the floor over it sees it through
+/// its well: `line(pen, a, b, z)` takes each tread edge, side and landing
+/// edge in projection and the walking line with its arrow, `z` being how
+/// high above the stair's base the line is.
+pub fn stair_lines(s: &Stair, rise: f64, line: &mut dyn FnMut(Pen, DVec2, DVec2, f64)) {
+    let lay = s.layout(rise);
+    let r = lay.riser;
+    for f in &lay.flights {
+        let side = f.dir.perp() * s.width / 2.0;
+        let at = |u: f64| f.start + f.dir * u;
+        for i in 0..f.risers {
+            let u = i as f64 * s.tread;
+            line(
+                Pen::Projection,
+                at(u) - side,
+                at(u) + side,
+                f.z0 + (i + 1) as f64 * r,
+            );
+        }
+        let run = f.run(s.tread);
+        let top = f.z0 + f.risers as f64 * r;
+        for sd in [-side, side] {
+            line(Pen::Projection, at(0.0) + sd, at(run) + sd, top);
+        }
+    }
+    if let Some((outline, z)) = &lay.landing {
+        let n = outline.len();
+        for i in 0..n {
+            line(Pen::Projection, outline[i], outline[(i + 1) % n], *z);
+        }
+    }
+    let mut walk: Vec<(DVec2, f64)> = Vec::new();
+    for (k, f) in lay.flights.iter().enumerate() {
+        if k == 1 {
+            let f1 = lay.flights[0];
+            walk.push((f1.end(s.tread) + f1.dir * s.width / 2.0, f.z0));
+        }
+        walk.push((f.start, f.z0));
+        walk.push((f.end(s.tread), f.z0 + f.risers as f64 * r));
+    }
+    walk.dedup_by(|a, b| a.0.distance(b.0) < 1e-9);
+    for w in walk.windows(2) {
+        line(Pen::Symbol, w[0].0, w[1].0, w[1].1);
+    }
+    if let (Some(&(end, z)), Some(f)) = (walk.last(), lay.flights.last()) {
+        let back = -f.dir * 0.25;
+        let wing = f.dir.perp() * 0.12;
+        line(Pen::Symbol, end, end + back + wing, z);
+        line(Pen::Symbol, end, end + back - wing, z);
     }
 }
 
@@ -683,5 +808,29 @@ mod tests {
             member_plan(&m, &c, 1.2)[0],
             PlanItem::Polygon { pen: Pen::Cut, .. }
         ));
+    }
+
+    #[test]
+    fn roof_plans_show_slope_arrows_with_their_pitch() {
+        let m = creabim_core::starter::starter_house();
+        let view = |name: &str| {
+            let id = m.iter().find(|e| e.name == name).unwrap().id;
+            crate::section::view_drawing(&m, id).unwrap().items
+        };
+        let pitches = |items: &[PlanItem]| -> Vec<String> {
+            items
+                .iter()
+                .filter_map(|it| match it {
+                    PlanItem::Label { text, .. } if text.ends_with('°') => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        // the gable's two faces, each falling to its eave; the flat roofs none
+        assert_eq!(pitches(&view("Roof plan")), vec!["35°", "35°"]);
+        // the first floor is under the roof: no arrows there
+        assert!(pitches(&view("First Floor plan")).is_empty());
+        assert_eq!(pitch_text(35.0), "35°");
+        assert_eq!(pitch_text((1.0f64 / 60.0).atan().to_degrees()), "1:60");
     }
 }
