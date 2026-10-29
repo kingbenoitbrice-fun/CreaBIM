@@ -1043,19 +1043,20 @@ impl GripSel {
         self.corners.is_empty() && self.holes.is_empty()
     }
 
-    /// Drop the picks, and any box or menu.
+    /// Drop the picks, and any box or menu. The last click is kept, so a
+    /// double-click still counts while this runs every frame.
     pub fn clear(&mut self) {
         self.corners.clear();
         self.holes.clear();
         self.boxsel = None;
         self.menu = None;
-        self.last_tap = None;
     }
 
     /// Start afresh on element `id` (or none).
     pub fn reset(&mut self, id: Option<ElementId>) {
         if self.id != id {
             self.clear();
+            self.last_tap = None;
             self.id = id;
         }
     }
@@ -1933,6 +1934,11 @@ pub fn interact(
             let hit = nearest(p).map(|h| h.kind);
             let now = ctx.input(|i| i.time);
             if let Some(k) = hit {
+                // when the frames are slow both clicks can come in one
+                // frame: egui still counts them as a double-click
+                if response.double_clicked() {
+                    grips.last_tap = Some((k, now, p));
+                }
                 if let Some(s) = tap_grip(doc, id, k, edit, shift, now, p, grips) {
                     *status = Some(s);
                 }
@@ -2821,6 +2827,9 @@ mod tests {
         // outside Edit mode a double-click on a corner asks for Edit mode
         let mut out = GripSel::default();
         tap_grip(&mut doc, id, k, false, false, 10.0, Pos2::ZERO, &mut out);
+        // the picks are cleared every frame outside Edit mode; the click
+        // must survive that
+        out.clear();
         tap_grip(&mut doc, id, k, false, false, 10.2, Pos2::ZERO, &mut out);
         assert_eq!(out.request, Some(GripRequest::Enter));
         assert_eq!(a_slab(&doc).1.len(), n - 1);
