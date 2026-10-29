@@ -707,7 +707,7 @@ pub fn show(
         let pts: Vec<Pos2> = points.iter().map(|p| xf.to_screen(*p)).collect();
         painter.add(egui::Shape::closed_line(pts, Stroke::new(2.0, SLAB_EDGE)));
     }
-    crate::annotate::draw_grips(&painter, &xf, &plan.items, selection);
+    crate::annotate::draw_grips(&painter, &xf, doc.model(), &plan.items, selection, mm);
     crate::sketch::draw_marks_in_pane(&painter, doc.model(), selection.active, kind, &xf);
     // the centre lines the Align tool can take here
     let centre_lines = match (tool, kind) {
@@ -1194,6 +1194,7 @@ pub fn show(
         };
         if let Some(r) = crate::annotate::drag(
             doc,
+            Some(view),
             view_def.as_ref(),
             &plan.items,
             &xf,
@@ -1376,6 +1377,7 @@ pub fn show(
                         id: host,
                         anchor: proj.project(c),
                         at: xf.to_world(h),
+                        elbow: None,
                         text,
                         round,
                         look: annotate::look_of(doc.model(), None, None),
@@ -3386,10 +3388,12 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
             text,
             look,
             witness,
+            breaks,
             ..
         } => {
             let ink = crate::annotate::ink(look, selected, highlight);
-            draw_dimension(painter, xf, *a, *b, *offset, *witness, text, look, mm, ink);
+            let d = (*a, *b, *offset, *witness);
+            draw_dimension(painter, xf, d, breaks, text, look, mm, ink);
         }
         PlanItem::Annotation { item, .. } => {
             let ink = crate::annotate::ink(&item.look, selected, highlight);
@@ -3398,16 +3402,19 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
         PlanItem::Tag {
             anchor,
             at,
+            elbow,
             text,
             round,
             look,
             ..
         } => {
-            let g = tag_geometry(*anchor, *at, text, *round, look, mm);
+            let g = tag_geometry(*anchor, *at, *elbow, text, *round, look, mm);
             let pts: Vec<Pos2> = g.outline.iter().map(|p| xf.to_screen(*p)).collect();
             let ink = crate::annotate::ink(look, selected, highlight);
-            if let Some((p, q)) = g.leader {
-                painter.line_segment([xf.to_screen(p), xf.to_screen(q)], Stroke::new(1.0, ink));
+            if !g.leader.is_empty() {
+                let line: Vec<Pos2> = g.leader.iter().map(|p| xf.to_screen(*p)).collect();
+                painter.add(egui::Shape::line(line, Stroke::new(1.0, ink)));
+                crate::annotate::paint_ends(painter, xf, &g.ends, ink);
             }
             if g.closed {
                 painter.add(egui::Shape::convex_polygon(
@@ -3567,16 +3574,15 @@ pub fn draw_hover(painter: &egui::Painter, xf: &Xf, items: &[PlanItem], id: Elem
 fn draw_dimension(
     painter: &egui::Painter,
     xf: &Xf,
-    a: DVec2,
-    b: DVec2,
-    offset: f64,
-    witness: Option<[DVec2; 2]>,
+    (a, b, offset, witness): (DVec2, DVec2, f64, Option<[DVec2; 2]>),
+    breaks: &[[f64; 2]],
     text: &str,
     look: &TextLook,
     mm: f64,
     ink: Color32,
 ) {
-    let g = dimension_geometry(a, b, offset, witness, look, mm);
+    let mut g = dimension_geometry(a, b, offset, witness, look, mm);
+    g.break_line(breaks);
     for (p, q) in g.lines {
         painter.line_segment([xf.to_screen(p), xf.to_screen(q)], Stroke::new(1.0, ink));
     }
@@ -3611,7 +3617,7 @@ fn preview_dimension(
         return;
     };
     let text = annotate::dimension_text(&crate::units::get(), a, b2);
-    draw_dimension(painter, xf, a, b2, offset, witness, &text, look, mm, accent);
+    draw_dimension(painter, xf, (a, b2, offset, witness), &[], &text, look, mm, accent);
 }
 
 /// The point a dimension click lands on, what it attaches to, and the snap

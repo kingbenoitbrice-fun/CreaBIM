@@ -39,6 +39,8 @@ pub(crate) mod helpui;
 mod levelcopy;
 #[path = "levelsui.rs"]
 mod levelsui;
+#[path = "marksui.rs"]
+mod marksui;
 #[path = "materials.rs"]
 mod materials;
 #[path = "objectsui.rs"]
@@ -180,6 +182,7 @@ pub struct CreaBimApp {
     catalogue: objectsui::CatalogueUi,
     /// The Levels manager and the Project units dialog.
     levels: levelsui::LevelsUi,
+    marks: marksui::MarksUi,
     /// The Copy to levels and Move to level windows.
     level_copy: levelcopy::LevelCopyUi,
     /// The annotation styles and sheet templates windows.
@@ -260,6 +263,7 @@ impl CreaBimApp {
             type_preview: Default::default(),
             catalogue: Default::default(),
             levels: Default::default(),
+            marks: Default::default(),
             level_copy: Default::default(),
             drafting: Default::default(),
             orbit_selection: false,
@@ -3820,6 +3824,7 @@ impl CreaBimApp {
                 .edit_merged(id, "Rename", |e| e.name = name.clone());
             self.report(r, "Renamed.");
         }
+        self.mark_field(ui, id);
         ui.add_space(6.0);
         if creabim_core::types::TypeCategory::of(&e.kind).is_some() {
             self.type_picker(ui, id);
@@ -4475,6 +4480,11 @@ impl CreaBimApp {
                 ElementKind::Units(_) => {
                     if ui.button("Project units…").clicked() {
                         self.levels.units_open = true;
+                    }
+                }
+                ElementKind::MarkRules(_) => {
+                    if ui.button("Mark numbering…").clicked() {
+                        self.marks.open = true;
                     }
                 }
                 ElementKind::TextStyle(s) => {
@@ -5159,6 +5169,7 @@ impl eframe::App for CreaBimApp {
         self.styles_window(&ctx);
         self.templates_window(&ctx);
         self.units_window(&ctx);
+        self.marks_window(&ctx);
         self.ground_spacing_window(&ctx);
         self.help_window(&ctx);
         // a plan in its own window keeps egui's menus
@@ -5399,6 +5410,7 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::TextStyle(_) => "text style",
         ElementKind::SheetTemplate(_) => "sheet template",
         ElementKind::Units(_) => "project units",
+        ElementKind::MarkRules(_) => "mark numbering",
         ElementKind::View(_) => "view",
         ElementKind::Sheet(_) => "sheet",
         ElementKind::Viewport(_) => "placed view",

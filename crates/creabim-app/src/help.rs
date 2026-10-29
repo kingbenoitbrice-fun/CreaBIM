@@ -263,6 +263,7 @@ pub fn element_page(kind: &ElementKind) -> &'static str {
             _ => "views",
         },
         ElementKind::Units(_) => "units",
+        ElementKind::MarkRules(_) => "marks",
     }
 }
 

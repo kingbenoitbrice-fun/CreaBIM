@@ -578,6 +578,9 @@ impl CreaBimApp {
             Item::new("levels", "Levels…")
                 .icon("level")
                 .hint("Add, duplicate, rename, move and delete levels"),
+            Item::new("marks", "Mark numbering…")
+                .icon("tag")
+                .hint("How doors, windows and other elements are numbered: prefixes, digits, level-based marks, order. Renumber, and check for marks used twice."),
             Item::new("styles", "Annotation styles…")
                 .icon("anno-styles")
                 .hint("Named styles for dimensions, notes and tags: text, ends, tag shape, colour"),
@@ -1172,6 +1175,7 @@ impl CreaBimApp {
                 }
             }
             "units" => self.levels.units_open = true,
+            "marks" => self.marks.open = true,
             "underlay" => {
                 if let Some((view, level)) = self.active_plan() {
                     let u = match arg {

@@ -988,11 +988,13 @@ fn style_preview(ui: &mut egui::Ui, s: &TextStyle) {
             text: "4000".into(),
             look,
             witness: None,
+            breaks: vec![],
         },
         PlanItem::Tag {
             id: ElementId::new(),
             anchor: DVec2::new(62.0, 2.0),
             at: DVec2::new(74.0, 12.0),
+            elbow: None,
             text: "D01".into(),
             round: false,
             look,
