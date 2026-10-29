@@ -3743,6 +3743,20 @@ impl CreaBimApp {
                 let name = self.doc.model().get(v).map_or("", |e| e.name.as_str());
                 ui.label(egui::RichText::new(format!("View: {name}")).strong());
                 self.visibility_panel(ui, gridvis::VisTarget::View(v));
+                // a plan's graphics: weights, below-cut tint, view depth
+                if let Some(ElementKind::View(view)) = self.doc.model().get(v).map(|e| &e.kind) {
+                    if matches!(view.kind, ViewKind::Plan { .. }) {
+                        let (mut g, scale) = (view.graphics.clone(), view.scale);
+                        if let Some(label) = plan_graphics_ui(ui, &mut g, scale) {
+                            let r = self.doc.edit_merged(v, label, |e| {
+                                if let ElementKind::View(x) = &mut e.kind {
+                                    x.graphics = g;
+                                }
+                            });
+                            self.report(r, "View changed.");
+                        }
+                    }
+                }
             }
             ui.add_space(8.0);
             ui.label(egui::RichText::new("3D view").strong());
