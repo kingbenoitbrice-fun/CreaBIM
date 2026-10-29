@@ -912,7 +912,14 @@ impl CreaBimApp {
     // ---- properties panel ---------------------------------------------
 
     /// The Visibility section of a view's properties.
-    pub(super) fn visibility_panel(&mut self, ui: &mut egui::Ui, t: VisTarget) {
+    /// `heading` names the section (the view's name, "3D view"), or it is
+    /// just "Visibility".
+    pub(super) fn visibility_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: VisTarget,
+        heading: Option<&str>,
+    ) {
         let Some(h) = self.view_hidden(t) else {
             return;
         };
@@ -922,16 +929,20 @@ impl CreaBimApp {
         let mut reveal = None;
         let mut colour_of = None;
         let mut xray_of = None;
+        let head = heading.unwrap_or("Visibility");
         let title = if h.is_empty() {
-            "Visibility".to_string()
+            head.to_string()
         } else {
             let n = h.categories.len() + h.elements.len() + h.grid_groups.len();
-            format!("Visibility ({n} hidden)")
+            format!("{head} ({n} hidden)")
         };
-        egui::CollapsingHeader::new(title)
-            .id_salt(("visibility", format!("{t:?}")))
-            .default_open(t != VisTarget::Window3d)
-            .show(ui, |ui| {
+        let (key, help) = match t {
+            VisTarget::View(_) => ("visibility.view", "visibility"),
+            VisTarget::Window3d => ("visibility.3d", "navigate"),
+        };
+        // folded or open as it was left, between sessions too
+        if self.prop_header(ui, key, &title, t != VisTarget::Window3d, Some(help)) {
+            ui.indent(("visibility", format!("{t:?}")), |ui| {
                 ui.label(
                     egui::RichText::new(match t {
                         VisTarget::View(_) => "What this view shows. Sheets show it the same way.",
@@ -1025,8 +1036,10 @@ impl CreaBimApp {
                 }
                 ui.add_space(2.0);
                 ui.label(egui::RichText::new("Categories").strong());
+                // two columns when they fit, one when the panel is narrow
+                let cols = if ui.available_width() >= 330.0 { 2 } else { 1 };
                 egui::Grid::new(("vis-cats", format!("{t:?}")))
-                    .num_columns(2)
+                    .num_columns(cols)
                     .show(ui, |ui| {
                         for (i, c) in Category::ALL.iter().enumerate() {
                             let mut shown = !h.hides_category(*c);
@@ -1040,7 +1053,7 @@ impl CreaBimApp {
                                 change =
                                     Some((label, Box::new(move |h| h.set_category(c, !shown))));
                             }
-                            if i % 2 == 1 {
+                            if i % cols == cols - 1 {
                                 ui.end_row();
                             }
                         }
@@ -1110,6 +1123,7 @@ impl CreaBimApp {
                     .weak(),
                 );
             });
+        }
         if let Some((label, f)) = change {
             self.set_view_hidden(t, &label, f);
         }
@@ -1284,7 +1298,7 @@ impl CreaBimApp {
             .collect();
         let current = grids::group_of(model, g).map(|(e, _)| e.name.clone());
         let mut pick = None;
-        egui::ComboBox::from_label("Grid system")
+        crate::app::helpui::combo(ui, "Grid system")
             .selected_text(current.unwrap_or_else(|| "None".into()))
             .show_ui(ui, |ui| {
                 if ui.selectable_label(g.group.is_none(), "None").clicked() {

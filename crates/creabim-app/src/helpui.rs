@@ -9,6 +9,23 @@ use crate::help;
 use crate::ui_model::Item;
 use serde_json::{json, Value};
 
+/// Below this width a drop-down's label goes above it instead of beside it.
+pub(crate) const NARROW: f32 = 250.0;
+
+/// A labelled drop-down for a panel that can be dragged narrow: the label
+/// beside the box while there is room, on its own line above once there
+/// is not, so neither is squeezed into a column of single letters. Keeps
+/// the same id either way, so an open list stays open.
+pub(crate) fn combo(ui: &mut egui::Ui, label: &str) -> egui::ComboBox {
+    if ui.available_width() >= NARROW {
+        egui::ComboBox::from_label(label)
+    } else {
+        ui.label(label);
+        let w = ui.available_width().min(ui.spacing().combo_width);
+        egui::ComboBox::from_id_salt(label).width(w)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct HelpState {
     pub open: bool,
@@ -95,6 +112,95 @@ impl CreaBimApp {
         }
         h.page = link.to_string();
         h.open = true;
+    }
+
+    /// The heading of a section of Properties: click it to fold the section
+    /// shut or open it again, remembered between sessions; a ? beside it
+    /// opens a few lines from `help`'s page. Returns whether it is open.
+    pub(super) fn prop_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: &str,
+        title: &str,
+        default_open: bool,
+        help: Option<&str>,
+    ) -> bool {
+        let open = self
+            .shell
+            .settings
+            .props_open
+            .get(key)
+            .copied()
+            .unwrap_or(default_open);
+        let mut toggle = false;
+        ui.horizontal(|ui| {
+            let (_, r) = ui.allocate_exact_size(egui::vec2(14.0, 16.0), egui::Sense::click());
+            egui::collapsing_header::paint_default_icon(ui, if open { 1.0 } else { 0.0 }, &r);
+            let t = ui
+                .add(
+                    egui::Label::new(egui::RichText::new(title).strong())
+                        .sense(egui::Sense::click())
+                        .truncate(),
+                )
+                .on_hover_text(if open {
+                    "Click to fold this section"
+                } else {
+                    "Click to open this section"
+                });
+            toggle = r.clicked() || t.clicked();
+            if let Some(link) = help {
+                self.quick_help_button(ui, link, title);
+            }
+        });
+        if toggle {
+            let s = &mut self.shell.settings;
+            if !open == default_open {
+                s.props_open.remove(key);
+            } else {
+                s.props_open.insert(key.to_string(), !open);
+            }
+            s.store();
+        }
+        open != toggle
+    }
+
+    /// A small ? beside a heading in Properties: it opens a few lines from
+    /// the page `link` and a link to read the rest in the Help panel.
+    pub(super) fn quick_help_button(&mut self, ui: &mut egui::Ui, link: &str, title: &str) {
+        let lines = help::quick(link);
+        if lines.is_empty() {
+            return;
+        }
+        let r = ui
+            .add(
+                egui::Button::new(egui::RichText::new("?").size(11.0).strong())
+                    .small()
+                    .corner_radius(8.0)
+                    .min_size(egui::vec2(16.0, 16.0)),
+            )
+            .on_hover_text(format!(
+                "About {}: a few lines, and its page in the guide",
+                title.to_lowercase()
+            ));
+        let mut read = false;
+        egui::Popup::from_toggle_button_response(&r)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_max_width(300.0);
+                ui.label(egui::RichText::new(title).strong());
+                ui.add_space(2.0);
+                for l in &lines {
+                    ui.label(help::plain(l));
+                }
+                ui.add_space(4.0);
+                if ui.link("Read more in the guide →").clicked() {
+                    read = true;
+                    ui.close();
+                }
+            });
+        if read {
+            self.open_help(link);
+        }
     }
 
     /// The Help menu's actions and the Help panel's buttons. Returns false
