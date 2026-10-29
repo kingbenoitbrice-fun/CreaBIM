@@ -642,6 +642,26 @@ impl CreaBimApp {
                 self.set_tool_type(TypeCategory::Wall, id);
                 self.status = "Curtain wall: click to start, click again to place each wall. Pick another type, or No type, in the bar.".into();
             }
+            "tool.screen" => {
+                // the Wall tool, drawing the first screen wall type
+                let first = |m: &creabim_core::Model| {
+                    types::types(m)
+                        .into_iter()
+                        .find(|(_, _, t)| {
+                            matches!(&t.params, types::TypeParams::Wall(w) if w.screen.is_some())
+                        })
+                        .map(|(id, ..)| id)
+                };
+                let mut id = first(self.doc.model());
+                if id.is_none() {
+                    self.run_types(TypeAsk::Starters);
+                    id = first(self.doc.model());
+                }
+                self.plan.tool = Tool::Wall;
+                self.plan.cancel();
+                self.set_tool_type(TypeCategory::Wall, id);
+                self.status = "Screen wall: click to start, click again to place each wall. Its type sets the unit and holes; pick another in the bar.".into();
+            }
             _ => return self.objects_action(head, arg),
         }
         true

@@ -41,12 +41,14 @@ pub enum ObjectCategory {
     /// Heating, ventilation and air conditioning: radiators, diffusers,
     /// split units and fans.
     Hvac,
+    /// Cars, people and other figures that give a drawing its scale.
+    Entourage,
     #[default]
     Other,
 }
 
 impl ObjectCategory {
-    pub const ALL: [ObjectCategory; 11] = [
+    pub const ALL: [ObjectCategory; 12] = [
         ObjectCategory::Bathroom,
         ObjectCategory::Kitchen,
         ObjectCategory::Living,
@@ -57,6 +59,7 @@ impl ObjectCategory {
         ObjectCategory::Lighting,
         ObjectCategory::Plumbing,
         ObjectCategory::Hvac,
+        ObjectCategory::Entourage,
         ObjectCategory::Other,
     ];
 
@@ -72,6 +75,7 @@ impl ObjectCategory {
             ObjectCategory::Lighting => "Lighting",
             ObjectCategory::Plumbing => "Plumbing",
             ObjectCategory::Hvac => "Heating and ventilation",
+            ObjectCategory::Entourage => "Entourage",
             ObjectCategory::Other => "Other",
         }
     }

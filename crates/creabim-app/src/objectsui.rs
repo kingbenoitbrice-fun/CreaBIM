@@ -531,6 +531,10 @@ impl CreaBimApp {
     pub(super) fn objects_action(&mut self, head: &str, _arg: &str) -> bool {
         match head {
             "catalogue" => self.catalogue.open = true,
+            "catalogue.entourage" => {
+                self.catalogue.open = true;
+                self.catalogue.category = Some(ObjectCategory::Entourage);
+            }
             "catalogue.import" => self.run_catalogue(CatAsk::Import),
             "catalogue.save" => self.run_catalogue(CatAsk::SaveSelection),
             _ => return false,

@@ -63,6 +63,18 @@ CUSTOM={
  "footing": '<path d="M9 3v11M15 3v11" /> <rect x="3" y="14" width="18" height="6" /> <path d="M1 10h4M19 10h4" stroke-dasharray="2 1.5" />',
  "copy-levels": '<path d="M2 7h11M2 19h11" stroke-dasharray="3 2" /> <rect x="15" y="2" width="6" height="5" /> <rect x="15" y="14" width="6" height="5" stroke-dasharray="2 1.5" /> <path d="M18 8.5v4M16.5 11l1.5 1.5 1.5-1.5" />',
  "move-level": '<path d="M2 7h11M2 19h11" stroke-dasharray="3 2" /> <rect x="15" y="14" width="6" height="5" /> <path d="M18 2v10M15.5 9.5 18 12l2.5-2.5" />',
+ # extrusions, sweeps and voids: an outline pulled up, a profile along a
+ # path, a dashed solid cutting a block
+ "extrusion": '<path d="M4 17 9 20l11-4-5-3z" /> <path d="M4 17V7l5 3v10M9 10l11-4v10M4 7l11-4 5 3" />',
+ "sweep": '<path d="M3 15h18v4H3z" /> <path d="M3 15c3-8 15-8 18 0" stroke-dasharray="2.5 2" /> <path d="M6 11V7h4v4" />',
+ "void": '<rect x="3" y="3" width="18" height="18" /> <rect x="7" y="9" width="10" height="12" stroke-dasharray="2 2" /> <path d="M7 9a5 5 0 0 1 10 0" stroke-dasharray="2 2" />',
+ # screen walls: a wall of pierced blocks
+ "screen-wall": '<rect x="2" y="4" width="20" height="16" /> <rect x="5" y="7" width="4" height="4" /> <rect x="10" y="7" width="4" height="4" /> <rect x="15" y="7" width="4" height="4" /> <rect x="5" y="13" width="4" height="4" /> <rect x="10" y="13" width="4" height="4" /> <rect x="15" y="13" width="4" height="4" />',
+ # the site: ground with a contour, paving units, a tree, a car
+ "terrain": '<path d="M2 18c4-6 8-2 11-6s6-4 9-2v10H2z" /> <path d="M2 14c3-3 6-1 9-4" stroke-dasharray="2 2" />',
+ "paving": '<rect x="3" y="3" width="18" height="18" /> <path d="M3 9h18M3 15h18M9 3v6M15 3v6M6 9v6M12 9v6M18 9v6M9 15v6M15 15v6" />',
+ "tree": '<circle cx="12" cy="10" r="7" /> <path d="M12 17v5M9 22h6" /> <path d="M9 10h6M12 7v6" />',
+ "car": '<path d="M3 16v-4l2-4h10l3 4h3v4z" /> <circle cx="7" cy="17" r="2" /> <circle cx="17" cy="17" r="2" /> <path d="M6 12h11" />',
 }
 out={}
 for n in names:

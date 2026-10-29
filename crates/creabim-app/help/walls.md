@@ -60,3 +60,7 @@ A wall starts at its **base level** plus a **base offset**. Its **Top** is eithe
 ## Types and layers
 
 A wall can be an instance of a **wall type**, which holds its build-up, so changing the type changes every wall of it. See [Types](types) and [Layered assemblies](assemblies). A wall with a curtain grid is a [curtain wall](curtain-walls).
+
+## Screen walls
+
+A **screen wall** is a wall built from a repeating pierced unit: breeze blocks, louvres or a lattice. Pick *Create › Site › Screen wall* and draw it like any wall. The holes come from the wall's type, so every screen wall of a type has the same pattern, and they show in plans, sections and 3D. The starter types are *Screen, breeze block 400 × 200*, *Screen, timber louvres* and *Screen, lattice 150*. A screen wall exports to IFC with its holes cut in its shape.

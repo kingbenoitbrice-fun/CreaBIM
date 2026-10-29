@@ -657,10 +657,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             ),
         );
         let g = c.guid();
-        c.w.add(
-            "IFCRELVOIDSELEMENT",
-            format!("{g},$,$,$,{host},{opening}"),
-        );
+        c.w.add("IFCRELVOIDSELEMENT", format!("{g},$,$,$,{host},{opening}"));
     }
 
     // Openings need their host wall exported first, so they get a second pass.

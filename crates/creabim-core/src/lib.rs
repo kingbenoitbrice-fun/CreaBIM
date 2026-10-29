@@ -15,6 +15,7 @@ pub mod document;
 pub mod editmesh;
 pub mod element;
 pub mod footing;
+pub mod garden;
 pub mod grids;
 pub mod id;
 pub mod joins;

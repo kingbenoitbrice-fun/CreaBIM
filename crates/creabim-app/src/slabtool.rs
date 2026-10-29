@@ -280,7 +280,12 @@ pub fn click(
             } else {
                 creabim_core::TypeCategory::Slab
             };
-            o.of_type = state.types.get(&cat).copied().filter(|_| !o.shaft);
+            o.make = crate::partstool::make_for(state);
+            o.of_type = state
+                .types
+                .get(&cat)
+                .copied()
+                .filter(|_| !o.shaft && o.make.is_none());
             state.outline = Some(o);
             state.status = state.outline.as_ref().map(|o| o.hint());
             Ok(())
@@ -294,6 +299,13 @@ pub fn click(
             Some(a) => {
                 let (lo, hi) = (a.min(p), a.max(p));
                 if (hi - lo).min_element() < 0.01 {
+                    return Ok(());
+                }
+                if let Some(make) = crate::partstool::make_for(state) {
+                    let pts = creabim_core::polygon::rectangle(lo, hi);
+                    let (msg, id) = crate::partstool::finish_outline(doc, level, pts, &make)?;
+                    selection.set(id);
+                    state.status = Some(msg);
                     return Ok(());
                 }
                 let (e, label) = crate::memberstool::outline_element(
@@ -317,6 +329,12 @@ pub fn click(
                 );
                 return Ok(());
             };
+            if let Some(make) = crate::partstool::make_for(state) {
+                let (msg, id) = crate::partstool::finish_outline(doc, level, outline, &make)?;
+                selection.set(id);
+                state.status = Some(msg);
+                return Ok(());
+            }
             let (e, label) = crate::memberstool::outline_element(
                 doc.model(),
                 state,
@@ -337,6 +355,28 @@ pub fn click(
                 );
                 return Ok(());
             };
+            if let Some(make) = crate::partstool::make_for(state) {
+                let Some(ElementKind::Sketch(sk)) = doc.model().get(id).map(|e| &e.kind) else {
+                    return Ok(());
+                };
+                let slab = match creabim_core::slab_from_sketch(doc.model(), sk, NEW_SLAB_THICKNESS)
+                {
+                    Ok(s) => s,
+                    Err(m) => {
+                        state.status = Some(m);
+                        return Ok(());
+                    }
+                };
+                let (elements, label, msg) =
+                    crate::partstool::from_outline(doc.model(), slab.level, slab.outline(), &make);
+                selection.set(elements.last().map(|e| e.id));
+                state.status = Some(msg);
+                let mut tx = Transaction::new(label).remove_cascade(doc.model(), id);
+                for e in elements {
+                    tx = tx.insert(e);
+                }
+                return doc.commit(tx);
+            }
             if state.tool == crate::planview::Tool::Shaft {
                 let Some(ElementKind::Sketch(sk)) = doc.model().get(id).map(|e| &e.kind) else {
                     return Ok(());

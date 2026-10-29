@@ -63,7 +63,11 @@ impl ScreenPattern {
 
     /// Bars `bar` wide at `pitch` both ways: square holes between.
     pub fn lattice(pitch: f64, bar: f64, frame: f64) -> Self {
-        Self::blocks(DVec2::splat(pitch), DVec2::splat((pitch - bar).max(0.0)), frame)
+        Self::blocks(
+            DVec2::splat(pitch),
+            DVec2::splat((pitch - bar).max(0.0)),
+            frame,
+        )
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -146,7 +150,7 @@ pub fn screen_of<'a>(model: &'a Model, e: &Element) -> Option<&'a ScreenPattern>
     }
     let (_, t) = crate::types::type_of(model, e)?;
     match &t.params {
-        crate::types::TypeParams::Wall(wt) => wt.screen.as_ref(),
+        crate::types::TypeParams::Wall(wt) => wt.screen.as_deref(),
         _ => None,
     }
 }
@@ -154,6 +158,14 @@ pub fn screen_of<'a>(model: &'a Model, e: &Element) -> Option<&'a ScreenPattern>
 /// Is wall `id` a screen wall?
 pub fn is_screen(model: &Model, id: ElementId) -> bool {
     model.get(id).is_some_and(|e| screen_of(model, e).is_some())
+}
+
+/// Is element `id` a screen wall type?
+pub fn is_screen_type(model: &Model, id: ElementId) -> bool {
+    model.get(id).is_some_and(|e| {
+        matches!(&e.kind, ElementKind::ElementType(t)
+            if matches!(&t.params, crate::types::TypeParams::Wall(w) if w.screen.is_some()))
+    })
 }
 
 /// The holes a screen wall's pattern cuts in it, as bare openings.
@@ -230,5 +242,36 @@ mod tests {
         // the second course starts with a half unit clipped at the wall end
         assert!(first(0.225) < 0.025 + 1e-9);
         assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn wall_types_from_before_screens_still_read() {
+        let old = r#"{"thickness":0.2,"location":"Centre"}"#;
+        let t: crate::types::WallType = serde_json::from_str(old).unwrap();
+        assert!(t.screen.is_none());
+        // and a plain type is written without the field
+        assert!(!serde_json::to_string(&t).unwrap().contains("screen"));
+        // a file of the sample house from before reads, and none of its
+        // walls are screens
+        let m = crate::sample::typed_house();
+        let back = Model::from_json(&m.to_json()).unwrap();
+        assert!(back.iter().all(|e| !is_screen(&back, e.id)));
+    }
+
+    #[test]
+    fn a_screen_type_pierces_its_walls_and_saves_with_them() {
+        let m = crate::garden::garden_house();
+        let screen = m.iter().find(|e| e.name == "Garden screen").unwrap();
+        let ElementKind::Wall(w) = &screen.kind else {
+            panic!()
+        };
+        let holes = screen_openings(&m, screen.id);
+        // 10 m by 1.8 m of 400 x 200 units, two holes in each
+        assert_eq!(holes.len(), 25 * 9 * 2);
+        assert!(holes
+            .iter()
+            .all(|o| o.offset >= 0.0 && o.offset + o.width <= w.length() + 1e-9));
+        let back = Model::from_json(&m.to_json()).unwrap();
+        assert_eq!(screen_openings(&back, screen.id), holes);
     }
 }

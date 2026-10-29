@@ -544,7 +544,10 @@ mod tests {
         let m = Model::from_elements([lv.clone(), w.clone()]).unwrap();
         let (pts, closed) = p.path(&m).unwrap();
         assert!(!closed);
-        assert_eq!(pts, vec![DVec3::new(0.0, 0.0, 2.0), DVec3::new(4.0, 0.0, 2.0)]);
+        assert_eq!(
+            pts,
+            vec![DVec3::new(0.0, 0.0, 2.0), DVec3::new(4.0, 0.0, 2.0)]
+        );
         // the wall grows and moves; the coping goes with it
         if let ElementKind::Wall(w) = &mut w.kind {
             w.height = 2.5;

@@ -5,6 +5,7 @@
 
 use crate::step::{real, string};
 use creabim_core::curtain::{CurtainGrid, GridRule, PanelKind};
+use creabim_core::screen::ScreenPattern;
 use creabim_core::types::FootingType;
 use creabim_core::types::{
     BeamType, ColumnType, ElementType, OpeningType, SlabType, TypeCategory, TypeParams, WallType,
@@ -122,6 +123,46 @@ pub(crate) fn curtain_from(p: &Props) -> Option<CurtainGrid> {
     g.validate().ok().map(|_| g)
 }
 
+/// A screen wall type's unit and holes: the holes as one label of
+/// `x0 y0 x1 y1` quadruples in metres, separated by `;`.
+fn screen_props(s: &ScreenPattern) -> Vec<(&'static str, Prop)> {
+    let holes: Vec<String> = s
+        .holes
+        .iter()
+        .map(|[a, b]| format!("{} {} {} {}", a.x, a.y, b.x, b.y))
+        .collect();
+    vec![
+        ("ScreenUnitLength", Prop::Length(s.unit.x)),
+        ("ScreenUnitHeight", Prop::Length(s.unit.y)),
+        ("ScreenFrame", Prop::Length(s.frame)),
+        ("ScreenStagger", Prop::Count(s.stagger as i64)),
+        ("ScreenHoles", Prop::Label(holes.join("; "))),
+    ]
+}
+
+/// A screen pattern read back from its properties; `None` when there is
+/// none or it does not make sense.
+fn screen_from(p: &Props) -> Option<ScreenPattern> {
+    let unit = glam::DVec2::new(len(p, "ScreenUnitLength")?, len(p, "ScreenUnitHeight")?);
+    let holes = label(p, "ScreenHoles")?
+        .split(';')
+        .filter_map(|h| {
+            let v: Vec<f64> = h
+                .split_whitespace()
+                .filter_map(|n| n.parse().ok())
+                .collect();
+            (v.len() == 4).then(|| [glam::DVec2::new(v[0], v[1]), glam::DVec2::new(v[2], v[3])])
+        })
+        .collect();
+    let s = ScreenPattern {
+        unit,
+        holes,
+        frame: len(p, "ScreenFrame").unwrap_or(0.0).max(0.0),
+        stagger: len(p, "ScreenStagger").is_some_and(|v| v > 0.5),
+    };
+    s.validate().ok().map(|_| s)
+}
+
 fn location_label(l: LocationLine) -> &'static str {
     match l {
         LocationLine::Centre => "Centre",
@@ -148,6 +189,9 @@ pub(crate) fn type_props(t: &ElementType) -> Vec<(&'static str, Prop)> {
             }
             if let Some(g) = &w.curtain {
                 out.extend(curtain_props(g));
+            }
+            if let Some(s) = &w.screen {
+                out.extend(screen_props(s));
             }
         }
         TypeParams::Door(o) | TypeParams::Window(o) => {
@@ -238,7 +282,7 @@ pub(crate) fn type_from(category: TypeCategory, curtain: bool, p: &Props) -> Typ
                 location,
                 height: len(p, "DefaultHeight").filter(|h| *h > 0.0),
                 curtain,
-                screen: None,
+                screen: screen_from(p).map(Box::new),
             })
         }
         TypeCategory::Door | TypeCategory::Window => {

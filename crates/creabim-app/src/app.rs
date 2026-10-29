@@ -2751,7 +2751,7 @@ impl CreaBimApp {
                         );
                     }
                 }
-                Tool::Slab | Tool::Roof | Tool::Shaft => {
+                t if t.draws_outline() => {
                     let (lo, hi) = (a.truncate().min(p), a.truncate().max(p));
                     let pts = [lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y), lo];
                     let scr: Vec<egui::Pos2> =
@@ -2815,10 +2815,10 @@ impl CreaBimApp {
             } else {
                 self.status = match (tool, self.pending_3d) {
                     (Tool::Wall, Some(_)) => format!("Drawing walls on {level_name}. Click the next corner; Esc or right-click ends."),
-                    (Tool::Slab | Tool::Roof | Tool::Shaft, _) => {
+                    (t, _) if t.draws_outline() => {
                         self.plan.status.take().unwrap_or_default()
                     }
-                    (Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing | Tool::Footing | Tool::Object, _) => self
+                    (Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing | Tool::Footing | Tool::Object | Tool::Sweep | Tool::Planting, _) => self
                         .plan
                         .status
                         .take()
@@ -4835,7 +4835,9 @@ impl CreaBimApp {
                 | ElementKind::Roof(_)
                 | ElementKind::Stair(_)
                 | ElementKind::Railing(_)
-                | ElementKind::Footing(_)) => {
+                | ElementKind::Footing(_)
+                | ElementKind::Part(_)
+                | ElementKind::Site(_)) => {
                     if let ElementKind::Roof(r) = k {
                         if self.assembly_combo(ui, creabim_core::AssemblyUse::Roof, &mut r.assembly)
                         {
@@ -5414,6 +5416,10 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::ElementType(_) => "type",
         ElementKind::Shaft(_) => "shaft",
         ElementKind::Footing(_) => "footing",
+        ElementKind::Part(p) if p.void => "void",
+        ElementKind::Part(_) => "part",
+        ElementKind::Site(s) if s.is_plant() => "plant",
+        ElementKind::Site(_) => "site element",
     }
 }
 

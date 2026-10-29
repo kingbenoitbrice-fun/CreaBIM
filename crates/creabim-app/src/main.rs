@@ -21,6 +21,7 @@ mod objecttool;
 mod optionbar;
 mod outline;
 mod paneface;
+mod partstool;
 mod planview;
 mod render3d;
 mod schedulepane;

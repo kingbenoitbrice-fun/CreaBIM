@@ -179,7 +179,12 @@ impl Site {
     }
 
     /// A hard landscape area over `boundary`.
-    pub fn area(level: ElementId, mut boundary: Vec<DVec2>, thickness: f64, pattern: Pattern) -> Self {
+    pub fn area(
+        level: ElementId,
+        mut boundary: Vec<DVec2>,
+        thickness: f64,
+        pattern: Pattern,
+    ) -> Self {
         ccw(&mut boundary);
         Self {
             level,
@@ -195,7 +200,13 @@ impl Site {
     }
 
     /// A plant at `position`.
-    pub fn plant(level: ElementId, position: DVec2, form: PlantForm, canopy: f64, height: f64) -> Self {
+    pub fn plant(
+        level: ElementId,
+        position: DVec2,
+        form: PlantForm,
+        canopy: f64,
+        height: f64,
+    ) -> Self {
         Self {
             level,
             form: SiteForm::Plant {
@@ -304,7 +315,24 @@ impl Site {
     /// when flat, else weighted towards the nearest spot heights.
     pub fn ground_at(&self, p: DVec2) -> f64 {
         match &self.form {
-            SiteForm::Terrain { top, points, .. } => surface_height(*top, points, p),
+            SiteForm::Terrain {
+                boundary,
+                top,
+                points,
+                ..
+            } => {
+                if points.is_empty() {
+                    return *top;
+                }
+                // the outline's corners stay at the terrain's top unless a
+                // spot height is on them
+                let corners = boundary
+                    .iter()
+                    .filter(|c| !points.iter().any(|q| q.truncate().distance(**c) < 1e-3))
+                    .map(|c| c.extend(*top));
+                let controls: Vec<DVec3> = points.iter().copied().chain(corners).collect();
+                surface_height(*top, &controls, p)
+            }
             SiteForm::Area { top, .. } => *top,
             SiteForm::Plant { base, .. } => *base,
         }
@@ -415,11 +443,12 @@ pub fn ground_holes(model: &Model, terrain: &Site) -> Vec<Vec<DVec2>> {
         .filter_map(|e| match &e.kind {
             crate::ElementKind::Site(Site {
                 level,
-                form: SiteForm::Area {
-                    boundary: b,
-                    top: t,
-                    ..
-                },
+                form:
+                    SiteForm::Area {
+                        boundary: b,
+                        top: t,
+                        ..
+                    },
                 ..
             }) if *level == terrain.level
                 && *t <= top + 0.1

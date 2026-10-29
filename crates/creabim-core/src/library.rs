@@ -568,7 +568,61 @@ pub const LIBRARY: &[LibraryEntry] = &[
         1.0,
         "Compacted earth",
     ),
+    entry(
+        "Grass",
+        "earth",
+        DIA,
+        rgb(104, 146, 74),
+        1.0,
+        "Lawn on topsoil",
+    ),
+    // hard landscape
+    entry(
+        "Paving, concrete flags",
+        "concrete",
+        CON,
+        rgb(196, 192, 184),
+        0.85,
+        "Precast concrete paving flags",
+    ),
+    entry(
+        "Block paving",
+        "concrete",
+        CON,
+        rgb(150, 120, 104),
+        0.85,
+        "Concrete block paviors, for drives",
+    ),
+    entry(
+        "Asphalt",
+        "earth",
+        SOL,
+        rgb(70, 72, 74),
+        0.9,
+        "Bituminous macadam surfacing",
+    ),
+    entry(
+        "Timber decking",
+        "wood",
+        TIM,
+        rgb(150, 112, 76),
+        0.7,
+        "Hardwood deck boards",
+    ),
 ];
+
+/// The material named `name` in the model, or the library's entry of that
+/// name as a new material to add: (its id, the element to insert, if new).
+pub fn find_or_new(model: &Model, name: &str) -> Option<(ElementId, Option<Element>)> {
+    if let Some(e) = model
+        .iter()
+        .find(|e| e.name == name && matches!(e.kind, ElementKind::Material(_)))
+    {
+        return Some((e.id, None));
+    }
+    let e = LIBRARY.iter().find(|l| l.name == name)?.element();
+    Some((e.id, Some(e)))
+}
 
 /// A guess at a material's category from its name and description, for
 /// materials read from files that don't give one. Empty when nothing fits.

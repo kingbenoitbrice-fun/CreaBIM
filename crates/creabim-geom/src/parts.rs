@@ -160,9 +160,7 @@ fn refine(boundary: &[DVec2], inner: &[DVec2]) -> (Vec<DVec2>, Vec<[usize; 3]>) 
     let mut verts = boundary.to_vec();
     let mut tris = triangulate(boundary);
     let n0 = verts.len();
-    let ccw = |t: &[usize; 3], v: &[DVec2]| {
-        (v[t[1]] - v[t[0]]).perp_dot(v[t[2]] - v[t[0]]) > 0.0
-    };
+    let ccw = |t: &[usize; 3], v: &[DVec2]| (v[t[1]] - v[t[0]]).perp_dot(v[t[2]] - v[t[0]]) > 0.0;
     for t in tris.iter_mut() {
         if !ccw(t, &verts) {
             t.swap(1, 2);
@@ -197,9 +195,8 @@ fn refine(boundary: &[DVec2], inner: &[DVec2]) -> (Vec<DVec2>, Vec<[usize; 3]>) 
             + (cx * cx + cy * cy) * (ax * by - bx * ay)
             > 1e-12
     };
-    let boundary_edge = |a: usize, b: usize| {
-        a < n0 && b < n0 && ((a + 1) % n0 == b || (b + 1) % n0 == a)
-    };
+    let boundary_edge =
+        |a: usize, b: usize| a < n0 && b < n0 && ((a + 1) % n0 == b || (b + 1) % n0 == a);
     for _ in 0..8 * tris.len().max(1) {
         let mut flipped = false;
         'outer: for i in 0..tris.len() {
@@ -311,7 +308,10 @@ fn plant_meshes(model: &Model, s: &Site) -> Vec<(TriMesh, [f32; 3], bool)> {
             vec![
                 trunk(stem + 0.2, (r * 0.08).clamp(0.06, 0.35)),
                 (
-                    ellipsoid(at(stem + (h - stem) / 2.0), DVec3::new(r, r, (h - stem) / 2.0)),
+                    ellipsoid(
+                        at(stem + (h - stem) / 2.0),
+                        DVec3::new(r, r, (h - stem) / 2.0),
+                    ),
                     LEAF_COLOR,
                     true,
                 ),
@@ -408,7 +408,12 @@ fn frond(at: DVec3, dir: DVec2, length: f64, droop: f64) -> TriMesh {
     let t = 0.03;
     // a diamond: base, two shoulders, tip; top and bottom faces
     let top = [p(0.0, 0.0, t), p(0.4, w, t), p(1.0, 0.0, t), p(0.4, -w, t)];
-    let bottom = [p(0.0, 0.0, -t), p(0.4, w, -t), p(1.0, 0.0, -t), p(0.4, -w, -t)];
+    let bottom = [
+        p(0.0, 0.0, -t),
+        p(0.4, w, -t),
+        p(1.0, 0.0, -t),
+        p(0.4, -w, -t),
+    ];
     let mut m = TriMesh::default();
     for (pts, up) in [(top, 1.0), (bottom, -1.0)] {
         for tri in [[0, 1, 2], [0, 2, 3]] {
@@ -622,9 +627,11 @@ pub fn contours(tris: &[[DVec3; 3]], interval: f64, base: f64) -> Vec<(DVec2, DV
         return out;
     }
     for t in tris {
-        let (lo, hi) = t.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
-            (a.min(p.z), b.max(p.z))
-        });
+        let (lo, hi) = t
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
+                (a.min(p.z), b.max(p.z))
+            });
         let mut k = ((lo - base) / interval).ceil();
         // a cap on how many lines one triangle gives
         let mut guard = 0;
@@ -709,7 +716,7 @@ pub fn pattern_lines(pattern: &Pattern, loops: &[Vec<DVec2>]) -> Vec<(DVec2, DVe
     }
     let area = (hi - lo).element_product();
     // too fine a pattern for the area is left out rather than drawn black
-    if !(step > 0.0) || area / (step * step) > 200_000.0 {
+    if step.is_nan() || step <= 0.0 || area / (step * step) > 200_000.0 {
         return vec![];
     }
     let world = |x: f64, y: f64| u * x + v * y;
@@ -759,7 +766,9 @@ pub fn pattern_lines(pattern: &Pattern, loops: &[Vec<DVec2>]) -> Vec<(DVec2, DVe
             while y < hi.y {
                 let mut x = (lo.x / spacing).floor() * spacing;
                 while x < hi.x {
-                    j = j.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    j = j
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
                     let rx = ((j >> 33) % 1000) as f64 / 1000.0;
                     let ry = ((j >> 13) % 1000) as f64 / 1000.0;
                     let p = world(x + rx * spacing, y + ry * spacing);
@@ -892,9 +901,17 @@ mod tests {
         let m = sweep_mesh(&profile, &path, false);
         assert!((m.volume() - 0.3 * 0.05 * 4.0).abs() < 1e-4);
         // round an L, mitred: the centreline length times the section
-        let path = [DVec3::ZERO, DVec3::new(4.0, 0.0, 0.0), DVec3::new(4.0, 3.0, 0.0)];
+        let path = [
+            DVec3::ZERO,
+            DVec3::new(4.0, 0.0, 0.0),
+            DVec3::new(4.0, 3.0, 0.0),
+        ];
         let m = sweep_mesh(&profile, &path, false);
-        assert!((m.volume() - 0.3 * 0.05 * 7.0).abs() < 1e-4, "{}", m.volume());
+        assert!(
+            (m.volume() - 0.3 * 0.05 * 7.0).abs() < 1e-4,
+            "{}",
+            m.volume()
+        );
         // a closed ring: no caps, still closed
         let ring = [
             DVec3::ZERO,
@@ -903,7 +920,11 @@ mod tests {
             DVec3::new(0.0, 3.0, 0.0),
         ];
         let m = sweep_mesh(&profile, &ring, true);
-        assert!((m.volume() - 0.3 * 0.05 * 14.0).abs() < 1e-4, "{}", m.volume());
+        assert!(
+            (m.volume() - 0.3 * 0.05 * 14.0).abs() < 1e-4,
+            "{}",
+            m.volume()
+        );
     }
 
     #[test]
@@ -930,7 +951,13 @@ mod tests {
         let lv = level();
         let w = Element::new(
             "W",
-            ElementKind::Wall(Wall::new(lv.id, DVec2::ZERO, DVec2::new(3.0, 0.0), 0.2, 1.0)),
+            ElementKind::Wall(Wall::new(
+                lv.id,
+                DVec2::ZERO,
+                DVec2::new(3.0, 0.0),
+                0.2,
+                1.0,
+            )),
         );
         let c = Element::new(
             "Coping",

@@ -481,6 +481,9 @@ pub fn preview(
 /// The Properties panel rows for a column, beam, roof, stair or railing.
 /// Returns the undo label when something changed.
 pub fn properties(ui: &mut egui::Ui, model: &Model, kind: &mut ElementKind) -> &'static str {
+    if matches!(kind, ElementKind::Part(_) | ElementKind::Site(_)) {
+        return crate::partstool::properties(ui, model, kind);
+    }
     let mut label = "";
     let num = |ui: &mut egui::Ui, text: &str, v: &mut f64, lo: f64, hi: f64| -> bool {
         ui.horizontal(|ui| {

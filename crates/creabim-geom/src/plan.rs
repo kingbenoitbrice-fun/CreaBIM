@@ -1350,7 +1350,12 @@ fn opening_symbol(
     out
 }
 
-pub(crate) fn sliced_plan(model: &Model, item: &crate::scene::SceneItem, z: f64, items: &mut Vec<PlanItem>) {
+pub(crate) fn sliced_plan(
+    model: &Model,
+    item: &crate::scene::SceneItem,
+    z: f64,
+    items: &mut Vec<PlanItem>,
+) {
     let mut cut: Vec<(DVec2, DVec2)> = Vec::new();
     for lp in crate::slice::slice(&item.mesh, z) {
         let n = lp.len();

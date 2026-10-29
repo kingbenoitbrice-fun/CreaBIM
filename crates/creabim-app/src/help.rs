@@ -63,6 +63,8 @@ pub const PAGES: &[(&str, &str, &str)] = &[
     page!("Building the model", "columns-beams"),
     page!("Building the model", "stairs-railings"),
     page!("Building the model", "footings"),
+    page!("Building the model", "parts"),
+    page!("Building the model", "site"),
     page!("Building the model", "curtain-walls"),
     page!("Building the model", "types"),
     page!("Building the model", "assemblies"),
@@ -224,6 +226,9 @@ pub fn tool_page(t: Tool) -> &'static str {
         Tool::Level => "levels",
         Tool::Align => "align",
         Tool::Object => "furniture",
+        Tool::Extrusion | Tool::Sweep => "parts",
+        Tool::Void => "parts#voids",
+        Tool::Terrain | Tool::Paving | Tool::Planting => "site",
     }
 }
 
@@ -239,6 +244,9 @@ pub fn element_page(kind: &ElementKind) -> &'static str {
         ElementKind::Column(_) | ElementKind::Beam(_) => "columns-beams",
         ElementKind::Stair(_) | ElementKind::Railing(_) => "stairs-railings",
         ElementKind::Footing(_) => "footings",
+        ElementKind::Part(p) if p.void => "parts#voids",
+        ElementKind::Part(_) => "parts",
+        ElementKind::Site(_) => "site",
         ElementKind::Level(_) => "levels",
         ElementKind::Grid(_) | ElementKind::GridGroup(_) => "grids",
         ElementKind::FreeMesh(_) | ElementKind::Cut(_) => "masses",
