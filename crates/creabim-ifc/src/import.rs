@@ -138,7 +138,8 @@ fn read_tags(f: &StepFile, elements: &mut [Element]) {
     ];
     let mut tags: HashMap<ElementId, String> = HashMap::new();
     for e in f.entities.values() {
-        if SPATIAL.contains(&e.class.as_str()) || crate::classes::product_class(&e.class).is_none() {
+        if SPATIAL.contains(&e.class.as_str()) || crate::classes::product_class(&e.class).is_none()
+        {
             continue;
         }
         let Some(tag) = e.arg(7).as_str().map(str::trim) else {

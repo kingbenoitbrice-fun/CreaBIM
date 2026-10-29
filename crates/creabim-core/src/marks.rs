@@ -533,7 +533,10 @@ pub fn duplicates(model: &Model) -> Vec<(String, Vec<ElementId>)> {
             by_mark.entry(m).or_default().push(e.id);
         }
     }
-    by_mark.into_iter().filter(|(_, ids)| ids.len() > 1).collect()
+    by_mark
+        .into_iter()
+        .filter(|(_, ids)| ids.len() > 1)
+        .collect()
 }
 
 /// Is `id`'s mark also held by another element?
@@ -723,7 +726,10 @@ mod tests {
         // the rules round-trip through their file
         let r = MarkRules::from_json(&rules(&m).to_json()).unwrap();
         assert_eq!(r, rules(&m));
-        assert!(MarkRules::from_json("{\"rules\":[{\"class\":\"Door\",\"prefix\":\"D\",\"padding\":12}]}").is_err());
+        assert!(MarkRules::from_json(
+            "{\"rules\":[{\"class\":\"Door\",\"prefix\":\"D\",\"padding\":12}]}"
+        )
+        .is_err());
     }
 
     #[test]
@@ -797,7 +803,10 @@ mod tests {
         let r = MarkRules::from_json(r#"{"rules":[{"class":"Door","prefix":"DR"}]}"#).unwrap();
         assert_eq!(r.ground_number, 1);
         let d = r.rule(MarkClass::Door).unwrap();
-        assert_eq!((d.padding, d.start, d.auto, d.by_level), (2, 1, false, false));
+        assert_eq!(
+            (d.padding, d.start, d.auto, d.by_level),
+            (2, 1, false, false)
+        );
         assert_eq!(d.format(1, 3), "DR03");
     }
 }

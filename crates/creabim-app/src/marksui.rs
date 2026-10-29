@@ -58,9 +58,7 @@ impl CreaBimApp {
             .inner;
         if changed {
             let value = (!text.trim().is_empty()).then(|| text.clone());
-            let r = self
-                .doc
-                .edit_merged(id, "Mark", |e| e.mark = value.clone());
+            let r = self.doc.edit_merged(id, "Mark", |e| e.mark = value.clone());
             self.report(r, "Mark changed.");
         }
         let model = self.doc.model();
@@ -319,7 +317,9 @@ impl CreaBimApp {
         let Some(e) = self.doc.model().get(view) else {
             return;
         };
-        let ElementKind::View(v) = &e.kind else { return };
+        let ElementKind::View(v) = &e.kind else {
+            return;
+        };
         if !matches!(v.kind, ViewKind::Section { .. }) {
             return;
         }

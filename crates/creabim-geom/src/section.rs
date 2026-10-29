@@ -305,11 +305,8 @@ pub fn lay_out_level_heads(
 /// apart: each crowd of labels is spread evenly about where it wants to be.
 pub fn spread(want: &[f64], gap: f64) -> Vec<f64> {
     // clusters of (first index, count), merged until none overlap
-    let mut clusters: Vec<(usize, usize, f64)> = want
-        .iter()
-        .enumerate()
-        .map(|(i, y)| (i, 1, *y))
-        .collect();
+    let mut clusters: Vec<(usize, usize, f64)> =
+        want.iter().enumerate().map(|(i, y)| (i, 1, *y)).collect();
     let bottom = |c: &(usize, usize, f64)| c.2 - gap * (c.1 as f64 - 1.0) / 2.0;
     let top = |c: &(usize, usize, f64)| c.2 + gap * (c.1 as f64 - 1.0) / 2.0;
     loop {

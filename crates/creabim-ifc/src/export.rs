@@ -44,7 +44,9 @@ struct Ctx {
 impl Ctx {
     /// An element's Tag attribute: its mark, or unset.
     fn tag(&self, id: ElementId) -> String {
-        self.marks.get(&id).map_or_else(|| "$".into(), |m| string(m))
+        self.marks
+            .get(&id)
+            .map_or_else(|| "$".into(), |m| string(m))
     }
 
     fn guid(&self) -> String {

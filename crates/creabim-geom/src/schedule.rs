@@ -411,7 +411,8 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
         if rows.iter().any(|(_, _, r)| marks.contains_key(&r.id)) {
             columns.insert(1, col("Mark", None, 16.0, false));
             for (_, _, r) in &mut rows {
-                r.cells.insert(1, marks.get(&r.id).cloned().unwrap_or_default());
+                r.cells
+                    .insert(1, marks.get(&r.id).cloned().unwrap_or_default());
             }
             if totals.len() > 1 {
                 totals.insert(1, String::new());

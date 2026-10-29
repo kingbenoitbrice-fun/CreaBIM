@@ -398,7 +398,12 @@ pub fn spot_height(
 }
 
 /// A spot level as a drawing item, if it can be drawn in the view.
-fn spot(model: &Model, view: &View, id: ElementId, d: &creabim_core::Dimension) -> Option<PlanItem> {
+fn spot(
+    model: &Model,
+    view: &View,
+    id: ElementId,
+    d: &creabim_core::Dimension,
+) -> Option<PlanItem> {
     let at = resolve(model, view, &d.a)?;
     let text_at = resolve(model, view, &d.b)?;
     let z = spot_height(model, view, d, at)?;

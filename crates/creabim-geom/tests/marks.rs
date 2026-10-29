@@ -75,7 +75,15 @@ fn tag_leaders_bend_at_their_elbow_and_end_in_their_mark() {
     assert_eq!(*g.leader.last().unwrap(), anchor);
     assert_eq!(g.ends.fills.len(), 1, "a dot at the end");
     // no end mark: a plain line, as tags always had
-    let plain = tag_geometry(anchor, DVec2::ZERO, None, "D01", true, &TextLook::default(), 0.01);
+    let plain = tag_geometry(
+        anchor,
+        DVec2::ZERO,
+        None,
+        "D01",
+        true,
+        &TextLook::default(),
+        0.01,
+    );
     assert_eq!(plain.leader.len(), 2);
     assert!(plain.ends.fills.is_empty() && plain.ends.thin.is_empty());
 
@@ -131,7 +139,10 @@ fn notes_bend_their_leaders_at_an_elbow() {
     let leader = m.lines.last().unwrap();
     assert!(leader.contains(&DVec2::new(2.0, 1.0)), "{leader:?}");
     assert_eq!(*leader.last().unwrap(), DVec2::ZERO);
-    assert!(m.arrows.is_empty() && !m.ends.thin.is_empty(), "an open dot");
+    assert!(
+        m.arrows.is_empty() && !m.ends.thin.is_empty(),
+        "an open dot"
+    );
 }
 
 #[test]
@@ -146,13 +157,26 @@ fn spot_levels_read_heights_from_their_pattern() {
         .unwrap();
     // a level marker in the plan: the plan's level
     let free = HostPoint::free(DVec2::new(-3.0, -3.0));
-    let marker = Dimension::spot(plan, free, HostPoint::free(DVec2::new(-1.0, -2.0)), Some("{m} FFL".into()));
-    let marker = add(&mut doc, Element::new("Spot", ElementKind::Dimension(marker)));
+    let marker = Dimension::spot(
+        plan,
+        free,
+        HostPoint::free(DVec2::new(-1.0, -2.0)),
+        Some("{m} FFL".into()),
+    );
+    let marker = add(
+        &mut doc,
+        Element::new("Spot", ElementKind::Dimension(marker)),
+    );
     // a section: the point's own height, 0.45 up
     let section = View::section(DVec2::new(-5.0, 2.0), DVec2::new(20.0, 2.0), 20.0, true);
     let section = add(&mut doc, Element::new("S", ElementKind::View(section)));
     let p = HostPoint::free(DVec2::new(1.0, ground + 0.45));
-    let spot = Dimension::spot(section, p, HostPoint::free(DVec2::new(3.0, 1.0)), Some("{m} FFL ({level})".into()));
+    let spot = Dimension::spot(
+        section,
+        p,
+        HostPoint::free(DVec2::new(3.0, 1.0)),
+        Some("{m} FFL ({level})".into()),
+    );
     let spot = add(&mut doc, Element::new("Spot", ElementKind::Dimension(spot)));
     let text = |view: ElementId, id: ElementId| {
         view_drawing(doc.model(), view)
@@ -169,8 +193,17 @@ fn spot_levels_read_heights_from_their_pattern() {
             .unwrap()
     };
     let level_name = doc.model().get(level).unwrap().name.clone();
-    assert_eq!(text(plan, marker), format!("{} FFL", annotation::spot_text(doc.model(), "{m}", ground)));
-    assert_eq!(text(section, spot), format!("{} FFL ({level_name})", annotation::spot_text(doc.model(), "{m}", ground + 0.45)));
+    assert_eq!(
+        text(plan, marker),
+        format!("{} FFL", annotation::spot_text(doc.model(), "{m}", ground))
+    );
+    assert_eq!(
+        text(section, spot),
+        format!(
+            "{} FFL ({level_name})",
+            annotation::spot_text(doc.model(), "{m}", ground + 0.45)
+        )
+    );
     assert_eq!(annotation::spot_text(doc.model(), "{m}", 0.45), "+0.45");
     assert_eq!(annotation::spot_text(doc.model(), "{m}", 0.0), "±0.00");
     assert_eq!(annotation::spot_text(doc.model(), "{mm}", -0.45), "-450");
@@ -227,7 +260,11 @@ fn dimension_lines_break_where_tags_sit_across_them() {
         0.1,
     );
     g.break_line(&[[t0, t1]]);
-    let along: Vec<_> = g.lines.iter().filter(|(p, q)| p.y == 1.0 && q.y == 1.0).collect();
+    let along: Vec<_> = g
+        .lines
+        .iter()
+        .filter(|(p, q)| p.y == 1.0 && q.y == 1.0)
+        .collect();
     assert_eq!(along.len(), 2);
 }
 
@@ -236,7 +273,10 @@ fn close_level_heads_spread_apart_and_follow_the_view() {
     // two levels 0.2 m apart, one well clear
     let ys = spread(&[0.0, 0.2, 3.0], 0.7);
     assert!((ys[1] - ys[0] - 0.7).abs() < 1e-9);
-    assert!(((ys[0] + ys[1]) / 2.0 - 0.1).abs() < 1e-9, "centred on the pair");
+    assert!(
+        ((ys[0] + ys[1]) / 2.0 - 0.1).abs() < 1e-9,
+        "centred on the pair"
+    );
     assert_eq!(ys[2], 3.0);
 
     let mut doc = Document::from_model(sample::sample_house());

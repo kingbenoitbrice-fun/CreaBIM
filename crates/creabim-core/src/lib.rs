@@ -51,8 +51,8 @@ pub use document::{Document, Step, StepId};
 pub use editmesh::EditMesh;
 pub use element::{
     Cut, Dimension, Element, ElementKind, FreeMesh, Grid, GridGroup, Guide, Hatch, HostPoint,
-    Level, LevelHead, Material, Opening, OpeningFrame, OpeningKind, ScheduleCategory, Sheet, Sketch, Slab,
-    Source, Tag, Underlay, View, ViewKind, ViewStyle, Viewport, Wall, Workplane,
+    Level, LevelHead, Material, Opening, OpeningFrame, OpeningKind, ScheduleCategory, Sheet,
+    Sketch, Slab, Source, Tag, Underlay, View, ViewKind, ViewStyle, Viewport, Wall, Workplane,
 };
 pub use element::{LocationLine, WallTop};
 pub use footing::{Footing, FootingKind};

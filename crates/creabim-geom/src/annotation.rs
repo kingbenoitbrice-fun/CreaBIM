@@ -517,11 +517,8 @@ impl Annotation {
                 } else {
                     // a filled triangle standing on the point
                     let (h, half) = (2.0 * mm, 1.15 * mm);
-                    out.arrows.push([
-                        at,
-                        at + DVec2::new(-half, h),
-                        at + DVec2::new(half, h),
-                    ]);
+                    out.arrows
+                        .push([at, at + DVec2::new(-half, h), at + DVec2::new(half, h)]);
                     at + DVec2::Y * h
                 };
                 if from.distance(text_at) > 0.5 * mm {
@@ -530,11 +527,14 @@ impl Annotation {
                     out.lines.push(vec![text_at, shoulder]);
                 }
                 out.texts.push(MarkText {
-                    at: text_at
-                        + DVec2::new(dir * TEXT_GAP * mm, (look.size * 0.5 + 0.6) * mm),
+                    at: text_at + DVec2::new(dir * TEXT_GAP * mm, (look.size * 0.5 + 0.6) * mm),
                     text: self.text.clone(),
                     angle: 0.0,
-                    anchor: if dir > 0.0 { Anchor::Start } else { Anchor::End },
+                    anchor: if dir > 0.0 {
+                        Anchor::Start
+                    } else {
+                        Anchor::End
+                    },
                 });
             }
             Shape::Level {

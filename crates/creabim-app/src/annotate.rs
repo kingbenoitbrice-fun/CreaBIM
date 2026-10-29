@@ -213,7 +213,11 @@ fn grips(model: &Model, it: &PlanItem, mm: f64) -> Vec<(DVec2, Grab)> {
                 ..
             } => {
                 let m = item.marks(mm);
-                let from = m.lines.last().and_then(|l| l.first().copied()).unwrap_or(*tip);
+                let from = m
+                    .lines
+                    .last()
+                    .and_then(|l| l.first().copied())
+                    .unwrap_or(*tip);
                 vec![
                     (*tip, Grab::Leader(*id)),
                     (elbow_grip(*elbow, from, *tip), Grab::Elbow(*id)),
@@ -234,7 +238,10 @@ fn grips(model: &Model, it: &PlanItem, mm: f64) -> Vec<(DVec2, Grab)> {
             let centre = *anchor - t.end.unwrap_or(DVec2::ZERO);
             vec![
                 (*anchor, Grab::TagEnd(*id, centre)),
-                (elbow_grip(*elbow, *at, *anchor), Grab::TagElbow(*id, centre)),
+                (
+                    elbow_grip(*elbow, *at, *anchor),
+                    Grab::TagElbow(*id, centre),
+                ),
             ]
         }
         _ => vec![],
@@ -944,9 +951,10 @@ pub fn drag(
                 }
             })
         }
-        Grab::Elbow(id) => doc.edit_merged(id, "Move leader elbow", |e| match &mut e.kind {
-            ElementKind::Note(n) => n.elbow = Some(p),
-            _ => {}
+        Grab::Elbow(id) => doc.edit_merged(id, "Move leader elbow", |e| {
+            if let ElementKind::Note(n) = &mut e.kind {
+                n.elbow = Some(p);
+            }
         }),
         Grab::TagEnd(id, centre) => doc.edit_merged(id, "Move leader", |e| {
             if let ElementKind::Tag(t) = &mut e.kind {
@@ -1065,7 +1073,9 @@ pub fn sheet_input(
     if tool != Tool::Select {
         return false;
     }
-    if let Some(r) = drag(doc, None, None, &items, xf, response, d, selection, 1.0, None) {
+    if let Some(r) = drag(
+        doc, None, None, &items, xf, response, d, selection, 1.0, None,
+    ) {
         if let Some(e) = r {
             *error = Some(e);
         }
@@ -1381,7 +1391,9 @@ pub fn ends_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
         });
     if ui
         .checkbox(&mut s.break_at_tags, "Break dimension lines at tags")
-        .on_hover_text("Dimension lines in this style leave a gap where a tag or a note sits across them")
+        .on_hover_text(
+            "Dimension lines in this style leave a gap where a tag or a note sits across them",
+        )
         .changed()
     {
         label = Some("Dimension breaks");

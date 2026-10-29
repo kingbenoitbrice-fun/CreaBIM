@@ -3623,7 +3623,16 @@ fn preview_dimension(
         return;
     };
     let text = annotate::dimension_text(&crate::units::get(), a, b2);
-    draw_dimension(painter, xf, (a, b2, offset, witness), &[], &text, look, mm, accent);
+    draw_dimension(
+        painter,
+        xf,
+        (a, b2, offset, witness),
+        &[],
+        &text,
+        look,
+        mm,
+        accent,
+    );
 }
 
 /// The point a dimension click lands on, what it attaches to, and the snap
