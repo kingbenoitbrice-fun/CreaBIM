@@ -38,6 +38,9 @@ pub(super) struct Shell {
     pub ground_custom: Option<String>,
     /// The Help panel: open or not, and its page.
     pub help: super::helpui::HelpState,
+    /// The tool options strip as its page last measured it, for what goes
+    /// in its More menu.
+    pub bar: Option<crate::optionbar::Measure>,
 }
 
 impl Default for Shell {
@@ -55,6 +58,7 @@ impl Default for Shell {
             focus_popup: false,
             ground_custom: None,
             help: Default::default(),
+            bar: None,
         }
     }
 }
@@ -172,6 +176,15 @@ fn icon_name(i: Icon) -> &'static str {
 }
 
 /// A plain name for a group of the project browser.
+/// The project browser's group an element is listed in: every kind of
+/// type in one, the rest by IFC class.
+fn class_of(e: &Element) -> String {
+    match e.kind {
+        ElementKind::ElementType(_) => "ElementType".to_string(),
+        _ => e.ifc_class().to_string(),
+    }
+}
+
 fn group_title(class: &str) -> String {
     match class {
         "View" => "Views".into(),
@@ -364,6 +377,33 @@ impl CreaBimApp {
                         1 => "1 selected".into(),
                         n => format!("{n} selected"),
                     }));
+                    // a view placed on a sheet: its scale first
+                    let placed = self.selection.active.and_then(|id| {
+                        match &self.doc.model().get(id)?.kind {
+                            ElementKind::Viewport(vp) => Some(vp.view),
+                            _ => None,
+                        }
+                    });
+                    if let Some(view) = placed.filter(|_| n == 1) {
+                        let scale = self.view(view).map_or(0.0, |v| v.paper_scale());
+                        if self
+                            .view(view)
+                            .is_some_and(|v| !matches!(v.kind, ViewKind::Schedule { .. }))
+                        {
+                            items.push(
+                                Item::sub(
+                                    format!("Scale 1:{scale:.0}"),
+                                    self.viewport_scale_items(view),
+                                )
+                                .icon("ruler"),
+                            );
+                        }
+                        items.push(
+                            Item::new(format!("view:{}", view.0), "Open the view itself")
+                                .icon("map"),
+                        );
+                        items.push(Item::Separator);
+                    }
                     items.extend(self.wall_menu_items());
                     items.extend(self.level_menu_items());
                     for group in [
@@ -730,7 +770,34 @@ impl CreaBimApp {
             flatten(vec![item], "Help › ", &mut out);
         }
         flatten(self.menu_items("views"), "Open › ", &mut out);
+        // and the model's elements, by name: picking one selects and frames it
+        for e in self.doc.model().iter() {
+            if matches!(
+                e.kind,
+                ElementKind::Units(_) | ElementKind::View(_) | ElementKind::Sheet(_)
+            ) {
+                continue;
+            }
+            out.push(
+                Item::new(
+                    format!("find:{}", e.id.0),
+                    format!("Find › {} › {}", group_title(&class_of(e)), e.name),
+                )
+                .icon(icon_name(Icon::of(e)))
+                .hint("Select it and frame it in the 3D view"),
+            );
+        }
         out
+    }
+
+    /// How many elements the project has, leaving out its units, which
+    /// every project has once.
+    pub(super) fn element_count(&self) -> usize {
+        self.doc
+            .model()
+            .iter()
+            .filter(|e| !matches!(e.kind, ElementKind::Units(_)))
+            .count()
     }
 
     /// The 3D view's navigation buttons.
@@ -977,6 +1044,34 @@ impl CreaBimApp {
                     self.active_view.filter(|id| self.is_sheet(*id)),
                 ) {
                     self.place_view(sheet, view);
+                }
+            }
+            "find" => {
+                if let Some(id) = by_uuid(self) {
+                    self.selection.only(id);
+                    self.frame_selection();
+                    self.status = format!(
+                        "{} selected and framed.",
+                        crate::hoverpick::describe(self.doc.model(), id)
+                    );
+                }
+            }
+            // a link to a website, from the guide: the system's browser
+            "url" if arg.starts_with("https://") || arg.starts_with("http://") => {
+                ctx.open_url(egui::OpenUrl::new_tab(arg));
+                self.status = format!("Opened {arg} in your browser.");
+            }
+            "vpscale" => {
+                // the scale of the view placed in the selected viewport
+                let view =
+                    self.selection
+                        .active
+                        .and_then(|id| match &self.doc.model().get(id)?.kind {
+                            ElementKind::Viewport(vp) => Some(vp.view),
+                            _ => None,
+                        });
+                if let (Some(view), Ok(scale)) = (view, arg.parse::<f64>()) {
+                    self.set_view_scale(view, scale);
                 }
             }
             "pivot" => {
@@ -1367,6 +1462,76 @@ impl CreaBimApp {
         self.report(r, "View changed.");
     }
 
+    /// Draw `view` at 1:`scale`. Each sheet it is placed on keeps the
+    /// middle of it where it was, so the viewport grows or shrinks round
+    /// its centre. One undo step.
+    pub(super) fn set_view_scale(&mut self, view: ElementId, scale: f64) {
+        let Some(before) = self.doc.model().get(view).cloned() else {
+            return;
+        };
+        let ElementKind::View(v) = &before.kind else {
+            return;
+        };
+        let old = v.scale;
+        if (old - scale).abs() < 1e-9 || scale < 1.0 {
+            return;
+        }
+        let mid = self
+            .drawing(view)
+            .and_then(|d| d.bounds())
+            .map(|(lo, hi)| (lo + hi) / 2.0);
+        let mut after = before.clone();
+        if let ElementKind::View(v) = &mut after.kind {
+            v.scale = scale;
+        }
+        let mut tx = Transaction::new("View scale").replace(before, after);
+        for e in self.doc.model().iter() {
+            let ElementKind::Viewport(vp) = &e.kind else {
+                continue;
+            };
+            if vp.view != view {
+                continue;
+            }
+            let Some(m) = vp.crop.map(|[lo, hi]| (lo + hi) / 2.0).or(mid) else {
+                continue;
+            };
+            let mut moved = e.clone();
+            if let ElementKind::Viewport(p) = &mut moved.kind {
+                p.center = sheetview::rescaled_center(vp, m, old, scale).round();
+            }
+            tx = tx.replace(e.clone(), moved);
+        }
+        let r = self.doc.commit(tx);
+        self.report(
+            r,
+            format!("Drawn at 1:{scale:.0}, on its sheets too: each viewport grows or shrinks round its centre."),
+        );
+    }
+
+    /// The scales a placed view can be drawn at, for its right-click menu.
+    fn viewport_scale_items(&self, view: ElementId) -> Vec<Item> {
+        let now = self.view(view).map_or(0.0, |v| v.scale);
+        let mut items: Vec<Item> = sheetview::SCALES
+            .iter()
+            .map(|s| {
+                Item::new(format!("vpscale:{s:.0}"), format!("1:{s:.0}"))
+                    .checked((s - now).abs() < 1e-6)
+            })
+            .collect();
+        if !sheetview::SCALES.iter().any(|s| (s - now).abs() < 1e-6) {
+            items.push(Item::Separator);
+            items.push(
+                Item::new(
+                    "vpscale.custom",
+                    format!("1:{now:.0} (custom, set in Properties)"),
+                )
+                .checked(true)
+                .enabled(false),
+            );
+        }
+        items
+    }
+
     /// How the 3D view can draw, the one it uses ticked.
     fn render_items(&self) -> Vec<Item> {
         RenderMode::ALL
@@ -1566,7 +1731,31 @@ impl CreaBimApp {
                 .collect()));
         }
         options.extend(crate::memberstool::tool_options(&self.plan));
-        options.extend(crate::objecttool::tool_options(&self.plan));
+        if tool == Tool::Footing {
+            // like Revit's multiple selection: footings under all the walls
+            // and columns picked, in one step
+            let n = self.footing_hosts().len();
+            options.push(json!({
+                "kind": "button", "id": "footing.under", "wide": true,
+                "label": match n {
+                    0 => "Under selected".to_string(),
+                    n => format!("Under {n} selected"),
+                },
+                "icon": "footing",
+                "hint": "Put footings under the selected walls and columns that have none: a strip under each wall, a pad under each column, in one undo step. Select them first, or drag a box over them with this tool.",
+            }));
+        }
+        options.extend(
+            crate::objecttool::tool_options(&self.plan)
+                .into_iter()
+                .map(|mut o| {
+                    // the object placed is named, not drawn as an icon
+                    if o["id"] == "object:catalogue" {
+                        o["wide"] = json!(true);
+                    }
+                    o
+                }),
+        );
         if tool == Tool::Note {
             options.push(json!({
                 "kind": "toggle", "id": "note.leader", "label": "Leader",
@@ -1589,6 +1778,22 @@ impl CreaBimApp {
             "help": crate::help::tool_page(tool),
         });
         (head, options)
+    }
+
+    /// The quick help the ? by the tool's name opens: what the tool is and
+    /// how to use it, in a few lines, and its page in the guide.
+    fn tool_quick_help(&self) -> Value {
+        let tool = self.plan.tool;
+        let page = crate::help::tool_page(tool);
+        let mut lines = crate::help::quick(page);
+        // a page that opens with what it is: then how to use the tool
+        if lines.len() < 2 {
+            lines.push(tool.hint().to_string());
+        }
+        json!({
+            "title": format!("{} tool", tool.label()), "icon": tool_icon(tool),
+            "keys": "F1", "lines": lines, "page": page,
+        })
     }
 
     fn top_state(&self, ctx: &egui::Context) -> Value {
@@ -1636,7 +1841,68 @@ impl CreaBimApp {
                 })
             })
             .collect();
-        let (tool_head, tool_options) = self.tool_strip(ctx);
+        let (tool_head, tool_options, options, more) = self.option_strip(ctx);
+        json!({
+            "theme": self.theme(),
+            "popup": self.popup_key(),
+            "menus": (["File", "Edit", "View", "Create", "Materials", "Help"].map(|m| json!({"name": m, "key": format!("menu:{m}")}))),
+            "quick": quick,
+            "doc": {
+                "name": file_label(&self.path),
+                "path": self.path,
+                "note": match self.selection.len() {
+                    0 => String::new(),
+                    1 => "1 selected".into(),
+                    n => format!("{n} selected"),
+                },
+            },
+            "right": [{
+                "kind": "toggle", "id": "layout.toggle", "label": "",
+                "on": self.shell.settings.single_view,
+                "icon": if self.shell.settings.single_view { "square" } else { "columns-2" },
+                "hint": if self.shell.settings.single_view {
+                    "One view at a time: click to show the 3D view and the drawing side by side"
+                } else {
+                    "3D view and drawing side by side: click to show one view at a time"
+                },
+            }, {
+                "kind": "menu", "key": "views", "label": "", "value": self.active_view_label(),
+                "icon": "map", "big": true, "hint": "The view or sheet the 2D pane shows",
+            }],
+            "tools": tools,
+            "tool": tool_head,
+            "tool_options": tool_options,
+            "options": options,
+            "more": more,
+        })
+    }
+
+    /// The tool options strip: the tool's head and options, the view's
+    /// options, each keyed and marked compact or for the More menu as the
+    /// page last measured them, and how many are in More.
+    pub(super) fn option_strip(
+        &self,
+        ctx: &egui::Context,
+    ) -> (Value, Vec<Value>, Vec<Value>, usize) {
+        let (tool_head, mut tool_options) = self.tool_strip(ctx);
+        let mut options = self.view_options();
+        // lengths show and take the project's units; what is typed is read here
+        for o in tool_options.iter_mut().chain(options.iter_mut()) {
+            if o["kind"] == "number" && o["unit"] == "m" {
+                let v = o["value"].as_f64().unwrap_or(0.0);
+                o["text"] = json!(crate::units::len(v));
+                o["unit"] = json!("");
+            }
+        }
+        crate::optionbar::prepare(&mut tool_options, false);
+        crate::optionbar::prepare(&mut options, true);
+        let more =
+            crate::optionbar::place(&mut tool_options, &mut options, self.shell.bar.as_ref());
+        (tool_head, tool_options, options, more)
+    }
+
+    /// The active view's settings, at the right of the tool options strip.
+    fn view_options(&self) -> Vec<Value> {
         let mut options = vec![];
         if let Some((label, value, unit, _)) = self.view_number() {
             let (step, min, max) = if unit == "°" {
@@ -1673,7 +1939,7 @@ impl CreaBimApp {
                 if let Some(id) = self.active_view {
                     options.push(json!({
                         "kind": "toggle", "id": "view.xray", "label": "X-ray",
-                        "on": self.plan.xray.contains(&id), "icon": "xray",
+                        "on": self.plan.xray.contains(&id), "icon": "xray", "shortcut": "Alt+Z",
                         "hint": "X-ray this view while working (Alt+Z over it): walls, slabs and roofs see-through, what is inside them solid and clicked first",
                     }));
                 }
@@ -1706,52 +1972,13 @@ impl CreaBimApp {
                 .into_iter()
                 .filter(|o| o["key"] != "gridgroups" && o["kind"] != "sep"),
         );
-        // lengths show and take the project's units; what is typed is read here
-        for o in &mut options {
-            if o["kind"] == "number" && o["unit"] == "m" {
-                let v = o["value"].as_f64().unwrap_or(0.0);
-                o["text"] = json!(crate::units::len(v));
-                o["unit"] = json!("");
-            }
-        }
         if self.active_view.is_some_and(|id| self.is_sheet(id)) {
             options.push(json!({
                 "kind": "menu", "key": "placeview", "label": "", "value": "Place view…",
-                "icon": "frame", "hint": "Put a view on this sheet",
+                "icon": "frame", "hint": "Put a view on this sheet", "wide": true,
             }));
         }
-        json!({
-            "theme": self.theme(),
-            "popup": self.popup_key(),
-            "menus": (["File", "Edit", "View", "Create", "Materials", "Help"].map(|m| json!({"name": m, "key": format!("menu:{m}")}))),
-            "quick": quick,
-            "doc": {
-                "name": file_label(&self.path),
-                "path": self.path,
-                "note": match self.selection.len() {
-                    0 => String::new(),
-                    1 => "1 selected".into(),
-                    n => format!("{n} selected"),
-                },
-            },
-            "right": [{
-                "kind": "toggle", "id": "layout.toggle", "label": "",
-                "on": self.shell.settings.single_view,
-                "icon": if self.shell.settings.single_view { "square" } else { "columns-2" },
-                "hint": if self.shell.settings.single_view {
-                    "One view at a time: click to show the 3D view and the drawing side by side"
-                } else {
-                    "3D view and drawing side by side: click to show one view at a time"
-                },
-            }, {
-                "kind": "menu", "key": "views", "label": "", "value": self.active_view_label(),
-                "icon": "map", "big": true, "hint": "The view or sheet the 2D pane shows",
-            }],
-            "tools": tools,
-            "tool": tool_head,
-            "tool_options": tool_options,
-            "options": options,
-        })
+        options
     }
 
     fn left_state(&self) -> Value {
@@ -1761,7 +1988,13 @@ impl CreaBimApp {
                 "id": e.id.0.to_string(), "name": e.name, "icon": icon_name(Icon::of(e)),
                 "sel": self.selection.contains(e.id),
                 "active": opens && self.active_view == Some(e.id),
-                "hint": if opens { format!("{}: click to open", e.name) } else { e.name.clone() },
+                "hint": if opens {
+                    format!("{}: click to open", e.name)
+                } else if matches!(e.kind, ElementKind::ElementType(_)) {
+                    format!("{}: double-click to see it on its own, in 3D, plan and section", e.name)
+                } else {
+                    format!("{}: double-click to frame it in the 3D view", e.name)
+                },
             })
         };
         // views by kind, plans in their levels' order; drag a row to move it
@@ -1804,11 +2037,7 @@ impl CreaBimApp {
             if matches!(e.kind, ElementKind::Units(_) | ElementKind::View(_)) {
                 continue;
             }
-            // every kind of type in one group
-            let class = match e.kind {
-                ElementKind::ElementType(_) => "ElementType".to_string(),
-                _ => e.ifc_class().to_string(),
-            };
+            let class = class_of(e);
             match groups.iter_mut().find(|(c, _)| *c == class) {
                 Some((_, v)) => v.push(e),
                 None => groups.push((class, vec![e])),
@@ -1878,7 +2107,7 @@ impl CreaBimApp {
         let groups = out;
         json!({
             "theme": self.theme(),
-            "count": format!("{} elements", model.len()),
+            "count": format!("{} elements", self.element_count()),
             "groups": groups,
         })
     }
@@ -1910,7 +2139,7 @@ impl CreaBimApp {
                 {"kind": "menu", "key": "pivot", "label": "Pivot", "value": self.plan.pivot.label(), "icon": "crosshair",
                  "hint": "What rotate and scale turn about. Shift+right-click places the pivot cursor."},
                 {"kind": "sep"},
-                {"kind": "meta", "label": format!("{} elements", self.doc.model().len())},
+                {"kind": "meta", "label": format!("{} elements", self.element_count())},
             ],
         })
     }
@@ -2039,6 +2268,23 @@ impl CreaBimApp {
                 }
             }
             "close" => self.close_popup(),
+            "bar" => self.shell.bar = Some(crate::optionbar::Measure::from_json(b)),
+            // a double-click in the project browser: a type opens on its
+            // own, anything else in the model is framed in 3D
+            "open" => {
+                let want = b["id"].as_str().unwrap_or("");
+                let Some(e) = self.doc.model().iter().find(|e| e.id.0.to_string() == want) else {
+                    return;
+                };
+                match e.kind {
+                    ElementKind::ElementType(_) => self.open_type_preview(e.id),
+                    ElementKind::View(_) | ElementKind::Sheet(_) => {}
+                    _ => {
+                        self.selection.only(e.id);
+                        self.frame_selection();
+                    }
+                }
+            }
             "reorder" => {
                 let id = |k: &str| {
                     let s = b[k].as_str()?;
@@ -2313,6 +2559,17 @@ impl CreaBimApp {
                     r.right() - w - 8.0
                 };
                 egui::Rect::from_min_size(egui::pos2(x, r.top() + 8.0), egui::vec2(w, NAV_H))
+            })
+            // a web pane draws over everything egui draws, so the buttons
+            // step aside while a window (Types, Assemblies, materials, a
+            // type's preview) lies over them
+            .filter(|n| {
+                !ctx.memory(|m| {
+                    m.areas().visible_layer_ids().into_iter().any(|l| {
+                        l.order == egui::Order::Middle
+                            && m.area_rect(l.id).is_some_and(|a| a.intersects(*n))
+                    })
+                })
             });
         let states = [
             (Pane::Top, top, self.top_state(&ctx)),
@@ -2335,6 +2592,28 @@ impl CreaBimApp {
             at.y =
                 at.y.min(screen.bottom() - size.y - 4.0)
                     .max(screen.top() + 4.0);
+            let rect = egui::Rect::from_min_size(at, size);
+            match p.key.as_str() {
+                // the strip's controls that don't fit it
+                "more" => {
+                    let (head, tool, view, _) = self.option_strip(&ctx);
+                    let rows = crate::optionbar::more_rows(
+                        &tool,
+                        &view,
+                        head["label"].as_str().unwrap_or(""),
+                    );
+                    let empty = rows.is_empty();
+                    let state = json!({"theme": self.theme(), "key": p.key, "items": [], "controls": rows});
+                    return (rect, state, empty);
+                }
+                // a few lines on the tool in use
+                "toolhelp" => {
+                    let help = self.tool_quick_help();
+                    let state = json!({"theme": self.theme(), "key": p.key, "items": [], "help": help});
+                    return (rect, state, false);
+                }
+                _ => {}
+            }
             let items = self.menu_items(&p.key);
             // the Create menu lists every tool: its sections side by side
             let columns = match p.key.as_str() {
@@ -2342,7 +2621,7 @@ impl CreaBimApp {
                 _ => 1,
             };
             (
-                egui::Rect::from_min_size(at, size),
+                rect,
                 json!({"theme": self.theme(), "key": p.key, "items": ui_model::list(&items), "columns": columns}),
                 items.is_empty(),
             )
