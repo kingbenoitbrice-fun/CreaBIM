@@ -813,12 +813,20 @@ pub fn schedule_drawing(view: ElementId, title: &str, s: &Schedule) -> PlanView 
             );
         }
         if i > 0 {
-            line(
-                &mut items,
-                DVec2::new(x, -TITLE_ROW),
-                DVec2::new(x, bottom),
-                false,
-            );
+            // a group heading runs on across the empty cells after it, so
+            // the column lines break there
+            let spans = |row: &Row| row.group && row.cells[1..=i].iter().all(|c| c.is_empty());
+            let mut top = -TITLE_ROW;
+            for (r, row) in s.rows.iter().enumerate() {
+                if spans(row) {
+                    let y = -TITLE_ROW - (r as f64 + 1.0) * ROW;
+                    if y < top {
+                        line(&mut items, DVec2::new(x, top), DVec2::new(x, y), false);
+                    }
+                    top = y - ROW;
+                }
+            }
+            line(&mut items, DVec2::new(x, top), DVec2::new(x, bottom), false);
         }
         x += c.width;
     }
@@ -1038,6 +1046,31 @@ mod tests {
             .any(|r| r.group && r.cells[0] == "Double socket (8)"));
         assert_eq!(by.totals.len(), by.columns.len());
         assert!(to_csv(&s).starts_with("Mark,Type,Level,Mounting,IFC,Count"));
+    }
+
+    #[test]
+    fn a_group_heading_runs_on_across_the_empty_cells_after_it() {
+        let m = creabim_core::starter::starter_house();
+        let s = schedule(&m, ScheduleCategory::Rooms);
+        let r = s.rows.iter().position(|r| r.group).unwrap();
+        let d = schedule_drawing(ElementId::NIL, "Room Schedule", &s);
+        let x1 = s.columns[0].width;
+        let mid = -TITLE_ROW - (r as f64 + 1.5) * ROW;
+        let crosses = |x: f64| {
+            d.items.iter().any(|it| {
+                matches!(it, PlanItem::Line { a, b, .. }
+                if (a.x - x).abs() < 1e-9 && (b.x - x).abs() < 1e-9
+                    && a.y.max(b.y) > mid && a.y.min(b.y) < mid)
+            })
+        };
+        assert!(
+            !crosses(x1),
+            "the level heading is cut by the first column line"
+        );
+        // the area column's line still runs through it
+        let area = s.columns.iter().position(|c| c.title == "Area").unwrap();
+        let xa: f64 = s.columns[..area].iter().map(|c| c.width).sum();
+        assert!(crosses(xa));
     }
 
     #[test]
