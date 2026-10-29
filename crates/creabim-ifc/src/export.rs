@@ -1,5 +1,6 @@
 use crate::params::{
-    curtain_props, footing_props, type_props, Prop, CURTAIN_PSET, FOOTING_PSET, TYPE_PSET,
+    ceiling_props, curtain_props, footing_props, room_props, type_props, Prop, CEILING_PSET,
+    CURTAIN_PSET, FOOTING_PSET, ROOM_PSET, TYPE_PSET,
 };
 use crate::step::{list, point2, point3, real, string, Ref, StepWriter};
 use creabim_core::{Element, ElementId, ElementKind, Model, OpeningKind};
@@ -278,6 +279,8 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         |l: Option<ElementId>| l.and_then(|l| model.level(l)).map_or(0.0, |l| l.elevation);
     // the products of each element type
     let mut typed: HashMap<ElementId, Vec<Ref>> = HashMap::new();
+    // ceilings over rooms, to tie to their spaces
+    let mut ceilings: Vec<(ElementId, Ref)> = vec![];
     let mut of_type = |e: &Element, r: Ref| {
         if let Some(t) = &e.of_type {
             typed.entry(t.id).or_default().push(r);
@@ -524,6 +527,27 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
                     by_material.entry(m.id).or_default().push(r);
                 }
             }
+            ElementKind::Ceiling(ceiling) => {
+                let (Some(&(_, spl)), Some(outline)) =
+                    (storeys.get(&ceiling.level), ceiling.outline(model))
+                else {
+                    continue;
+                };
+                let pl = c.local_placement(Some(spl), DVec3::ZERO, None);
+                let solid = c.plan_extrusion(&outline, ceiling.height, ceiling.thickness);
+                let shape = c.shape("SweptSolid", &[solid]);
+                let r = product(&mut c, "IFCCOVERING", e, pl, shape, ",$,.CEILING.");
+                contained.entry(Some(ceiling.level)).or_default().push(r);
+                let room = ceiling.room.filter(|r| model.get(*r).is_some());
+                let props = ceiling_props(ceiling, room.map(|r| r.ifc_guid()));
+                c.pset_on(&[r], CEILING_PSET, &props);
+                if let Some((m, _)) = creabim_core::material_of(model, e) {
+                    by_material.entry(m.id).or_default().push(r);
+                }
+                if let Some(room) = room {
+                    ceilings.push((room, r));
+                }
+            }
             ElementKind::FreeMesh(f) => {
                 let spl = f
                     .level
@@ -755,6 +779,8 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
             c.w.add("IFCRELFILLSELEMENT", format!("{g},$,$,$,{opening},{cw_r}"));
         }
     }
+
+    spaces(&mut c, model, &storeys, &wall_refs, &ceilings);
 
     // Materials, each associated with the elements made of it. Unused ones
     // are written too, so the project's material library goes along.
@@ -1290,6 +1316,198 @@ fn opening_body(
         wall.thickness + 2.0 * eps,
     );
     (pl, c.shape("SweptSolid", &[solid]))
+}
+
+/// Rooms as IfcSpace: each its outline extruded from its floor to its
+/// top, numbered in Name and named in LongName, with its finishes,
+/// occupancy and quantities, bounded (IfcRelSpaceBoundary) by the walls
+/// round it and covered (IfcRelCoversSpaces) by its ceilings; room
+/// separators as the IfcVirtualElements that bound rooms where there is
+/// no wall. Spaces make up their storeys (IfcRelAggregates).
+fn spaces(
+    c: &mut Ctx,
+    model: &Model,
+    storeys: &HashMap<ElementId, (Ref, Ref)>,
+    wall_refs: &HashMap<ElementId, (Ref, Ref)>,
+    ceilings: &[(ElementId, Ref)],
+) {
+    let mut separators: HashMap<ElementId, Ref> = HashMap::new();
+    let mut contained: HashMap<ElementId, Vec<Ref>> = HashMap::new();
+    for e in model.iter() {
+        let ElementKind::RoomSeparator(s) = &e.kind else {
+            continue;
+        };
+        let Some(&(_, spl)) = storeys.get(&s.level) else {
+            continue;
+        };
+        let pl = c.local_placement(Some(spl), DVec3::ZERO, None);
+        let a = c.w.add("IFCCARTESIANPOINT", point2(s.a.x, s.a.y));
+        let b = c.w.add("IFCCARTESIANPOINT", point2(s.b.x, s.b.y));
+        let line = c.w.add("IFCPOLYLINE", list([a, b]));
+        let axis = c.w.add(
+            "IFCSHAPEREPRESENTATION",
+            format!("{},'Axis','Curve2D',({line})", c.axis),
+        );
+        let shape =
+            c.w.add("IFCPRODUCTDEFINITIONSHAPE", format!("$,$,({axis})"));
+        let r = product(c, "IFCVIRTUALELEMENT", e, pl, shape, ",$");
+        separators.insert(e.id, r);
+        contained.entry(s.level).or_default().push(r);
+    }
+    for (level, items) in contained {
+        if let Some(&(storey, _)) = storeys.get(&level) {
+            let g = c.guid();
+            c.w.add(
+                "IFCRELCONTAINEDINSPATIALSTRUCTURE",
+                format!("{g},$,$,$,{},{storey}", list(&items)),
+            );
+        }
+    }
+    // how many rooms each wall bounds: one is an outside wall
+    let shapes: Vec<(&Element, &creabim_core::Room, creabim_core::room::RoomShape)> = model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Room(r) => Some((e, r, creabim_core::room::shape_of(model, r)?)),
+            _ => None,
+        })
+        .collect();
+    let mut bounding: HashMap<ElementId, usize> = HashMap::new();
+    for (_, _, s) in &shapes {
+        let mut seen: Vec<ElementId> = s.bounded_by.iter().flatten().copied().collect();
+        seen.sort_by_key(|id| id.0);
+        seen.dedup();
+        for id in seen {
+            *bounding.entry(id).or_default() += 1;
+        }
+    }
+    let mut by_storey: HashMap<ElementId, Vec<Ref>> = HashMap::new();
+    for (e, r, s) in &shapes {
+        let Some(&(_, spl)) = storeys.get(&r.level) else {
+            continue;
+        };
+        let height = creabim_core::room::height(model, r);
+        let pl = c.local_placement(Some(spl), DVec3::ZERO, None);
+        let solid = c.plan_extrusion(&s.outline, 0.0, height);
+        let shape = c.shape("SweptSolid", &[solid]);
+        let number = if r.number.is_empty() {
+            e.name.clone()
+        } else {
+            r.number.clone()
+        };
+        let space = c.w.add(
+            "IFCSPACE",
+            format!(
+                "{},$,{},$,$,{pl},{shape},{},.ELEMENT.,.SPACE.,$",
+                string(&e.id.ifc_guid()),
+                string(&number),
+                string(&e.name)
+            ),
+        );
+        by_storey.entry(r.level).or_default().push(space);
+        let outdoor = [&r.occupancy, &r.department]
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case("outdoor"));
+        let area = creabim_core::room::net_area(model, r, s);
+        c.pset_on(
+            &[space],
+            "Pset_SpaceCommon",
+            &[
+                ("Reference", Prop::Label(number.clone())),
+                ("IsExternal", Prop::Bool(outdoor)),
+            ],
+        );
+        let finishes: Vec<(&'static str, Prop)> = [
+            ("FloorCovering", &r.floor_finish),
+            ("WallCovering", &r.wall_finish),
+            ("CeilingCovering", &r.ceiling_finish),
+        ]
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| (k, Prop::Label(v.clone())))
+        .collect();
+        if !finishes.is_empty() {
+            c.pset_on(&[space], "Pset_SpaceCoveringRequirements", &finishes);
+        }
+        if !r.occupancy.is_empty() {
+            c.pset_on(
+                &[space],
+                "Pset_SpaceOccupancyRequirements",
+                &[("OccupancyType", Prop::Label(r.occupancy.clone()))],
+            );
+        }
+        c.pset_on(&[space], ROOM_PSET, &room_props(r));
+        // its quantities, for take-off in other tools
+        let q = [
+            c.w.add(
+                "IFCQUANTITYAREA",
+                format!("'NetFloorArea',$,$,{},$", real(area)),
+            ),
+            c.w.add(
+                "IFCQUANTITYLENGTH",
+                format!("'GrossPerimeter',$,$,{},$", real(s.perimeter())),
+            ),
+            c.w.add(
+                "IFCQUANTITYLENGTH",
+                format!("'Height',$,$,{},$", real(height)),
+            ),
+        ];
+        let g = c.guid();
+        let quantities = c.w.add(
+            "IFCELEMENTQUANTITY",
+            format!("{g},$,'Qto_SpaceBaseQuantities',$,$,{}", list(q)),
+        );
+        let g = c.guid();
+        c.w.add(
+            "IFCRELDEFINESBYPROPERTIES",
+            format!("{g},$,$,$,({space}),{quantities}"),
+        );
+        // what bounds it, once each
+        let mut done: Vec<ElementId> = vec![];
+        for id in s.bounded_by.iter().flatten() {
+            if done.contains(id) {
+                continue;
+            }
+            done.push(*id);
+            let (element, physical) = match (wall_refs.get(id), separators.get(id)) {
+                (Some(&(w, _)), _) => (w, true),
+                (None, Some(&v)) => (v, false),
+                _ => continue,
+            };
+            let side = if !physical || bounding.get(id).copied().unwrap_or(0) > 1 {
+                ".INTERNAL."
+            } else {
+                ".EXTERNAL."
+            };
+            let kind = if physical { ".PHYSICAL." } else { ".VIRTUAL." };
+            let g = c.guid();
+            c.w.add(
+                "IFCRELSPACEBOUNDARY",
+                format!("{g},$,$,$,{space},{element},$,{kind},{side}"),
+            );
+        }
+        let covering: Vec<Ref> = ceilings
+            .iter()
+            .filter(|(room, _)| *room == e.id)
+            .map(|c| c.1)
+            .collect();
+        if !covering.is_empty() {
+            let g = c.guid();
+            c.w.add(
+                "IFCRELCOVERSSPACES",
+                format!("{g},$,$,$,{space},{}", list(&covering)),
+            );
+        }
+    }
+    let mut levels: Vec<ElementId> = by_storey.keys().copied().collect();
+    levels.sort_by_key(|l| storeys.get(l).map(|s| s.0 .0));
+    for level in levels {
+        let (storey, _) = storeys[&level];
+        let g = c.guid();
+        c.w.add(
+            "IFCRELAGGREGATES",
+            format!("{g},$,$,$,{storey},{}", list(&by_storey[&level])),
+        );
+    }
 }
 
 fn product(c: &mut Ctx, class: &str, e: &Element, pl: Ref, shape: Ref, tail: &str) -> Ref {

@@ -1435,6 +1435,7 @@ impl CreaBimApp {
                         | PlanItem::Tag { .. }
                         | PlanItem::Annotation { .. }
                         | PlanItem::Tint { .. }
+                        | PlanItem::Room { .. }
                         | PlanItem::Shade { .. }
                         | PlanItem::Image { .. } => {}
                     }
@@ -2762,7 +2763,7 @@ impl CreaBimApp {
                         );
                     }
                 }
-                Tool::Slab | Tool::Roof | Tool::Shaft => {
+                Tool::Slab | Tool::Roof | Tool::Shaft | Tool::Room | Tool::Ceiling => {
                     let (lo, hi) = (a.truncate().min(p), a.truncate().max(p));
                     let pts = [lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y), lo];
                     let scr: Vec<egui::Pos2> =
@@ -2826,7 +2827,7 @@ impl CreaBimApp {
             } else {
                 self.status = match (tool, self.pending_3d) {
                     (Tool::Wall, Some(_)) => format!("Drawing walls on {level_name}. Click the next corner; Esc or right-click ends."),
-                    (Tool::Slab | Tool::Roof | Tool::Shaft, _) => {
+                    (Tool::Slab | Tool::Roof | Tool::Shaft | Tool::Room | Tool::Ceiling | Tool::RoomSeparator, _) => {
                         self.plan.status.take().unwrap_or_default()
                     }
                     (Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing | Tool::Footing | Tool::Object, _) => self
@@ -4227,6 +4228,26 @@ impl CreaBimApp {
                     }
                     if matches!(
                         v.kind,
+                        ViewKind::Plan { .. } | ViewKind::Section { cut: true, .. }
+                    ) && ui
+                        .checkbox(&mut v.room_colours, "Colour rooms")
+                        .on_hover_text(
+                            "Fill each room with a colour of its own, the same in every view",
+                        )
+                        .changed()
+                    {
+                        label = "Colour rooms"
+                    }
+                    if matches!(v.kind, ViewKind::Plan { .. })
+                        && ui
+                            .checkbox(&mut v.ceiling_plan, "Reflected ceiling plan")
+                            .on_hover_text("Draw the ceilings and what hangs from them, not the floor and furniture")
+                            .changed()
+                    {
+                        label = "Ceiling plan"
+                    }
+                    if matches!(
+                        v.kind,
                         ViewKind::Section { .. } | ViewKind::Axonometric { .. }
                     ) && view_style_combo(ui, "view_style", &mut v.style)
                     {
@@ -4474,6 +4495,15 @@ impl CreaBimApp {
                     }
                     if ui.button("Select the tagged element").clicked() {
                         self.selection.only(t.host);
+                    }
+                    if matches!(
+                        self.doc.model().get(t.host).map(|e| &e.kind),
+                        Some(ElementKind::Room(_))
+                    ) {
+                        let l = crate::roomtool::tag_fields(ui, &mut t.fields);
+                        if !l.is_empty() {
+                            label = l;
+                        }
                     }
                     match crate::annotate::look_ui(ui, self.doc.model(), &mut t.style, &mut t.color)
                     {
@@ -4852,6 +4882,21 @@ impl CreaBimApp {
                             label = "Change boolean";
                         }
                     }
+                }
+                ElementKind::Room(r) => {
+                    label = crate::roomtool::room_fields(ui, self.doc.model(), r);
+                }
+                ElementKind::Ceiling(c) => {
+                    label = crate::roomtool::ceiling_fields(ui, self.doc.model(), c);
+                    if self.material_combo(ui, &mut c.material) {
+                        label = "Material";
+                    }
+                }
+                ElementKind::RoomSeparator(sep) => {
+                    ui.label(format!(
+                        "{} long. Rooms on either side of it are measured apart.",
+                        crate::units::len(sep.a.distance(sep.b))
+                    ));
                 }
                 ElementKind::Object(o) => {
                     let hung = creabim_core::objects::hung(self.doc.model(), &e);
@@ -5440,6 +5485,9 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Railing(_) => "railing",
         ElementKind::CropBox(_) => "crop box",
         ElementKind::Object(_) => "object",
+        ElementKind::Room(_) => "room",
+        ElementKind::RoomSeparator(_) => "room separator",
+        ElementKind::Ceiling(_) => "ceiling",
         ElementKind::ElementType(_) => "type",
         ElementKind::Shaft(_) => "shaft",
         ElementKind::Footing(_) => "footing",

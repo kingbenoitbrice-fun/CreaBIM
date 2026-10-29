@@ -63,6 +63,10 @@ CUSTOM={
  "footing": '<path d="M9 3v11M15 3v11" /> <rect x="3" y="14" width="18" height="6" /> <path d="M1 10h4M19 10h4" stroke-dasharray="2 1.5" />',
  "copy-levels": '<path d="M2 7h11M2 19h11" stroke-dasharray="3 2" /> <rect x="15" y="2" width="6" height="5" /> <rect x="15" y="14" width="6" height="5" stroke-dasharray="2 1.5" /> <path d="M18 8.5v4M16.5 11l1.5 1.5 1.5-1.5" />',
  "move-level": '<path d="M2 7h11M2 19h11" stroke-dasharray="3 2" /> <rect x="15" y="14" width="6" height="5" /> <path d="M18 2v10M15.5 9.5 18 12l2.5-2.5" />',
+ # rooms, room separators and ceilings
+ "room": '<path d="M3 3h18v18H3z" /> <path d="M3 13h6M14 3v6" stroke-dasharray="2 1.5" /> <path d="M10 15.5h7M10 18.5h4" />',
+ "room-separator": '<path d="M3 3h18v18H3z" /> <path d="M12 3v18" stroke-dasharray="3 2" /> <circle cx="12" cy="3" r="1.5" /> <circle cx="12" cy="21" r="1.5" />',
+ "ceiling": '<path d="M2 4h20" /> <path d="M3 8h18" /> <path d="M7 8v3M17 8v3" /> <path d="M9.5 15a2.5 2.5 0 0 0 5 0z" /> <path d="M12 8v7M4 20h16" stroke-dasharray="2 1.5" />',
 }
 out={}
 for n in names:

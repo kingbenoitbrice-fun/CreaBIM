@@ -817,8 +817,18 @@ pub fn furnished_house() -> Model {
                 (crate::objects::centred(&c.object, *at, *r), *r)
             }
             Some(r) => (*at, *r),
-            None => crate::objects::against_wall(doc.model(), *lvl, *at, 0.8)
-                .expect("a wall near the point"),
+            None => {
+                let spot = crate::objects::against_wall_clear(
+                    doc.model(),
+                    *lvl,
+                    *at,
+                    0.8,
+                    &c.object,
+                    c.object.offset,
+                )
+                .expect("a wall near the point");
+                (spot.at, spot.rotation)
+            }
         };
         let (tx, _) = crate::objects::place(doc.model(), &c, *lvl, p, r);
         doc.commit(tx).expect("starter objects are valid");

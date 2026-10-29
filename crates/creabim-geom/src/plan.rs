@@ -593,6 +593,14 @@ pub enum PlanItem {
         points: Vec<DVec2>,
         rgb: [f32; 3],
     },
+    /// A room's floor: washed in `rgb` when the view colours its rooms,
+    /// otherwise not drawn; picked by a click inside it that finds nothing
+    /// else.
+    Room {
+        id: ElementId,
+        points: Vec<DVec2>,
+        rgb: Option<[f32; 3]>,
+    },
     /// The footprint of something below the cut, filled flat in a light
     /// tint (sRGB, 0..1) under the linework, with no outline.
     Shade {
@@ -636,6 +644,7 @@ impl PlanItem {
             | PlanItem::Tag { id, .. }
             | PlanItem::Annotation { id, .. }
             | PlanItem::Tint { id, .. }
+            | PlanItem::Room { id, .. }
             | PlanItem::Shade { id, .. }
             | PlanItem::Image { id, .. } => *id,
         }
@@ -649,6 +658,7 @@ impl PlanItem {
             PlanItem::Polygon { points, .. }
             | PlanItem::Fill { points, .. }
             | PlanItem::Tint { points, .. }
+            | PlanItem::Room { points, .. }
             | PlanItem::Shade { points, .. } => pts.extend(points.iter().copied()),
             PlanItem::Line {
                 pen: Pen::Guide, ..
@@ -1139,7 +1149,11 @@ pub fn plan_view_with(
 
 /// The lines a category draws in projection given the pen its view's
 /// table names for it: furniture and fixtures in the fine pen.
-fn category_pens(model: &Model, items: &mut [PlanItem], graphics: &creabim_core::PlanGraphics) {
+pub(crate) fn category_pens(
+    model: &Model,
+    items: &mut [PlanItem],
+    graphics: &creabim_core::PlanGraphics,
+) {
     if graphics.category_pens.is_empty() {
         return;
     }

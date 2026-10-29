@@ -116,6 +116,11 @@ impl Element {
             ElementKind::Sketch(s) => s.level.into_iter().collect(),
             // a footing goes with the wall or column it is under
             ElementKind::Footing(f) => std::iter::once(f.level).chain(f.host).collect(),
+            ElementKind::Room(r) => vec![r.level],
+            ElementKind::RoomSeparator(s) => vec![s.level],
+            // a ceiling's room is soft: without it the ceiling has no
+            // outline to show until it is given one
+            ElementKind::Ceiling(c) => vec![c.level],
             ElementKind::Cut(c) => vec![c.target, c.cutter],
             ElementKind::Guide(g) => g.level.into_iter().collect(),
             ElementKind::Railing(r) => std::iter::once(r.level)
@@ -164,6 +169,9 @@ impl Element {
             ElementKind::Stair(_) => "IfcStair",
             ElementKind::Railing(_) => "IfcRailing",
             ElementKind::Footing(_) => "IfcFooting",
+            ElementKind::Room(_) => "IfcSpace",
+            ElementKind::RoomSeparator(_) => "IfcVirtualElement",
+            ElementKind::Ceiling(_) => "IfcCovering",
         }
     }
 
@@ -312,6 +320,9 @@ impl Element {
             ElementKind::Shaft(s) => s.validate(),
             ElementKind::Object(o) => o.validate(),
             ElementKind::Footing(f) => f.validate(),
+            ElementKind::Room(r) => r.validate(),
+            ElementKind::RoomSeparator(s) => s.validate(),
+            ElementKind::Ceiling(c) => c.validate(),
             ElementKind::Sketch(s) => s.check(),
             ElementKind::Cut(c) => {
                 if c.target == c.cutter {
@@ -379,6 +390,13 @@ pub enum ElementKind {
     Object(crate::objects::Object),
     /// A strip footing under a wall or a pad footing under a column.
     Footing(crate::footing::Footing),
+    /// A room (IfcSpace): the space the walls close off round a point, or
+    /// an outline drawn for it.
+    Room(crate::room::Room),
+    /// A line that closes rooms off where there is no wall.
+    RoomSeparator(crate::room::Separator),
+    /// A ceiling (IfcCovering CEILING) over a room or an outline.
+    Ceiling(crate::room::Ceiling),
 }
 
 impl ElementKind {
@@ -416,6 +434,9 @@ impl ElementKind {
             ElementKind::Shaft(_) => "Shaft",
             ElementKind::Object(_) => "Object",
             ElementKind::Footing(_) => "Footing",
+            ElementKind::Room(_) => "Room",
+            ElementKind::RoomSeparator(_) => "RoomSeparator",
+            ElementKind::Ceiling(_) => "Ceiling",
         }
     }
 }
@@ -677,6 +698,10 @@ pub struct Tag {
     pub style: Option<ElementId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[f32; 3]>,
+    /// For a room's tag, what it shows, in order; none shows the name,
+    /// number and area.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<crate::room::RoomField>,
 }
 
 impl Tag {
@@ -687,6 +712,7 @@ impl Tag {
             offset,
             style: None,
             color: None,
+            fields: Vec::new(),
         }
     }
 }
@@ -1254,6 +1280,15 @@ pub struct View {
     /// inside a wall or a slab.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden_in_colour: bool,
+    /// Wash each room in a colour of its own (by its department, else its
+    /// name): a colour-fill plan, or rooms shaded in a section.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub room_colours: bool,
+    /// A plan seen looking up from the cut (a reflected ceiling plan): the
+    /// ceilings over the level and what hangs from them, with walls cut but
+    /// without the furniture and floors below.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ceiling_plan: bool,
     /// A plan's line weights, below-cut fill and view depth.
     #[serde(
         default,
@@ -1344,10 +1379,12 @@ pub enum ScheduleCategory {
     /// lighting, plumbing, heating and ventilation), counted by type and
     /// level.
     Fixtures,
+    /// Rooms, with their areas totalled for each level.
+    Rooms,
 }
 
 impl ScheduleCategory {
-    pub const ALL: [ScheduleCategory; 7] = [
+    pub const ALL: [ScheduleCategory; 8] = [
         ScheduleCategory::Doors,
         ScheduleCategory::Windows,
         ScheduleCategory::Walls,
@@ -1355,6 +1392,7 @@ impl ScheduleCategory {
         ScheduleCategory::Structure,
         ScheduleCategory::Furniture,
         ScheduleCategory::Fixtures,
+        ScheduleCategory::Rooms,
     ];
 
     /// The name of a new schedule of it: "Door Schedule".
@@ -1367,6 +1405,7 @@ impl ScheduleCategory {
             ScheduleCategory::Structure => "Column and beam",
             ScheduleCategory::Furniture => "Furniture",
             ScheduleCategory::Fixtures => "Fixture",
+            ScheduleCategory::Rooms => "Room",
         };
         format!("{one} Schedule")
     }
@@ -1388,6 +1427,7 @@ impl ScheduleCategory {
             ScheduleCategory::Structure => "Columns and beams",
             ScheduleCategory::Furniture => "Furniture",
             ScheduleCategory::Fixtures => "Fixtures",
+            ScheduleCategory::Rooms => "Rooms",
         }
     }
 }
@@ -1434,6 +1474,8 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            room_colours: false,
+            ceiling_plan: false,
             graphics: Default::default(),
         }
     }
@@ -1453,6 +1495,8 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            room_colours: false,
+            ceiling_plan: false,
             graphics: Default::default(),
         }
     }
@@ -1469,6 +1513,8 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            room_colours: false,
+            ceiling_plan: false,
             graphics: Default::default(),
         }
     }
@@ -1486,6 +1532,8 @@ impl View {
             browser_order: None,
             show_hidden: false,
             hidden_in_colour: false,
+            room_colours: false,
+            ceiling_plan: false,
             graphics: Default::default(),
         }
     }

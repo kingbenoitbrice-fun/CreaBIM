@@ -44,9 +44,14 @@ usage: (<model> is a .creabim project or a legacy .creabim.json file)
   creabim sheet <model> <number> <out.svg>
                                        draw one sheet
   creabim pdf <model> <out.pdf>        export every sheet to one PDF
-  creabim schedule <model> <doors|windows|walls|slabs> [out.csv]
+  creabim schedule <model> <doors|windows|walls|slabs|rooms> [out.csv]
                                        print or save a schedule as CSV
   creabim stats <model>                count elements by IFC class
+  creabim check <model>                list objects standing in doorways or in
+                                       a door's swing; fails if there are any
+  creabim rooms-from-notes <model> <out>
+                                       turn room labels written as notes
+                                       (a name over an area) into rooms
   creabim glb <model> <out.glb>        export glTF for Blender, with element ids
   creabim fcstd <model> <out.FCStd>    export a FreeCAD document
   creabim link <model> <file.blend|file.FCStd> <out-model>
@@ -267,7 +272,7 @@ fn main() -> ExitCode {
                 .into_iter()
                 .find(|c| c.label().eq_ignore_ascii_case(category))
                 .ok_or_else(|| {
-                    format!("no schedule of {category:?}; try doors, windows, walls, slabs, furniture or fixtures")
+                    format!("no schedule of {category:?}; try doors, windows, walls, slabs, rooms, furniture or fixtures")
                 })?;
             let csv = creabim_geom::schedule::to_csv(&creabim_geom::schedule::schedule(&m, cat));
             match rest {
@@ -295,6 +300,22 @@ fn main() -> ExitCode {
                 println!("{class:28} {n}");
             }
         }),
+        ["check", input] => load(input).and_then(|m| {
+            let clashes = creabim_core::checks::objects_in_openings(&m);
+            for line in creabim_core::checks::report(&m, &clashes) {
+                println!("{line}");
+            }
+            match clashes.len() {
+                0 => {
+                    println!("no objects in doorways or door swings");
+                    Ok(())
+                }
+                n => Err(format!("{n} objects in the way of doors or windows")),
+            }
+        }),
+        ["rooms-from-notes", input, out] => creabim_store::load(input)
+            .map_err(|e| format!("{input}: {e}"))
+            .and_then(|mut doc| rooms_from_notes(&mut doc, out)),
         _ => Err(USAGE.to_string()),
     };
     match result {
@@ -360,6 +381,31 @@ fn save_import(r: ImportResult, out: &str) -> Result<(), String> {
         std::fs::write(out, r.model.to_json()).map_err(|e| e.to_string())
     } else {
         creabim_store::save(out, &Document::from_model(r.model)).map_err(|e| format!("{out}: {e}"))
+    }
+}
+
+/// Turn the room labels written as notes into rooms, and save the result.
+fn rooms_from_notes(doc: &mut Document, out: &str) -> Result<(), String> {
+    let (tx, skipped) = creabim_core::room::from_notes(doc.model());
+    let made = tx
+        .ops
+        .iter()
+        .filter(|o| {
+            matches!(o, creabim_core::Op::Insert(e)
+                if matches!(e.kind, creabim_core::ElementKind::Room(_)))
+        })
+        .count();
+    if made > 0 {
+        doc.commit(tx).map_err(|e| e.to_string())?;
+    }
+    println!("{made} rooms made from notes");
+    for name in skipped {
+        println!("  left as a note (no walls close it off, or a room is there): {name}");
+    }
+    if is_json(out) {
+        std::fs::write(out, doc.model().to_json()).map_err(|e| e.to_string())
+    } else {
+        creabim_store::save(out, doc).map_err(|e| format!("{out}: {e}"))
     }
 }
 

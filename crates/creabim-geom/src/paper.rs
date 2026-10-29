@@ -225,10 +225,16 @@ pub fn draw_with(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap, w:
                     canvas.line(&[to(a), to(b)], hatch_stroke);
                 }
             }
-            PlanItem::Tint { points, rgb, .. } => {
+            PlanItem::Tint { points, rgb, .. }
+            | PlanItem::Room {
+                points,
+                rgb: Some(rgb),
+                ..
+            } => {
                 let pts: Vec<DVec2> = points.iter().map(|p| to(*p)).collect();
                 canvas.tint(&pts, *rgb);
             }
+            PlanItem::Room { rgb: None, .. } => {}
             PlanItem::Shade { points, rgb, .. } => {
                 let pts: Vec<DVec2> = points.iter().map(|p| to(*p)).collect();
                 canvas.fill_rgb(&pts, *rgb);

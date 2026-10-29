@@ -9,8 +9,10 @@
 //! a curtain wall cutting its host wall, a stair with a landing, a shaft
 //! and a slab hole, columns (one of them running up two storeys), beams,
 //! railings, strip and pad footings, furniture and services fixtures from
-//! the catalogue, grids, rooms named with their areas, dimensions, tags,
-//! sections, elevations, schedules and a set of sheets with a title block.
+//! the catalogue, grids, rooms whose tags and schedule read their areas
+//! from the walls round them, ceilings that the upstairs partitions stop
+//! at, dimensions, tags, sections, elevations, schedules and a set of
+//! sheets with a title block.
 //!
 //! The house: a rendered two-storey main block 11 × 9.6 m (wall centres)
 //! under a slate gable roof, with a two-storey loggia cut out of its
@@ -151,6 +153,7 @@ pub fn starter_house() -> Model {
     openings(&mut b);
     footings(&mut b);
     furnish(&mut b);
+    rooms_and_ceilings(&mut b);
     let views = views(&mut b);
     annotate(&mut b, &views);
     sheets(&mut b, &views);
@@ -1074,21 +1077,23 @@ fn openings(b: &mut Builder) {
             true,
             true,
         ),
+        // hinged by the sofa, so the switches sit by its latch
         (
             "Hall door",
             "GF Spine",
             Door,
             "Internal door 800 × 2100",
             0.15,
-            false,
+            true,
             false,
         ),
+        // its leaf clears the utility's worktop when it opens
         (
             "Utility inner door",
             "GF Spine",
             Door,
             "Internal door 800 × 2100",
-            5.2,
+            5.05,
             true,
             true,
         ),
@@ -1330,8 +1335,8 @@ fn furnish(b: &mut Builder) {
     // placed against the nearest wall)
     let plan: &[(&str, ElementId, DVec2, Option<f64>)] = &[
         // living, at the west end of the garden room
-        ("sofa-3", g, v(6.0, 5.6), None),
-        ("coffee-table", g, v(6.0, 7.0), Some(0.0)),
+        ("sofa-3", g, v(6.4, 5.6), None),
+        ("coffee-table", g, v(6.4, 7.0), Some(0.0)),
         ("armchair", g, v(4.75, 7.3), Some(90.0)),
         // dining, by the garden screen
         ("dining-table", g, v(8.85, 7.6), Some(0.0)),
@@ -1350,7 +1355,6 @@ fn furnish(b: &mut Builder) {
         ("sink-unit-1000", g, v(15.3, 7.8), None),
         ("base-cabinet-600", g, v(15.3, 8.6), None),
         ("wall-cabinet-600", g, v(15.3, 5.8), None),
-        ("wall-cabinet-600", g, v(15.3, 6.4), None),
         ("base-cabinet-600", g, v(13.0, 6.6), Some(90.0)),
         ("base-cabinet-600", g, v(13.0, 7.2), Some(90.0)),
         ("base-cabinet-600", g, v(13.0, 7.8), Some(90.0)),
@@ -1365,18 +1369,18 @@ fn furnish(b: &mut Builder) {
         ("sink-unit-1000", g, v(10.75, 4.3), None),
         ("base-cabinet-600", g, v(10.75, 5.1), None),
         // bedroom 1 (north) and its en-suite
-        ("double-bed", f, v(6.0, 5.6), None),
-        ("bedside-table", f, v(4.9, 5.6), None),
-        ("bedside-table", f, v(7.1, 5.6), None),
+        ("double-bed", f, v(6.5, 5.6), None),
+        ("bedside-table", f, v(5.45, 5.6), None),
+        ("bedside-table", f, v(7.55, 5.6), None),
         ("wardrobe", f, v(7.85, 8.0), None),
         ("shower", f, v(10.3, 6.1), None),
         ("wc", f, v(8.2, 8.5), None),
-        ("washbasin", f, v(9.4, 9.4), None),
+        ("washbasin", f, v(8.9, 9.4), None),
         // bedroom 2 (south-west) and the bathroom
-        ("double-bed", f, v(2.0, 3.3), None),
-        ("bedside-table", f, v(0.95, 3.3), None),
-        ("bedside-table", f, v(3.05, 3.3), None),
-        ("wardrobe", f, v(0.3, 0.9), None),
+        ("double-bed", f, v(1.9, 3.3), None),
+        ("bedside-table", f, v(0.85, 3.3), None),
+        ("bedside-table", f, v(2.95, 3.3), None),
+        ("wardrobe", f, v(3.5, 0.25), None),
         ("bathtub", f, v(1.2, 5.4), None),
         ("wc", f, v(2.9, 3.5), None),
         ("washbasin", f, v(3.6, 5.4), None),
@@ -1385,23 +1389,23 @@ fn furnish(b: &mut Builder) {
         ("bedside-table", f, v(10.8, 3.6), None),
         ("desk", f, v(8.2, 5.4), None),
         ("chair", f, v(8.2, 4.55), Some(180.0)),
-        ("wardrobe", f, v(7.55, 2.0), None),
+        ("wardrobe", f, v(7.55, 2.05), None),
         // services: the board and boiler in the utility, switches by the
         // doors, sockets round the rooms, lights centred in them
         ("consumer-unit", g, v(9.2, 3.0), None),
-        ("boiler", g, v(10.0, 2.5), None),
+        ("boiler", g, v(7.5, 3.4), None),
         ("switch-2-gang", g, v(5.0, 0.25), None),
         ("switch-1-gang", g, v(4.25, 1.75), None),
-        ("switch-1-gang", g, v(4.4, 5.6), None),
-        ("switch-2-gang", g, v(5.4, 5.6), None),
+        ("switch-1-gang", g, v(4.27, 5.3), None),
+        ("switch-2-gang", g, v(4.27, 5.6), None),
         ("switch-1-gang", g, v(7.3, 1.75), None),
         ("switch-1-gang", g, v(10.4, 5.4), None),
         ("socket-double", g, v(0.25, 1.0), None),
         ("socket-double", g, v(3.0, 0.25), None),
-        ("socket-double", g, v(2.5, 5.35), None),
-        ("socket-double", g, v(7.0, 5.6), None),
-        ("socket-double", g, v(4.25, 8.8), None),
-        ("socket-double", g, v(10.8, 7.0), None),
+        ("socket-double", g, v(3.2, 5.35), None),
+        ("socket-double", g, v(7.8, 5.6), None),
+        ("socket-double", g, v(4.25, 5.8), None),
+        ("socket-double", g, v(10.75, 5.7), None),
         ("socket-double", g, v(15.3, 7.3), None),
         ("socket-double", g, v(15.3, 9.0), None),
         ("socket-double", g, v(12.0, 4.8), None),
@@ -1420,9 +1424,9 @@ fn furnish(b: &mut Builder) {
         ("smoke-detector", g, v(12.4, 7.2), Some(0.0)),
         ("radiator", g, v(2.0, 0.25), None),
         ("radiator", g, v(0.25, 2.8), None),
-        ("radiator", g, v(4.25, 6.7), None),
+        ("radiator", g, v(7.4, 9.35), None),
         ("radiator", g, v(12.3, 4.8), None),
-        ("radiator", g, v(5.0, 0.25), None),
+        ("radiator", g, v(4.25, 2.6), None),
         ("extract-fan", g, v(8.7, 0.25), None),
         ("extract-fan", g, v(15.3, 8.0), None),
         ("extract-fan", g, v(10.75, 2.6), None),
@@ -1430,19 +1434,19 @@ fn furnish(b: &mut Builder) {
         ("outside-tap", g, v(11.25, 3.8), None),
         ("switch-1-gang", f, v(4.25, 2.15), None),
         ("switch-1-gang", f, v(4.25, 4.85), None),
-        ("switch-1-gang", f, v(4.15, 5.6), None),
+        ("switch-1-gang", f, v(5.22, 5.6), None),
         ("switch-1-gang", f, v(7.5, 1.6), None),
         ("switch-1-gang", f, v(5.3, 5.4), None),
-        ("socket-double", f, v(4.8, 5.6), None),
+        ("socket-double", f, v(5.5, 5.6), None),
         ("socket-double", f, v(7.4, 5.6), None),
         ("socket-double", f, v(0.6, 3.25), None),
         ("socket-double", f, v(3.4, 3.25), None),
         ("socket-double", f, v(10.8, 3.2), None),
         ("socket-double", f, v(9.2, 5.35), None),
         ("socket-double", f, v(6.0, 0.25), None),
-        ("wall-light", f, v(4.9, 5.6), None),
-        ("wall-light", f, v(7.1, 5.6), None),
-        ("ceiling-light", f, v(6.0, 7.4), Some(0.0)),
+        ("wall-light", f, v(5.45, 5.6), None),
+        ("wall-light", f, v(7.55, 5.6), None),
+        ("ceiling-light", f, v(6.5, 7.4), Some(0.0)),
         ("ceiling-light", f, v(2.0, 1.0), Some(0.0)),
         ("ceiling-light", f, v(9.2, 2.7), Some(0.0)),
         ("ceiling-light", f, v(5.4, 1.0), Some(0.0)),
@@ -1469,11 +1473,136 @@ fn furnish(b: &mut Builder) {
                 (crate::objects::centred(&c.object, *at, *r), *r)
             }
             Some(r) => (crate::objects::centred(&c.object, *at, *r), *r),
-            None => crate::objects::against_wall(b.doc.model(), *lvl, *at, 0.8)
-                .unwrap_or_else(|| panic!("a wall near {key} at {at}")),
+            // against the nearest wall, clear of its doors and windows
+            None => {
+                let spot = crate::objects::against_wall_clear(
+                    b.doc.model(),
+                    *lvl,
+                    *at,
+                    0.8,
+                    &c.object,
+                    c.object.offset,
+                )
+                .unwrap_or_else(|| panic!("a wall near {key} at {at}"));
+                assert!(!spot.blocked, "{key} at {at} fits clear of the doors");
+                (spot.at, spot.rotation)
+            }
         };
         let (tx, _) = crate::objects::place(b.doc.model(), &c, *lvl, p, r);
         b.commit(tx);
+    }
+}
+
+/// The rooms, each found from the walls round its point (the loggia,
+/// terrace and balcony, which no wall closes off, drawn), and the
+/// ceilings: plasterboard over every room upstairs, which the partitions
+/// there stop at instead of running up into the roof, and a suspended
+/// tile ceiling over the ground floor's services rooms.
+fn rooms_and_ceilings(b: &mut Builder) {
+    let (g, f) = (b.id("Ground Floor"), b.id("First Floor"));
+    let loggia = polygon::rectangle(v(-H, 5.6 + H), v(4.0 - H, 9.6 + H));
+    // (level, number, name, its point, a drawn outline, occupancy, floor finish)
+    type Entry<'a> = (
+        ElementId,
+        &'a str,
+        &'a str,
+        DVec2,
+        Vec<DVec2>,
+        &'a str,
+        &'a str,
+    );
+    #[rustfmt::skip]
+    let list: Vec<Entry> = vec![
+        (g, "0.01", "Study", v(2.0, 3.5), vec![], "Study", "Oak boards"),
+        (g, "0.02", "Hall", v(5.0, 1.7), vec![], "Circulation", "Slate tiles"),
+        (g, "0.03", "WC", v(7.95, 0.75), vec![], "Sanitary", "Ceramic tiles"),
+        (g, "0.04", "Store", v(10.0, 1.2), vec![], "Storage", "Screed, sealed"),
+        (g, "0.05", "Utility", v(8.6, 4.4), vec![], "Utility", "Ceramic tiles"),
+        (g, "0.06", "Living / Dining", v(9.0, 6.3), vec![], "Living", "Oak boards"),
+        (g, "0.07", "Kitchen", v(13.4, 5.4), vec![], "Kitchen", "Slate tiles"),
+        (g, "0.08", "Loggia", v(1.9, 7.6), loggia.clone(), "Outdoor", "Slate paving"),
+        (
+            g,
+            "0.09",
+            "Terrace",
+            v(12.1, 10.75),
+            polygon::rectangle(v(11.0 + H, 9.6 + H), v(15.6 + H + 0.2, 11.4)),
+            "Outdoor",
+            "Slate paving",
+        ),
+        (f, "1.01", "Bedroom 2", v(3.35, 1.9), vec![], "Bedroom", "Carpet"),
+        (f, "1.02", "Bathroom", v(1.6, 3.95), vec![], "Sanitary", "Ceramic tiles"),
+        (f, "1.03", "Landing", v(5.3, 3.2), vec![], "Circulation", "Oak boards"),
+        (f, "1.04", "Bedroom 3", v(9.2, 1.5), vec![], "Bedroom", "Carpet"),
+        (f, "1.05", "Bedroom 1", v(6.5, 8.7), vec![], "Bedroom", "Carpet"),
+        (f, "1.06", "En-suite", v(9.4, 7.5), vec![], "Sanitary", "Ceramic tiles"),
+        (f, "1.07", "Balcony", v(1.9, 7.6), loggia, "Outdoor", "Timber decking"),
+    ];
+    let mut tx = Transaction::new("Starter house: rooms");
+    for (level, number, name, at, outline, occupancy, floor) in list {
+        let outdoor = occupancy == "Outdoor";
+        let mut r = Room::new(level, at);
+        r.number = number.into();
+        r.boundary = outline;
+        r.occupancy = occupancy.into();
+        r.floor_finish = floor.into();
+        if outdoor {
+            r.department = "Outdoor".into();
+            // open to the sky, or to the balcony over it
+            r.height = Some(if level == g { 2.7 } else { 2.4 });
+        } else {
+            r.wall_finish = if occupancy == "Sanitary" {
+                "Ceramic tiles to 1200".into()
+            } else {
+                "Plaster, painted".into()
+            };
+            r.ceiling_finish = "Plaster, painted".into();
+        }
+        let key = format!("Room {number}");
+        tx = b.keep(&key, Element::new(name, ElementKind::Room(r)), tx);
+    }
+    b.commit(tx);
+
+    let board = b.material("Plasterboard");
+    let mut tx = Transaction::new("Starter house: ceilings");
+    let mut upstairs = vec![];
+    for number in ["1.01", "1.02", "1.03", "1.04", "1.05", "1.06"] {
+        let room = b.id(&format!("Room {number}"));
+        let mut c = Ceiling::in_room(f, room, 2.5);
+        c.material = Some(board);
+        let e = Element::new("Plasterboard ceiling", ElementKind::Ceiling(c));
+        upstairs.push(e.id);
+        tx = tx.insert(e);
+    }
+    for number in ["0.03", "0.04", "0.05"] {
+        let room = b.id(&format!("Room {number}"));
+        let mut c = Ceiling::in_room(g, room, 2.4);
+        c.thickness = 0.02;
+        c.grid = 0.6;
+        c.material = Some(board);
+        tx = tx.insert(Element::new(
+            "Suspended tile ceiling",
+            ElementKind::Ceiling(c),
+        ));
+    }
+    b.commit(tx);
+
+    // the partitions upstairs stop at the ceilings
+    for key in [
+        "FF Landing West",
+        "FF Spine",
+        "FF Landing East",
+        "FF Bathroom North",
+        "FF En-suite West",
+    ] {
+        let id = b.id(key);
+        b.doc
+            .edit(id, "Starter house: partitions to the ceiling", |e| {
+                if let ElementKind::Wall(w) = &mut e.kind {
+                    w.attach_top = upstairs.clone();
+                }
+            })
+            .expect("the partitions take the ceilings");
     }
 }
 
@@ -1624,6 +1753,7 @@ fn views(b: &mut Builder) -> Views {
         ScheduleCategory::Structure,
         ScheduleCategory::Furniture,
         ScheduleCategory::Fixtures,
+        ScheduleCategory::Rooms,
     ] {
         let name = category.schedule_name();
         tx = add(b, tx, &name, View::schedule(category));
@@ -1648,7 +1778,7 @@ fn views(b: &mut Builder) -> Views {
     }
 }
 
-/// Rooms with their areas, tags, and dimensions.
+/// Room tags, notes, door and window tags, and dimensions.
 fn annotate(b: &mut Builder, views: &Views) {
     let mut tx = Transaction::new("Starter house: annotation styles");
     let room_style = TextStyle {
@@ -1665,96 +1795,22 @@ fn annotate(b: &mut Builder, views: &Views) {
     b.commit(tx);
     let room = Some(b.id("Room name"));
 
-    // Rooms: a name and the floor area inside the finishes, written in
-    // the middle of each. (name, plan, inner faces lower left, upper
-    // right, where the label goes when not in the middle)
-    let hw = 4.0 + H; // the hall's west face
-    let he = 7.4 - HB; // its east face
-    let sp = 5.6 - H; // the spine's south face
-    let spn = sp + BLOCK; // and its north face
-    let rect = |lo: DVec2, hi: DVec2| (hi.x - lo.x) * (hi.y - lo.y);
-    let ground_rooms: Vec<(&str, f64, DVec2)> = vec![
-        ("STUDY", rect(v(H, H), v(4.0 + H - BLOCK, sp)), v(2.0, 3.5)),
-        ("HALL", rect(v(hw, H), v(he, sp)), v(5.0, 1.7)),
-        (
-            "WC",
-            rect(v(7.4 + HB, H), v(9.0 - HB, 2.4 - HB)),
-            v(7.95, 0.75),
-        ),
-        (
-            "STORE",
-            rect(v(9.0 + HB, H), v(11.0 - H, 2.4 - HB)),
-            v(10.0, 1.2),
-        ),
-        (
-            "UTILITY",
-            rect(v(7.4 + HB, 2.4 + HB), v(11.0 - H, sp)),
-            v(8.6, 4.4),
-        ),
-        (
-            "LIVING / DINING",
-            rect(v(hw, spn), v(11.0 - H, 9.6 - H)),
-            v(9.0, 6.3),
-        ),
-        (
-            "KITCHEN",
-            rect(v(11.0 + H, 4.6 + H), v(15.6 - H, 9.6 - H)),
-            v(13.4, 5.4),
-        ),
-        (
-            "LOGGIA",
-            rect(v(-H, 5.6 + H), v(4.0 - H, 9.6 + H)),
-            v(1.9, 7.6),
-        ),
-        ("TERRACE", 4.8 * 1.4, v(12.1, 10.75)),
-    ];
-    let first_rooms: Vec<(&str, f64, DVec2)> = vec![
-        (
-            "BEDROOM 2",
-            rect(v(H, H), v(4.0 + H - BLOCK, 3.4 - 0.05)),
-            v(3.35, 1.9),
-        ),
-        (
-            "BATHROOM",
-            rect(v(H, 3.45), v(4.0 + H - BLOCK, sp)),
-            v(1.6, 3.95),
-        ),
-        (
-            "LANDING",
-            rect(v(hw, H), v(he, sp)) - 1.0 * 2.5 - 2.25,
-            v(5.3, 3.2),
-        ),
-        (
-            "BEDROOM 3",
-            rect(v(7.4 + HB, H), v(11.0 - H, sp)),
-            v(9.2, 1.5),
-        ),
-        (
-            "BEDROOM 1",
-            rect(v(hw, spn), v(8.0 - 0.05, 9.6 - H)),
-            v(6.5, 8.7),
-        ),
-        (
-            "EN-SUITE",
-            rect(v(8.05, spn), v(11.0 - H, 9.6 - H)),
-            v(9.4, 7.5),
-        ),
-        (
-            "BALCONY",
-            rect(v(-H, 5.6 + H), v(4.0 - H, 9.6 + H)),
-            v(1.9, 7.6),
-        ),
-    ];
-    let mut tx = Transaction::new("Starter house: rooms");
-    for (view, rooms) in [(views.ground, &ground_rooms), (views.first, &first_rooms)] {
-        for (name, area, at) in rooms {
-            let text = format!("{name}\n{area:.1} m²");
-            // the note starts at its point: centre it on the room
-            let w = name.len() as f64 * 0.045;
-            let mut n = Note::new(view, *at - DVec2::new(w, 0.0), text);
-            n.style = room;
-            tx = tx.insert(Element::new(format!("Room {name}"), ElementKind::Note(n)));
-        }
+    // Rooms: a tag in the middle of each, its name, number and the floor
+    // area inside the finishes, read live from the walls round it
+    let mut tx = Transaction::new("Starter house: room tags");
+    let model = b.doc.model().clone();
+    for e in model.iter() {
+        let ElementKind::Room(r) = &e.kind else {
+            continue;
+        };
+        let view = if r.level == b.id("First Floor") {
+            views.first
+        } else {
+            views.ground
+        };
+        let mut t = Tag::new(view, e.id, DVec2::ZERO);
+        t.style = room;
+        tx = tx.insert(Element::new("Room tag", ElementKind::Tag(t)));
     }
     b.commit(tx);
 
@@ -2068,6 +2124,12 @@ fn sheets(b: &mut Builder, views: &Views) {
             ],
         ),
         (
+            "A603",
+            "Room Schedule",
+            "A3",
+            vec![(sched[6], v(35.0, 270.0), DVec2::ZERO, None)],
+        ),
+        (
             "A901",
             "3D Views",
             "A2",
@@ -2128,7 +2190,7 @@ fn sheets(b: &mut Builder, views: &Views) {
             v(30.0, 84.0),
             "A000  Cover\nA101  Ground Floor Plan  1:50\nA102  First Floor Plan  1:50\n\
              A103  Foundation Plan  1:50\nA104  Roof Plan  1:100\nA201  Section A-A  1:50\nA202  Section B-B  1:50\n\
-             A301  Elevations  1:100\nA601  Door, Window and Structure Schedules\nA602  Furniture, Fixture and Wall Schedules\nA901  3D Views"
+             A301  Elevations  1:100\nA601  Door, Window and Structure Schedules\nA602  Furniture, Fixture and Wall Schedules\nA603  Room Schedule\nA901  3D Views"
                 .to_string(),
             None,
         ),
@@ -2288,6 +2350,87 @@ mod tests {
     }
 
     #[test]
+    fn the_starter_rooms_are_closed_off_by_their_walls() {
+        let m = starter_house();
+        let rooms: Vec<(&Element, &Room)> = m
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::Room(r) => Some((e, r)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rooms.len(), 16);
+        let area = |name: &str| {
+            let (e, _) = rooms.iter().find(|(e, _)| e.name == name).unwrap();
+            room::area(&m, e.id)
+        };
+        for (e, r) in &rooms {
+            let s = room::shape_of(&m, r).unwrap_or_else(|| panic!("{} is enclosed", e.name));
+            assert!(s.area() > 1.0, "{} has an area", e.name);
+            // the walls bound every room but the outdoor ones
+            assert_eq!(
+                r.is_drawn(),
+                r.occupancy == "Outdoor",
+                "{} is drawn only if no wall closes it off",
+                e.name
+            );
+            if !r.is_drawn() {
+                assert!(s.bounded_by.iter().all(|b| b.is_some()), "{}", e.name);
+            }
+        }
+        // to the inner faces of the walls: 3.937 × 5.0 for the study
+        assert!((area("Study") - (4.0 + H - BLOCK - H) * (5.6 - 2.0 * H)).abs() < 1e-6);
+        // the landing less the stair well
+        let landing = (7.4 - HB - 4.0 - H) * (5.6 - 2.0 * H);
+        assert!(area("Landing") < landing - 2.0);
+        // ceilings: over every room upstairs and the services rooms below,
+        // and the upstairs partitions stop at them
+        assert_eq!(
+            count(&m, |k| matches!(k, ElementKind::Ceiling(_))),
+            9,
+            "ceilings"
+        );
+        let spine = m.iter().find(|e| e.name == "FF Spine").unwrap();
+        let ElementKind::Wall(w) = &spine.kind else {
+            unreachable!()
+        };
+        let top = walls::top_profile(&m, w).expect("attached to the ceilings");
+        let z = top.z_at((w.start + w.end) / 2.0).unwrap();
+        assert!((z - (3.0 + 2.5)).abs() < 1e-9, "{z}");
+        // lights upstairs hang from the ceilings
+        let light = m
+            .iter()
+            .find(|e| {
+                matches!(&e.kind, ElementKind::Object(o) if o.level == b_id(&m, "First Floor"))
+                    && objects::hung(&m, e)
+            })
+            .unwrap();
+        let (_, hi) = objects::type_of(&m, light).unwrap().bounds();
+        let top = objects::base_z(&m, light).unwrap() + hi.z;
+        assert!((top - 5.5).abs() < 0.2, "{top}");
+    }
+
+    fn b_id(m: &Model, name: &str) -> ElementId {
+        m.iter().find(|e| e.name == name).unwrap().id
+    }
+
+    #[test]
+    fn nothing_in_the_starter_house_stands_in_a_doorway() {
+        let m = starter_house();
+        let clashes = checks::objects_in_openings(&m);
+        let named: Vec<(String, String)> = clashes
+            .iter()
+            .map(|c| {
+                (
+                    m.get(c.object).unwrap().name.clone(),
+                    m.get(c.opening).unwrap().name.clone(),
+                )
+            })
+            .collect();
+        assert!(named.is_empty(), "{named:?}");
+    }
+
+    #[test]
     fn every_starter_sheet_has_its_title_block_and_views() {
         let m = starter_house();
         let sheets: Vec<(ElementId, &Sheet)> = m
@@ -2299,7 +2442,8 @@ mod tests {
             .collect();
         let numbers: Vec<&str> = sheets.iter().map(|(_, s)| s.number.as_str()).collect();
         for n in [
-            "A000", "A101", "A102", "A103", "A104", "A201", "A202", "A301", "A601", "A602", "A901",
+            "A000", "A101", "A102", "A103", "A104", "A201", "A202", "A301", "A601", "A602", "A603",
+            "A901",
         ] {
             assert!(numbers.contains(&n), "no sheet {n}");
         }
