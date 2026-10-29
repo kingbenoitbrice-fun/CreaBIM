@@ -841,6 +841,8 @@ pub fn plan_view_with(
     let mut items = Vec::new();
     // tinted footprints, drawn under everything else
     let mut shades: Vec<PlanItem> = Vec::new();
+    // dashed over the cut fills: openings above the cut
+    let mut overhead: Vec<PlanItem> = Vec::new();
     let joins = creabim_core::wall_joins(model);
     let cuts = crate::scene::cuts(model);
     let cutters: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.1).collect();
@@ -934,6 +936,18 @@ pub fn plan_view_with(
                     if cut_v > c.v0 && cut_v < c.v1 {
                         gaps.push((c.u0, c.u1));
                         items.extend(opening_symbol(oid, o, w, &c, cut_v, &at));
+                    } else if c.v0 >= cut_v {
+                        // wholly above the cut (a duct hole, a high
+                        // window): its outline in the wall, dashed
+                        let corners = [at(c.u0, -t), at(c.u1, -t), at(c.u1, t), at(c.u0, t)];
+                        for i in 0..4 {
+                            overhead.push(PlanItem::Line {
+                                id: oid,
+                                pen: Pen::Hidden,
+                                a: corners[i],
+                                b: corners[(i + 1) % 4],
+                            });
+                        }
                     }
                 }
                 // a curtain wall set in it leaves its own gap, and draws itself
@@ -1102,6 +1116,7 @@ pub fn plan_view_with(
     items.retain(|it| !sliced.contains(&it.id()) || matches!(it, PlanItem::Label { .. }));
     layers.retain(|p| !sliced.contains(&p.id));
     clean_up_pieces(model, &mut items, layers);
+    items.append(&mut overhead);
     if !sliced.is_empty() {
         let z = model.level(level).map_or(0.0, |l| l.elevation) + cut_height;
         let scene = crate::scene::build_scene(model);
@@ -2219,5 +2234,69 @@ mod tests {
         let sheet = named(&m2, "Ground Floor Plan");
         let svg = crate::sheet::sheet_svg(&m2, sheet, &crate::sheet::SheetInfo::default()).unwrap();
         assert!(svg.contains("stroke-width=\"1.4\""));
+    }
+
+    #[test]
+    fn an_opening_above_the_cut_is_drawn_dashed_in_its_wall() {
+        use creabim_core::{Element, Level, Opening, Transaction, Wall};
+        let mut m = Model::new();
+        let l = Element::new(
+            "Ground",
+            ElementKind::Level(Level {
+                elevation: 0.0,
+                height: 3.0,
+            }),
+        );
+        let level = l.id;
+        let w = Element::new(
+            "W",
+            ElementKind::Wall(Wall::new(
+                level,
+                DVec2::ZERO,
+                DVec2::new(4.0, 0.0),
+                0.2,
+                3.0,
+            )),
+        );
+        let wall = w.id;
+        let duct = Element::new(
+            "Duct",
+            ElementKind::Opening(Opening {
+                host: wall,
+                kind: OpeningKind::Hole,
+                offset: 1.0,
+                sill: 2.2,
+                width: 0.4,
+                height: 0.3,
+                material: None,
+                frame: Default::default(),
+                flip_hand: false,
+                flip_facing: false,
+            }),
+        );
+        let hole = duct.id;
+        Transaction::new("t")
+            .insert(l)
+            .insert(w)
+            .insert(duct)
+            .apply(&mut m)
+            .unwrap();
+        let items = plan_view(&m, level, 1.2).items;
+        let dashed: Vec<&PlanItem> = items
+            .iter()
+            .filter(|it| matches!(it, PlanItem::Line { id, pen: Pen::Hidden, .. } if *id == hole))
+            .collect();
+        assert_eq!(dashed.len(), 4);
+        // drawn over the wall's fill, so it shows
+        let fill = items
+            .iter()
+            .position(|it| matches!(it, PlanItem::Fill { id, .. } if *id == wall))
+            .unwrap();
+        let first = items.iter().position(|it| it.id() == hole).unwrap();
+        assert!(first > fill);
+        // the wall stays whole at the cut
+        assert!(!items
+            .iter()
+            .any(|it| matches!(it, PlanItem::Line { id, pen: Pen::Symbol, .. } if *id == hole)));
     }
 }
