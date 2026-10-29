@@ -4,7 +4,7 @@ In CreaBIM a **view** is a way of looking at the model, kept in the project: a f
 
 ## Kinds of views
 
-- **Floor plans**: the building cut at a height above a level (the *Cut height*, usually about 1.2 m) and seen from above. Cut walls are drawn heavy and hatched; doors show their swing.
+- **Floor plans**: the building cut at a height above a level (the *Cut height*, usually about 1.2 m) and seen from above. Cut walls are drawn heavy and hatched; doors show their swing. See [How plans are drawn](views#how-plans-are-drawn).
 - **Sections** and **elevations**: see [Sections and elevations](sections).
 - **3D views**: saved, parallel 3D views, such as *3D View South-East*, to place on sheets. Set the angle with *Altitude*, and pick a *Style*.
 - **Schedules**: tables of elements. See [Schedules](schedules).
@@ -29,6 +29,26 @@ The right of the tool options strip shows the open view's settings:
 - *Visibility*: what this view leaves out.
 
 With nothing selected, *Properties* shows the same and more, such as the view's scale.
+
+## How plans are drawn
+
+Plans follow the usual conventions of permit drawings:
+
+- **Line weights** step down from heavy to light: cut walls, columns and footings are heaviest, then what is seen below the cut (slab edges, the stair), then symbols (door leaves and swings, window frames), then furniture and fixtures, then hatching. Lines overhead (beams, wall cupboards) are light and dashed. The weights suit the view's scale: heavier at 1:50, lighter at 1:100.
+- **Below the cut**, furniture, fittings and imported meshes get a light tint of their material's colour under their lines.
+- **Joins**: cut walls and footings of the same material that touch or overlap merge into one outline, with no lines inside.
+- **Stairs**: on its own level, a stair is drawn up to a break line where the plan cuts it. On the level above, the stair is seen through its well, with *DN*. A void's cross runs corner to corner in each part of the opening, so an L-shaped well gets a cross in each leg. On the stair's own level the well above is a dashed outline.
+- **Roof plans** show an arrow down each sloping face with its pitch (*35°*, or *1:60* for shallow slopes).
+- **Labels**: room names, notes, tags and plain labels are moved off grid lines, section lines, walls and each other to the nearest clear spot. A label moved far gets a leader back to where it was. Grid and section bubbles and dimension text stay where they are. On the command line, `creabim label-clashes <model>` lists any labels that still overlap.
+
+### Plan graphics
+
+A plan's *Properties* has a *Graphics* group:
+
+- *Tint what lies below the cut*, its *Strength*, and *In grey, not material colours*.
+- *View depth*: how far below its floor the plan looks through holes in the floor, such as a stair well. Between the floor and the cut is *below* the cut, drawn in projection. Under the floor, down to the view depth, is *beyond*. By default the plan looks down to the level below.
+- *Pens by category*: the pen each category's lines take, for example furniture in the fine pen. *As drawn* keeps the category's usual pens.
+- *Line weights from the scale*: untick it to set each pen's width in millimetres on paper (cut, projection, symbols, furniture and fixtures, hatching, hidden). Sheets, PDF and SVG use the same weights.
 
 ## Ordering the browser
 

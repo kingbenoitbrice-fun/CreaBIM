@@ -24,3 +24,7 @@ A wall's layers start at its exterior side; [flip](walls#inside-and-outside-flip
 ## Joins
 
 Layered walls join layer by layer: L corners are mitred, and in a T the core runs on to the other wall's core.
+
+## Doors and windows in layered walls
+
+In 3D, the reveals round a door or window in a layered wall are lined with the wall's finishes: the outer finish on the outside part of the reveal, the inner finish on the inside part. So the insulation and membranes don't show where the opening cuts through them. The linings are only for the 3D view; drawings and exports show the layers as they are.

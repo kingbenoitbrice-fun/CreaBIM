@@ -30,25 +30,47 @@ pub struct ObjectSettings {
     pub free: bool,
 }
 
+/// How an object went against a wall.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Walled {
+    /// It went against one.
+    pub on: bool,
+    /// How far it slid along it to keep clear of a door or window.
+    pub slid: f64,
+    /// It fits nowhere on that wall clear of its doors and windows.
+    pub blocked: bool,
+}
+
 /// Where and how turned `c` goes for a pointer at `p` on `level`, and
-/// whether it went against a wall.
+/// how it went against a wall: clear of the wall's doors and windows.
 pub fn placement(
     model: &Model,
     level: ElementId,
     p: DVec2,
     c: &CatalogueObject,
     set: &ObjectSettings,
-) -> (DVec2, f64, bool) {
+) -> (DVec2, f64, Walled) {
     if c.object.mount == Mount::Wall && !set.free {
-        if let Some((at, rotation)) = objects::against_wall(model, level, p, WALL_REACH) {
-            return (at, rotation, true);
+        if let Some(s) =
+            objects::against_wall_clear(model, level, p, WALL_REACH, &c.object, c.object.offset)
+        {
+            let walled = Walled {
+                on: true,
+                slid: s.slid,
+                blocked: s.blocked,
+            };
+            return (s.at, s.rotation, walled);
         }
     }
     let rotation = set.rotation.rem_euclid(360.0);
     if c.object.mount == Mount::Ceiling {
-        return (objects::centred(&c.object, p, rotation), rotation, false);
+        return (
+            objects::centred(&c.object, p, rotation),
+            rotation,
+            Walled::default(),
+        );
     }
-    (p, rotation, false)
+    (p, rotation, Walled::default())
 }
 
 /// A click with the Object tool.
@@ -87,7 +109,18 @@ pub fn click(
     };
     doc.commit(tx)?;
     selection.only(id);
-    state.status = Some(if walled {
+    state.status = Some(if walled.blocked {
+        format!(
+            "Placed {} against the wall, but it is in the way of a door or window there and no stretch of that wall is clear. Click for another; Esc ends.",
+            c.name
+        )
+    } else if walled.slid > 1e-3 {
+        format!(
+            "Placed {} against the wall, slid {} along it to keep clear of a door or window. Click for another; Esc ends.",
+            c.name,
+            crate::units::len(walled.slid)
+        )
+    } else if walled.on {
         format!(
             "Placed {} against the wall. Click for another; Esc ends.",
             c.name
@@ -165,7 +198,11 @@ pub fn preview(
         painter.text(
             s + egui::Vec2::new(10.0, -10.0),
             egui::Align2::LEFT_BOTTOM,
-            if walled {
+            if walled.blocked {
+                format!("{} · in the way of a door or window", c.name)
+            } else if walled.slid > 1e-3 {
+                format!("{} · against the wall, clear of the opening", c.name)
+            } else if walled.on {
                 format!("{} · against the wall", c.name)
             } else {
                 format!("{} · {:.0}°", c.name, rotation)
@@ -236,6 +273,52 @@ mod tests {
             .min_by(|a, b| a.1.elevation.total_cmp(&b.1.elevation))
             .unwrap()
             .0
+            .id
+    }
+
+    #[test]
+    fn an_object_put_in_a_doorway_slides_clear_of_it() {
+        let mut doc = Document::from_model(sample_house());
+        let model = doc.model();
+        let (door, wall) = model
+            .iter()
+            .find_map(|e| match &e.kind {
+                ElementKind::Opening(o) if o.kind == creabim_core::OpeningKind::Door => {
+                    match &model.get(o.host)?.kind {
+                        ElementKind::Wall(w) => Some((o.clone(), w.clone())),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .unwrap();
+        let level = wall.level;
+        let u = door.offset + door.width / 2.0;
+        let mut st = PlanState::default();
+        let mut sel = Selection::default();
+        st.objects.current = creabim_core::catalogue::starter("starter/wc");
+        // just inside the doorway, on either side of the wall
+        for side in [1.0, -1.0] {
+            let p = wall.start
+                + wall.direction() * u
+                + wall.direction().perp() * side * (wall.thickness / 2.0 + 0.2);
+            click(&mut doc, level, p, &mut st, &mut sel).unwrap();
+            let msg = st.status.clone().unwrap_or_default();
+            assert!(msg.contains("slid") || msg.contains("in the way"), "{msg}");
+        }
+        let clashes = creabim_core::checks::objects_in_openings(doc.model());
+        assert!(
+            clashes
+                .iter()
+                .all(|c| c.opening != door_id(doc.model(), &door)),
+            "{clashes:?}"
+        );
+    }
+
+    fn door_id(m: &Model, o: &creabim_core::Opening) -> ElementId {
+        m.iter()
+            .find(|e| matches!(&e.kind, ElementKind::Opening(x) if x == o))
+            .unwrap()
             .id
     }
 

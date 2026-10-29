@@ -291,10 +291,51 @@ pub fn undersides(model: &Model, ids: &[ElementId]) -> Vec<TopFace> {
                     c: s.top(elevation) - s.thickness,
                 });
             }
+            // a ceiling stops at the walls' faces: it holds up the
+            // partitions under its edges too, so it reaches over them
+            Some(ElementKind::Ceiling(c)) => {
+                if let Some(outline) = c.outline(model) {
+                    out.push(TopFace {
+                        outline: grown(&outline, CEILING_REACH),
+                        g: DVec2::ZERO,
+                        c: c.span(model).0,
+                    });
+                }
+            }
             _ => {}
         }
     }
     out
+}
+
+/// How far past its outline a ceiling holds up the walls under it: over
+/// half the thickest partition, whose face its edge stops at.
+pub const CEILING_REACH: f64 = 0.15;
+
+/// `poly` (counter-clockwise) with every edge pushed out by `d`, corners
+/// mitred.
+pub fn grown(poly: &[DVec2], d: f64) -> Vec<DVec2> {
+    let n = poly.len();
+    if n < 3 {
+        return poly.to_vec();
+    }
+    let ccw = crate::polygon::signed_area2(poly) >= 0.0;
+    let s = if ccw { d } else { -d };
+    (0..n)
+        .map(|i| {
+            let (a, b, c) = (poly[(i + n - 1) % n], poly[i], poly[(i + 1) % n]);
+            // outward normals of the edges either side (right of a ccw edge)
+            let n1 = -(b - a).normalize_or_zero().perp();
+            let n2 = -(c - b).normalize_or_zero().perp();
+            let m = n1 + n2;
+            let k = 1.0 + n1.dot(n2);
+            if k < 1e-6 {
+                b + n1 * s
+            } else {
+                b + m * (s / k)
+            }
+        })
+        .collect()
 }
 
 /// What a wall's top follows, when it is attached to something that is
@@ -307,7 +348,7 @@ pub fn top_profile(model: &Model, wall: &Wall) -> Option<TopProfile> {
     (!faces.is_empty()).then_some(TopProfile { faces })
 }
 
-/// The roofs and slabs a wall's top would attach to: the lowest ones
+/// The roofs, slabs and ceilings a wall's top would attach to: the lowest ones
 /// overhead (their underside above the wall's base) over some of it.
 pub fn attach_candidates(model: &Model, wall_id: ElementId) -> Vec<ElementId> {
     let Some(ElementKind::Wall(w)) = model.get(wall_id).map(|e| &e.kind) else {
@@ -319,7 +360,10 @@ pub fn attach_candidates(model: &Model, wall_id: ElementId) -> Vec<ElementId> {
         .collect();
     let mut found: Vec<(ElementId, f64)> = vec![];
     for e in model.iter() {
-        if !matches!(e.kind, ElementKind::Roof(_) | ElementKind::Slab(_)) {
+        if !matches!(
+            e.kind,
+            ElementKind::Roof(_) | ElementKind::Slab(_) | ElementKind::Ceiling(_)
+        ) {
             continue;
         }
         let faces = undersides(model, &[e.id]);

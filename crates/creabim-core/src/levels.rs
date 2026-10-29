@@ -61,6 +61,9 @@ pub fn level_of(kind: &ElementKind) -> Option<ElementId> {
         ElementKind::Sketch(s) => s.level,
         ElementKind::Guide(g) => g.level,
         ElementKind::Object(o) => Some(o.level),
+        ElementKind::Room(r) => Some(r.level),
+        ElementKind::RoomSeparator(s) => Some(s.level),
+        ElementKind::Ceiling(c) => Some(c.level),
         ElementKind::View(View {
             kind: ViewKind::Plan { level, .. },
             ..
@@ -118,6 +121,13 @@ pub fn rehost(e: &Element, to: ElementId, from_elevation: f64, to_elevation: f64
         ElementKind::Object(o) => {
             o.level = to;
             o.offset += dz;
+        }
+        // a room stays in plan; a ceiling stays at its height
+        ElementKind::Room(r) => r.level = to,
+        ElementKind::RoomSeparator(s) => s.level = to,
+        ElementKind::Ceiling(c) => {
+            c.level = to;
+            c.height += dz;
         }
         // one under a wall or a column sits below its host's base, which moves itself
         ElementKind::Footing(f) => {

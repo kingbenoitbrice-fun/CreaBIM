@@ -15,16 +15,18 @@ CreaBIM opens on the **Maple Lane House**, a two-storey family house with a sing
 - **Structure**: a steel column at the loggia corner that rises through both floors, two terrace posts, and steel beams under the balcony and along the eaves. See [Columns and beams](columns-beams).
 - **Footings**: concrete strips under the walls and pads under the columns. See [Footings](footings).
 - **Furniture and fixtures** from the catalogue in every room: kitchen units, sofas, beds, a bath and WCs, sockets, switches, lights, radiators and a boiler. See [Furniture and fixtures](furniture) and [Electrical, plumbing and HVAC fixtures](fixtures).
+- **Rooms**: sixteen of them, from 0.01 Study to 1.07 Balcony, with their finishes and occupancy. Their areas follow the walls. The loggia, terrace and balcony have drawn outlines. See [Rooms](rooms).
+- **Ceilings**: plasterboard over the first-floor rooms, which the partitions stop at, and a suspended tile ceiling over the WC, store and utility room. See [Ceilings](ceilings).
 
 ## The drawings
 
 The project browser lists the views. Each one is made from the model, so it updates as soon as you change something.
 
-- **Plans** of the ground floor, the first floor, the foundation and the roof. They show room names with their floor areas, tags on every door and window, and chains of dimensions. See [Dimensions](dimensions) and [Tags](tags).
+- **Plans** of the ground floor, the first floor, the foundation and the roof. They show room tags with each room's name, number and area, tags on every door and window, and chains of dimensions. See [Dimensions](dimensions) and [Tags](tags).
 - **Sections** A-A through the stair and B-B through the loggia and the wing. See [Sections and elevations](sections).
 - **Elevations** of all four sides, shaded.
 - **3D views** from the street and from the garden.
-- **Schedules** of doors, windows, walls, structure, furniture and fixtures. See [Schedules](schedules).
+- **Schedules** of doors, windows, walls, structure, furniture, fixtures and rooms. See [Schedules](schedules).
 
 ## The sheets
 
@@ -35,7 +37,7 @@ The *Sheets* group holds a set of drawings like one sent for planning permission
 - A103 Foundation Plan, 1:50, and A104 Roof Plan, 1:100
 - A201 Section A-A and A202 Section B-B, 1:50
 - A301 Elevations, 1:100
-- A601 and A602 Schedules
+- A601 and A602 Schedules, and A603 Room Schedule
 - A901 3D Views
 
 ## Things to try
@@ -46,6 +48,6 @@ The *Sheets* group holds a set of drawings like one sent for planning permission
 - Right-click a roof in the 3D view and pick *Hide category in view* to look inside. See [Visibility and X-ray](visibility).
 - Export the house with *File › IFC4 (.ifc)* and open it in another program. See [IFC](ifc).
 
-> **Tip:** The room names and areas are notes written in the plans. If you move a wall, update the area in the note by hand.
+> **Tip:** The room tags read from the rooms, so when you move a wall the area in the tag and in the room schedule changes with it. *Create › Check doorways* lists any furniture or fixture standing in a doorway or a door's swing; the starter house has none.
 
 **Next:** [Getting started: a first house](start)

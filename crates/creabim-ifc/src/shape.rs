@@ -14,20 +14,34 @@ use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 
 /// Warnings, grouped by message so a file with 10 000 unsupported items
-/// reports one line, not 10 000.
+/// reports one line, not 10 000; those about one element also go in a
+/// detailed list naming it, so each can be found and fixed.
 #[derive(Debug, Default)]
-pub(crate) struct Warnings(IndexMap<String, usize>);
+pub(crate) struct Warnings {
+    groups: IndexMap<String, usize>,
+    details: Vec<String>,
+}
 
 impl Warnings {
     pub fn add(&mut self, msg: impl Into<String>) {
-        *self.0.entry(msg.into()).or_insert(0) += 1;
+        *self.groups.entry(msg.into()).or_insert(0) += 1;
     }
 
-    pub fn into_vec(self) -> Vec<String> {
-        self.0
+    /// A note about one element: counted under `group`, and listed with
+    /// `detail`, which names the element and says why.
+    pub fn element(&mut self, group: impl Into<String>, detail: impl Into<String>) {
+        self.add(group);
+        self.details.push(detail.into());
+    }
+
+    /// The grouped summary, then the detailed list.
+    pub fn into_parts(self) -> (Vec<String>, Vec<String>) {
+        let summary = self
+            .groups
             .into_iter()
             .map(|(m, n)| if n > 1 { format!("{m} (×{n})") } else { m })
-            .collect()
+            .collect();
+        (summary, self.details)
     }
 }
 

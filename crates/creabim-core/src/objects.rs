@@ -694,9 +694,10 @@ pub fn hung(model: &Model, e: &Element) -> bool {
 }
 
 /// The height of the ceiling over `p` on `level`: the underside of the
-/// lowest slab or roof above head height on the level that covers `p` and
-/// is no higher than the level's top, else the level's top (its elevation
-/// and floor-to-floor height).
+/// lowest ceiling of the level over `p`, else of the lowest slab above
+/// head height on the level that covers `p` and is no higher than the
+/// level's top, else the level's top (its elevation and floor-to-floor
+/// height).
 pub fn ceiling_at(model: &Model, level: ElementId, p: DVec2) -> f64 {
     let Some(l) = model.level(level) else {
         return 0.0;
@@ -719,7 +720,11 @@ pub fn ceiling_at(model: &Model, level: ElementId, p: DVec2) -> f64 {
             best = under;
         }
     }
-    best
+    // a ceiling hung under the slab or roof wins
+    match crate::room::ceiling_over(model, level, p, best) {
+        Some((_, z)) if z > l.elevation + 1.0 => z,
+        _ => best,
+    }
 }
 
 /// Where the own floor (`z = 0`) of an object of type `t` stands in the
@@ -1031,9 +1036,84 @@ pub fn centred(t: &ObjectType, middle: DVec2, rotation: f64) -> DVec2 {
 
 /// Where an object goes against a wall near `p` on `level`: the point on
 /// the nearer face of the nearest wall within `reach`, and the turn that
-/// puts its back to that face. None when no wall is that near.
+/// puts its back to that face. None when no wall is that near. It takes
+/// no account of doors and windows; [`against_wall_clear`] does.
 pub fn against_wall(model: &Model, level: ElementId, p: DVec2, reach: f64) -> Option<(DVec2, f64)> {
-    let mut best: Option<(f64, DVec2, f64)> = None;
+    nearest_face(model, level, p, reach).map(|f| (f.at, f.rotation))
+}
+
+/// The nearest wall face to a point, as [`against_wall`] finds it.
+struct Face {
+    wall: ElementId,
+    at: DVec2,
+    rotation: f64,
+    /// Distance along the wall from its start.
+    u: f64,
+}
+
+/// Where an object of type `t` at height `offset` goes against a wall.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WallSpot {
+    pub at: DVec2,
+    pub rotation: f64,
+    /// How far it was slid along the wall to keep clear of a door or
+    /// window.
+    pub slid: f64,
+    /// It fits nowhere on that wall clear of its doors and windows, so it
+    /// stays in the way where it was put.
+    pub blocked: bool,
+}
+
+/// [`against_wall`] for an object of type `t` at height `offset`, kept
+/// clear of the doors and windows of the wall it goes against: one that
+/// would stand in a doorway, in a door's swing or across a window slides
+/// along the wall to the nearest stretch clear of them (or, when there is
+/// none, stays where it is, marked `blocked`).
+pub fn against_wall_clear(
+    model: &Model,
+    level: ElementId,
+    p: DVec2,
+    reach: f64,
+    t: &ObjectType,
+    offset: f64,
+) -> Option<WallSpot> {
+    let f = nearest_face(model, level, p, reach)?;
+    let ElementKind::Wall(w) = &model.get(f.wall)?.kind else {
+        return None;
+    };
+    let mut o = Object::new(level, f.at, f.rotation);
+    o.offset = offset;
+    let z0 = base_z_of(model, &o, t);
+    let (lo, hi) = t.bounds();
+    // the object's own x runs along the wall one way or the other
+    let along = (o.to_plan(DVec2::X) - o.position).dot(w.direction());
+    let span = if along >= 0.0 {
+        (lo.x, hi.x)
+    } else {
+        (-hi.x, -lo.x)
+    };
+    let blocked = crate::checks::blocked_spans(model, f.wall, (z0 + lo.z, z0 + hi.z));
+    let spot = |u: f64| f.at + w.direction() * (u - f.u);
+    Some(
+        match crate::checks::clear_spot(f.u, span, &blocked, w.length()) {
+            Some(u) => WallSpot {
+                at: spot(u),
+                rotation: f.rotation,
+                slid: (u - f.u).abs(),
+                blocked: false,
+            },
+            None => WallSpot {
+                at: f.at,
+                rotation: f.rotation,
+                slid: 0.0,
+                blocked: true,
+            },
+        },
+    )
+}
+
+fn nearest_face(model: &Model, level: ElementId, p: DVec2, reach: f64) -> Option<Face> {
+    let mut best: Option<(f64, Face)> = None;
     for e in model.iter() {
         let ElementKind::Wall(w) = &e.kind else {
             continue;
@@ -1057,16 +1137,25 @@ pub fn against_wall(model: &Model, level: ElementId, p: DVec2, reach: f64) -> Op
         if !(-1e-6..=reach).contains(&gap) {
             continue;
         }
-        if best.is_some_and(|b| b.0 <= gap) {
+        if best.as_ref().is_some_and(|b| b.0 <= gap) {
             continue;
         }
-        let face = w.start + d * u.clamp(0.0, len) + n * side * w.thickness / 2.0;
+        let u = u.clamp(0.0, len);
+        let face = w.start + d * u + n * side * w.thickness / 2.0;
         // the back (+y at no turn) towards the wall: the front along the face's normal
         let front = n * side;
         let rotation = (front.to_angle().to_degrees() + 90.0).rem_euclid(360.0);
-        best = Some((gap, face, rotation));
+        best = Some((
+            gap,
+            Face {
+                wall: e.id,
+                at: face,
+                rotation,
+                u,
+            },
+        ));
     }
-    best.map(|b| (b.1, b.2))
+    best.map(|b| b.1)
 }
 
 /// The edits placing `c` at `position` on `level`, turned by `rotation`:

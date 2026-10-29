@@ -35,6 +35,8 @@ mod editui;
 mod gridvis;
 #[path = "helpui.rs"]
 pub(crate) mod helpui;
+#[path = "importui.rs"]
+mod importui;
 #[path = "levelcopy.rs"]
 mod levelcopy;
 #[path = "levelsui.rs"]
@@ -184,6 +186,8 @@ pub struct CreaBimApp {
     levels: levelsui::LevelsUi,
     /// The Copy to levels and Move to level windows.
     level_copy: levelcopy::LevelCopyUi,
+    /// What the last IFC import brought across, and what it couldn't.
+    import_report: Option<importui::ImportReport>,
     /// The annotation styles and sheet templates windows.
     drafting: drafting::DraftingUi,
     /// Orbit about the selection rather than the middle of the view.
@@ -263,6 +267,7 @@ impl CreaBimApp {
             catalogue: Default::default(),
             levels: Default::default(),
             level_copy: Default::default(),
+            import_report: None,
             drafting: Default::default(),
             orbit_selection: false,
             rect_3d: None,
@@ -314,6 +319,14 @@ impl CreaBimApp {
                 Ok(imported) => {
                     let n = imported.model.len();
                     let warnings = imported.warnings.len();
+                    let report = importui::ImportReport::new(&file_label(path), &imported);
+                    for w in &imported.warnings {
+                        eprintln!("IFC import: {w}");
+                    }
+                    for d in &imported.details {
+                        eprintln!("IFC import:   {d}");
+                    }
+                    self.import_report = Some(report);
                     self.load_model(imported.model);
                     self.watch = Default::default();
                     self.recent.add(path);
@@ -323,15 +336,12 @@ impl CreaBimApp {
                         file_label(path),
                         imported.schema,
                         if warnings > 0 {
-                            format!(", {warnings} notes (see the terminal)")
+                            format!(", {warnings} notes (File › Import report)")
                         } else {
                             String::new()
                         },
                         file_label(&self.path)
                     );
-                    for w in &imported.warnings {
-                        eprintln!("IFC import: {w}");
-                    }
                 }
                 Err(e) => self.status = format!("Couldn't open {path}: {e}"),
             }
@@ -1444,6 +1454,8 @@ impl CreaBimApp {
                         | PlanItem::Tag { .. }
                         | PlanItem::Annotation { .. }
                         | PlanItem::Tint { .. }
+                        | PlanItem::Room { .. }
+                        | PlanItem::Shade { .. }
                         | PlanItem::Image { .. } => {}
                     }
                 }
@@ -2779,7 +2791,7 @@ impl CreaBimApp {
                         );
                     }
                 }
-                Tool::Slab | Tool::Roof | Tool::Shaft => {
+                Tool::Slab | Tool::Roof | Tool::Shaft | Tool::Room | Tool::Ceiling => {
                     let (lo, hi) = (a.truncate().min(p), a.truncate().max(p));
                     let pts = [lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y), lo];
                     let scr: Vec<egui::Pos2> =
@@ -2843,7 +2855,7 @@ impl CreaBimApp {
             } else {
                 self.status = match (tool, self.pending_3d) {
                     (Tool::Wall, Some(_)) => format!("Drawing walls on {level_name}. Click the next corner; Esc or right-click ends."),
-                    (Tool::Slab | Tool::Roof | Tool::Shaft, _) => {
+                    (Tool::Slab | Tool::Roof | Tool::Shaft | Tool::Room | Tool::Ceiling | Tool::RoomSeparator, _) => {
                         self.plan.status.take().unwrap_or_default()
                     }
                     (Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing | Tool::Footing | Tool::Object, _) => self
@@ -3784,6 +3796,20 @@ impl CreaBimApp {
                     gridvis::VisTarget::View(v),
                     Some(&format!("View: {name}")),
                 );
+                // a plan's graphics: weights, below-cut tint, view depth
+                if let Some(ElementKind::View(view)) = self.doc.model().get(v).map(|e| &e.kind) {
+                    if matches!(view.kind, ViewKind::Plan { .. }) {
+                        let (mut g, scale) = (view.graphics.clone(), view.scale);
+                        if let Some(label) = plan_graphics_ui(ui, &mut g, scale) {
+                            let r = self.doc.edit_merged(v, label, |e| {
+                                if let ElementKind::View(x) = &mut e.kind {
+                                    x.graphics = g;
+                                }
+                            });
+                            self.report(r, "View changed.");
+                        }
+                    }
+                }
             }
             ui.add_space(8.0);
             self.visibility_panel(ui, gridvis::VisTarget::Window3d, Some("3D view"));
@@ -4175,6 +4201,9 @@ impl CreaBimApp {
                             )
                             .weak(),
                         );
+                            if let Some(l) = plan_graphics_ui(ui, &mut v.graphics, v.scale) {
+                                label = l;
+                            }
                         }
                         ViewKind::Section {
                             start,
@@ -4224,6 +4253,26 @@ impl CreaBimApp {
                             );
                         }
                         ViewKind::Schedule { .. } => {}
+                    }
+                    if matches!(
+                        v.kind,
+                        ViewKind::Plan { .. } | ViewKind::Section { cut: true, .. }
+                    ) && ui
+                        .checkbox(&mut v.room_colours, "Colour rooms")
+                        .on_hover_text(
+                            "Fill each room with a colour of its own, the same in every view",
+                        )
+                        .changed()
+                    {
+                        label = "Colour rooms"
+                    }
+                    if matches!(v.kind, ViewKind::Plan { .. })
+                        && ui
+                            .checkbox(&mut v.ceiling_plan, "Reflected ceiling plan")
+                            .on_hover_text("Draw the ceilings and what hangs from them, not the floor and furniture")
+                            .changed()
+                    {
+                        label = "Ceiling plan"
                     }
                     if matches!(
                         v.kind,
@@ -4474,6 +4523,15 @@ impl CreaBimApp {
                     }
                     if ui.button("Select the tagged element").clicked() {
                         self.selection.only(t.host);
+                    }
+                    if matches!(
+                        self.doc.model().get(t.host).map(|e| &e.kind),
+                        Some(ElementKind::Room(_))
+                    ) {
+                        let l = crate::roomtool::tag_fields(ui, &mut t.fields);
+                        if !l.is_empty() {
+                            label = l;
+                        }
                     }
                     match crate::annotate::look_ui(ui, self.doc.model(), &mut t.style, &mut t.color)
                     {
@@ -4853,6 +4911,21 @@ impl CreaBimApp {
                         }
                     }
                 }
+                ElementKind::Room(r) => {
+                    label = crate::roomtool::room_fields(ui, self.doc.model(), r);
+                }
+                ElementKind::Ceiling(c) => {
+                    label = crate::roomtool::ceiling_fields(ui, self.doc.model(), c);
+                    if self.material_combo(ui, &mut c.material) {
+                        label = "Material";
+                    }
+                }
+                ElementKind::RoomSeparator(sep) => {
+                    ui.label(format!(
+                        "{} long. Rooms on either side of it are measured apart.",
+                        crate::units::len(sep.a.distance(sep.b))
+                    ));
+                }
                 ElementKind::Object(o) => {
                     let hung = creabim_core::objects::hung(self.doc.model(), &e);
                     label = objectsui::object_fields(ui, o, hung);
@@ -5188,6 +5261,7 @@ impl eframe::App for CreaBimApp {
         self.templates_window(&ctx);
         self.units_window(&ctx);
         self.ground_spacing_window(&ctx);
+        self.import_report_window(&ctx);
         self.help_window(&ctx);
         // a plan in its own window keeps egui's menus
         self.plan.web_menus = false;
@@ -5439,6 +5513,9 @@ fn kind_word(k: &ElementKind) -> &'static str {
         ElementKind::Railing(_) => "railing",
         ElementKind::CropBox(_) => "crop box",
         ElementKind::Object(_) => "object",
+        ElementKind::Room(_) => "room",
+        ElementKind::RoomSeparator(_) => "room separator",
+        ElementKind::Ceiling(_) => "ceiling",
         ElementKind::ElementType(_) => "type",
         ElementKind::Shaft(_) => "shaft",
         ElementKind::Footing(_) => "footing",
@@ -5510,6 +5587,127 @@ fn draw_guide_3d(
     if run.len() > 1 {
         painter.extend(egui::Shape::dashed_line(&run, stroke, 6.0, 4.0));
     }
+}
+
+/// A plan's graphics in its Properties: the tint of what lies below the
+/// cut, how far below its floor it looks, and its pens' line weights.
+/// Returns the undo label of a change.
+fn plan_graphics_ui(
+    ui: &mut egui::Ui,
+    g: &mut creabim_core::PlanGraphics,
+    scale: f64,
+) -> Option<&'static str> {
+    let mut label = None;
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Graphics").strong());
+    if ui
+        .checkbox(&mut g.below_fill, "Tint what lies below the cut")
+        .on_hover_text("Furniture, fittings and imported meshes under the cut get a light fill.")
+        .changed()
+    {
+        label = Some("Below-cut fill");
+    }
+    if g.below_fill {
+        ui.horizontal(|ui| {
+            ui.label("Strength");
+            if ui
+                .add(egui::Slider::new(&mut g.below_strength, 0.05..=1.0))
+                .changed()
+            {
+                label = Some("Below-cut fill");
+            }
+        });
+        if ui
+            .checkbox(&mut g.below_grey, "In grey, not material colours")
+            .changed()
+        {
+            label = Some("Below-cut fill");
+        }
+    }
+    let mut to_level = g.range.view_depth.is_none();
+    if ui
+        .checkbox(&mut to_level, "View depth: down to the level below")
+        .on_hover_text(
+            "How far below its floor the plan looks, through holes in the floor such as a stair well.",
+        )
+        .changed()
+    {
+        g.range.view_depth = if to_level { None } else { Some(1.0) };
+        label = Some("View depth");
+    }
+    if let Some(d) = &mut g.range.view_depth {
+        ui.horizontal(|ui| {
+            ui.label("View depth below the floor");
+            if ui.add(crate::units::drag(d).range(0.0..=100.0)).changed() {
+                label = Some("View depth");
+            }
+        });
+    }
+    let mut auto = g.weights.is_none();
+    if ui
+        .checkbox(&mut auto, "Line weights from the scale")
+        .on_hover_text("Heavier pens at 1:50 and larger, lighter at 1:100 and smaller.")
+        .changed()
+    {
+        g.weights = if auto {
+            None
+        } else {
+            Some(creabim_core::LineWeights::for_scale(scale))
+        };
+        label = Some("Line weights");
+    }
+    egui::CollapsingHeader::new("Pens by category")
+        .id_salt("plan_category_pens")
+        .show(ui, |ui| {
+            use creabim_core::graphics::{CategoryPen, PenClass};
+            use creabim_core::Category as C;
+            for c in [
+                C::Objects,
+                C::Railings,
+                C::Stairs,
+                C::Slabs,
+                C::Roofs,
+                C::FreeMeshes,
+            ] {
+                let current = g.pen_of(c);
+                let mut pick = current;
+                egui::ComboBox::from_label(c.label())
+                    .selected_text(current.map_or("As drawn", |p| p.label()))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut pick, None, "As drawn");
+                        for p in PenClass::ALL {
+                            ui.selectable_value(&mut pick, Some(p), p.label());
+                        }
+                    });
+                if pick != current {
+                    g.category_pens.retain(|x| x.category != c);
+                    if let Some(pen) = pick {
+                        g.category_pens.push(CategoryPen { category: c, pen });
+                    }
+                    label = Some("Pens by category");
+                }
+            }
+        });
+    if let Some(w) = &mut g.weights {
+        for (name, v) in w.fields_mut() {
+            ui.horizontal(|ui| {
+                ui.label(name);
+                if ui
+                    .add(
+                        egui::DragValue::new(v)
+                            .speed(0.01)
+                            .range(0.02..=2.0)
+                            .max_decimals(2)
+                            .suffix(" mm"),
+                    )
+                    .changed()
+                {
+                    label = Some("Line weights");
+                }
+            });
+        }
+    }
+    label
 }
 
 /// A drop-down of the ways a section, elevation or 3D view draws.

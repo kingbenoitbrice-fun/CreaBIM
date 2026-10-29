@@ -20,14 +20,38 @@ use creabim_core::{
 use glam::{DMat4, DVec2, DVec3};
 use std::collections::{HashMap, HashSet};
 
+mod brep;
+mod members;
 mod objects;
+mod spaces;
+
+pub(crate) use members::MEMBER_PSET;
+
+/// Classes (as STEP writes them) the import may make native elements of.
+pub(crate) fn could_be_native(class: &str) -> bool {
+    [
+        "IFCWALL",
+        "IFCSLAB",
+        "IFCCOLUMN",
+        "IFCBEAM",
+        "IFCDOOR",
+        "IFCWINDOW",
+    ]
+    .iter()
+    .any(|c| class.to_ascii_uppercase().starts_with(c))
+}
 
 /// A model read from a file, with what could not be brought across.
 #[derive(Debug)]
 pub struct ImportResult {
     pub model: Model,
-    /// Human-readable notes about anything skipped or approximated.
+    /// Human-readable notes about anything skipped or approximated,
+    /// grouped by kind with a count.
     pub warnings: Vec<String>,
+    /// The same notes element by element, each naming the element's
+    /// class, name and GlobalId and saying why, e.g. "IfcWall 'Wall-Ext'
+    /// (2XcU...) is a brep whose top is sloped; imported as a mesh".
+    pub details: Vec<String>,
     /// The schema named in the file, e.g. `IFC4` or `ifcx_alpha`.
     pub schema: String,
 }
@@ -65,9 +89,11 @@ pub fn import_ifc(text: &str) -> Result<ImportResult, ImportError> {
     let elements = std::mem::take(&mut imp.out);
     let mut warnings = std::mem::take(&mut imp.g.warnings);
     let model = build_model(elements, &mut warnings)?;
+    let (warnings, details) = warnings.into_parts();
     Ok(ImportResult {
         model,
-        warnings: warnings.into_vec(),
+        warnings,
+        details,
         schema,
     })
 }
@@ -98,16 +124,22 @@ pub(crate) fn build_model(
     let mut tx = Transaction::new("Import");
     let mut ids: HashSet<ElementId> = HashSet::new();
     for e in elements {
+        let label = || format!("{} '{}' ({})", e.ifc_class(), e.name, e.id.ifc_guid());
         if let Err(msg) = e.validate() {
-            warnings.add(format!("{} {:?} skipped: {msg}", e.ifc_class(), e.name));
+            warnings.element(
+                "elements that failed validation were skipped",
+                format!("{} was skipped: {msg}", label()),
+            );
             continue;
         }
         if let Some(missing) = e.references().into_iter().find(|r| !ids.contains(r)) {
-            warnings.add(format!(
-                "{} {:?} skipped: it depends on {missing}, which was not imported",
-                e.ifc_class(),
-                e.name
-            ));
+            warnings.element(
+                "elements depending on something not imported were skipped",
+                format!(
+                    "{} was skipped: it depends on {missing}, which was not imported",
+                    label()
+                ),
+            );
             continue;
         }
         if !ids.insert(e.id) {
@@ -169,6 +201,7 @@ pub(crate) struct HostWall {
     pub end: DVec2,
     pub thickness: f64,
     pub base_z: f64,
+    pub top_z: f64,
 }
 
 struct Storey {
@@ -176,12 +209,16 @@ struct Storey {
     elevation: f64,
 }
 
+/// A native wall and the holes cut through its body.
+type WallPart = (Wall, Vec<brep::Void>);
+
 /// A vertical prism: a plan outline between two heights, in world coordinates.
 pub(crate) struct Prism {
     pub footprint: Vec<DVec2>,
     pub z0: f64,
     pub z1: f64,
-    pub holes: bool,
+    /// Holes through it, counter-clockwise.
+    pub holes: Vec<Vec<DVec2>>,
     pub clipped: bool,
 }
 
@@ -220,7 +257,14 @@ struct Importer<'a> {
     /// Imported assemblies, by the IfcMaterialLayerSet they came from.
     layer_sets: HashMap<u64, ElementId>,
     assembly_elems: Vec<Element>,
-    walls: HashMap<u64, HostWall>,
+    /// The native walls each IFC wall became (several for a wall along a
+    /// polyline axis).
+    walls: HashMap<u64, Vec<HostWall>>,
+    /// Holes cut through native walls' bodies, by wall, and whether a
+    /// door, window or opening of the file fills each.
+    wall_voids: HashMap<ElementId, Vec<(brep::Void, bool)>>,
+    /// Why an element that could have been native stayed a mesh.
+    mesh_reason: HashMap<u64, String>,
     /// Elements written so far, by IFC instance, so nothing is imported twice.
     done: HashSet<u64>,
     // elements are collected per kind, then emitted in dependency order
@@ -267,6 +311,8 @@ impl<'a> Importer<'a> {
             layer_sets: HashMap::new(),
             assembly_elems: vec![],
             walls: HashMap::new(),
+            wall_voids: HashMap::new(),
+            mesh_reason: HashMap::new(),
             done: HashSet::new(),
             material_elems: vec![],
             level_elems: vec![],
@@ -300,6 +346,7 @@ impl<'a> Importer<'a> {
                 self.import_slab(id);
             }
         }
+        self.import_members();
         for class in [
             "IFCDOOR",
             "IFCDOORSTANDARDCASE",
@@ -311,10 +358,12 @@ impl<'a> Importer<'a> {
             }
         }
         self.import_bare_openings();
+        self.import_wall_voids();
         self.import_objects();
         for &id in self.ids("IFCFOOTING") {
             self.import_footing(id);
         }
+        self.import_spaces();
         let mut rest: Vec<u64> = self
             .f
             .entities
@@ -357,12 +406,6 @@ impl<'a> Importer<'a> {
                 creabim_core::AssemblyUse::Wall
             };
             self.layer_set(set, usage);
-        }
-        let spaces = self.ids("IFCSPACE").len();
-        if spaces > 0 {
-            self.g.warnings.add(format!(
-                "{spaces} spaces were not imported (CreaBIM has no rooms yet)"
-            ));
         }
         self.out = [
             std::mem::take(&mut self.material_elems),
@@ -532,16 +575,14 @@ impl<'a> Importer<'a> {
         w.material = material;
         w.curtain = Some(grid);
         let eid = self.new_id(e);
-        self.walls.insert(
-            id,
-            HostWall {
-                id: eid,
-                start: w.start,
-                end: w.end,
-                thickness: w.thickness,
-                base_z: z,
-            },
-        );
+        self.walls.entry(id).or_default().push(HostWall {
+            id: eid,
+            start: w.start,
+            end: w.end,
+            thickness: w.thickness,
+            base_z: z,
+            top_z: z + height,
+        });
         self.wall_elems.push(Element {
             source: None,
             of_type: self.type_ref(id),
@@ -587,21 +628,21 @@ impl<'a> Importer<'a> {
             .filter(|o| !filled.contains(o))
             .collect();
         ids.sort_unstable();
-        let mut skipped = 0;
+        const GROUP: &str = "openings without a door or window were not cut";
         for oid in ids {
             let Some(host) = self.voids.get(&oid).copied() else {
-                skipped += 1;
+                self.note(oid, GROUP, "voids nothing (no IfcRelVoidsElement)");
                 continue;
             };
             let Some(o) = self.f.get(oid) else { continue };
             let world = self.g.placement(o.arg(5));
             let mesh = self.g.product_mesh(o, &world);
-            if let Some(wall) = self.walls.get(&host).copied() {
-                let Some((offset, sill, width, height)) = opening_in_wall(&wall, &mesh, None)
-                else {
-                    skipped += 1;
+            if let Some(wall) = self.host_wall(host, &mesh) {
+                let Some(r) = opening_in_wall(&wall, &mesh, None) else {
+                    self.note(oid, GROUP, "could not be measured in its wall");
                     continue;
                 };
+                let (offset, sill, width, height) = self.snap_to_void(&wall, r);
                 let eid = self.new_id(o);
                 self.opening_elems.push(Element {
                     source: None,
@@ -623,20 +664,23 @@ impl<'a> Importer<'a> {
                 });
             } else if let Some(&i) = self.slabs.get(&host) {
                 let Some(p) = prism_of_mesh(mesh) else {
-                    skipped += 1;
+                    self.note(oid, GROUP, "is not an upright prism through its slab");
                     continue;
                 };
                 if let ElementKind::Slab(s) = &mut self.wall_elems[i].kind {
-                    s.holes.push(p.footprint);
+                    // a B-rep slab may have the hole cut already
+                    let c = p.footprint.iter().copied().sum::<DVec2>() / p.footprint.len() as f64;
+                    let known = s.holes.iter().any(|h| {
+                        crate::tess::inside(c, h)
+                            && (area2(h) - area2(&p.footprint)).abs() < 0.01 * area2(h).abs()
+                    });
+                    if !known {
+                        s.holes.push(p.footprint);
+                    }
                 }
-            } else if !self.done.contains(&host) {
-                skipped += 1;
             }
-        }
-        if skipped > 0 {
-            self.g.warnings.add(format!(
-                "{skipped} openings without a door or window were not cut (their host is not a native wall or slab)"
-            ));
+            // openings in other hosts are cut into their meshes, which
+            // say so if they can't be
         }
     }
 
@@ -1134,12 +1178,60 @@ impl<'a> Importer<'a> {
 
     // ---- shape analysis ----
 
-    /// The body as a vertical prism, if it is one: a single extrusion
-    /// straight up or down, or a mesh with flat top and bottom.
+    /// How notes name an element: its class, name and GlobalId.
+    pub(super) fn label(&self, id: u64) -> String {
+        let Some(e) = self.f.get(id) else {
+            return format!("#{id}");
+        };
+        let class = product_class(&e.class).unwrap_or(&e.class);
+        let guid = e.arg(0).as_str().unwrap_or("no GlobalId");
+        match e.arg(2).as_str().map(str::trim).filter(|n| !n.is_empty()) {
+            Some(name) => format!("{class} '{name}' ({guid})"),
+            None => format!("{class} ({guid})"),
+        }
+    }
+
+    /// A note about one element, counted under `group` and listed as the
+    /// element's label followed by `why`.
+    pub(super) fn note(&mut self, id: u64, group: &str, why: impl std::fmt::Display) {
+        let detail = format!("{} {why}", self.label(id));
+        self.g.warnings.element(group, detail);
+    }
+
+    /// What an element's body is made of, for notes: "an IfcFacetedBrep".
+    pub(super) fn body_kind(&self, e: &Entity) -> String {
+        let Some(body) = self.g.body(e) else {
+            return "a body".into();
+        };
+        let [item] = body.items[..] else {
+            return format!("a body of {} items", body.items.len());
+        };
+        let class = self.f.get(item).map_or("", |i| i.class.as_str());
+        let name = match class {
+            "IFCFACETEDBREP" => "IfcFacetedBrep",
+            "IFCFACETEDBREPWITHVOIDS" => "IfcFacetedBrepWithVoids",
+            "IFCADVANCEDBREP" => "IfcAdvancedBrep",
+            "IFCPOLYGONALFACESET" => "IfcPolygonalFaceSet",
+            "IFCTRIANGULATEDFACESET" => "IfcTriangulatedFaceSet",
+            "IFCEXTRUDEDAREASOLID" => "IfcExtrudedAreaSolid",
+            "IFCBOOLEANRESULT" => "IfcBooleanResult",
+            "IFCBOOLEANCLIPPINGRESULT" => "IfcBooleanClippingResult",
+            "IFCMAPPEDITEM" => "IfcMappedItem",
+            "IFCSHELLBASEDSURFACEMODEL" => "IfcShellBasedSurfaceModel",
+            "IFCFACEBASEDSURFACEMODEL" => "IfcFaceBasedSurfaceModel",
+            "IFCREVOLVEDAREASOLID" => "IfcRevolvedAreaSolid",
+            "IFCSWEPTDISKSOLID" => "IfcSweptDiskSolid",
+            _ => return "a body".into(),
+        };
+        format!("an {name}")
+    }
+
+    /// The body as a vertical prism, if it is a single extrusion straight
+    /// up or down (possibly clipped). Other bodies are read as meshes.
     fn prism(&mut self, e: &Entity, world: &DMat4) -> Option<Prism> {
         let body = self.g.body(e)?;
         let [mut item] = body.items[..] else {
-            return self.mesh_prism(e, world);
+            return None;
         };
         let mut clipped = false;
         for _ in 0..8 {
@@ -1153,10 +1245,7 @@ impl<'a> Importer<'a> {
         }
         let it = self.f.get(item)?;
         if !it.is("IFCEXTRUDEDAREASOLID") {
-            if clipped {
-                return None;
-            }
-            return self.mesh_prism(e, world);
+            return None;
         }
         let x = self.g.extrusion(item, world)?;
         let normal = x.position.z_axis.truncate();
@@ -1167,28 +1256,37 @@ impl<'a> Importer<'a> {
         let [region] = &x.regions[..] else {
             return None;
         };
-        let footprint: Vec<DVec3> = region
-            .outer
-            .iter()
-            .map(|p| x.position.transform_point3(p.extend(0.0)))
-            .collect();
-        let z = footprint.first()?.z;
-        let mut plan: Vec<DVec2> = footprint.iter().map(|p| p.truncate()).collect();
-        if area2(&plan) < 0.0 {
-            plan.reverse();
+        let plan = |lp: &[DVec2]| -> Vec<DVec2> {
+            lp.iter()
+                .map(|p| x.position.transform_point3(p.extend(0.0)).truncate())
+                .collect()
+        };
+        let z = x
+            .position
+            .transform_point3(region.outer.first()?.extend(0.0))
+            .z;
+        let mut footprint = plan(&region.outer);
+        if area2(&footprint) < 0.0 {
+            footprint.reverse();
         }
+        let holes = region
+            .holes
+            .iter()
+            .map(|h| {
+                let mut h = plan(h);
+                if area2(&h) < 0.0 {
+                    h.reverse();
+                }
+                h
+            })
+            .collect();
         Some(Prism {
-            footprint: plan,
+            footprint,
             z0: z.min(z + v.z),
             z1: z.max(z + v.z),
-            holes: !region.holes.is_empty(),
+            holes,
             clipped,
         })
-    }
-
-    /// Recognise a prism in a mesh body (tessellated or B-rep walls and slabs).
-    fn mesh_prism(&mut self, e: &Entity, world: &DMat4) -> Option<Prism> {
-        prism_of_mesh(self.g.product_mesh(e, world))
     }
 
     /// A wall's axis in world plan coordinates, if it is a straight line.
@@ -1211,109 +1309,216 @@ impl<'a> Importer<'a> {
         Some((a, b))
     }
 
+    /// Did CreaBIM write this element as a free mesh?
+    pub(super) fn written_as_mesh(&self, id: u64) -> bool {
+        let props = self.props(id, MEMBER_PSET);
+        props.get("Kind").and_then(|k| k.1.as_deref()) == Some("FreeMesh")
+    }
+
     fn import_wall(&mut self, id: u64) {
         let Some(e) = self.f.get(id) else { return };
+        if self.written_as_mesh(id) {
+            return self.import_free_mesh(id);
+        }
         let world = self.g.placement(e.arg(5));
-        if let Some(w) = self.native_wall(id, e, &world) {
-            self.done.insert(id);
-            let lid = w.level;
-            let level_elev = self.levels.iter().find(|l| l.1 == lid).map_or(0.0, |l| l.0);
-            let layered = self.assembly_for(id, creabim_core::AssemblyUse::Wall);
-            // the first (exterior) layer is on the wall's left when the
-            // layers run towards its right
-            let flip = layered.and_then(|l| l.1).is_some_and(|positive| {
-                let y = world.y_axis.truncate().truncate();
-                let left = (w.end - w.start).normalize_or_zero().perp();
-                positive == (y.dot(left) < 0.0)
-            });
-            // an axis on a face is that face's location line
-            let location = self.axis(e, &world).map_or(LocationLine::Centre, |(a, _)| {
-                let off = (a - w.start).dot((w.end - w.start).normalize_or_zero().perp());
-                let t = w.thickness / 2.0;
-                let ext = if flip { t } else { -t };
-                if t > 1e-3 && (off - ext).abs() < 1e-3 {
-                    LocationLine::ExteriorFace
-                } else if t > 1e-3 && (off + ext).abs() < 1e-3 {
-                    LocationLine::InteriorFace
-                } else {
-                    LocationLine::Centre
-                }
-            });
-            let material = match layered {
-                Some((a, _)) => self.core_material(a),
-                None => self.material_for(id),
-            };
-            let eid = self.new_id(e);
-            self.walls.insert(
-                id,
-                HostWall {
-                    id: eid,
-                    start: w.start,
-                    end: w.end,
-                    thickness: w.thickness,
-                    base_z: level_elev + w.base_offset,
-                },
-            );
-            self.wall_elems.push(Element {
-                source: None,
-                of_type: self.type_ref(id),
-                id: eid,
-                name: Self::name(e, "Wall"),
-                kind: ElementKind::Wall(Wall {
-                    material,
-                    assembly: layered.map(|l| l.0),
-                    flip,
-                    location,
-                    ..w
-                }),
-            });
-        } else {
-            self.import_free_mesh(id);
+        let walls = match self.multi_wall(id, e, &world) {
+            Some(walls) => walls,
+            None => self.native_wall(id, e, &world).map(|w| vec![w]),
+        };
+        let walls = match walls {
+            Ok(w) => w,
+            Err(why) => {
+                let kind = self.body_kind(e);
+                self.mesh_reason
+                    .insert(id, format!("is {kind} that {why}; imported as a mesh"));
+                self.import_free_mesh(id);
+                return;
+            }
+        };
+        self.done.insert(id);
+        let parts = walls.len();
+        for (i, (w, voids)) in walls.into_iter().enumerate() {
+            let part = (parts > 1).then_some(i);
+            self.push_wall(id, e, &world, w, voids, part);
         }
     }
 
-    fn native_wall(&mut self, id: u64, e: &Entity, world: &DMat4) -> Option<Wall> {
-        let prism = self.prism(e, world)?;
-        if prism.holes {
+    /// One native wall of an IFC wall; `part` numbers the runs of a wall
+    /// along a polyline axis, all but the first under new ids.
+    fn push_wall(
+        &mut self,
+        id: u64,
+        e: &'a Entity,
+        world: &DMat4,
+        w: Wall,
+        voids: Vec<brep::Void>,
+        part: Option<usize>,
+    ) {
+        let world = *world;
+        let lid = w.level;
+        let level_elev = self.levels.iter().find(|l| l.1 == lid).map_or(0.0, |l| l.0);
+        let layered = self.assembly_for(id, creabim_core::AssemblyUse::Wall);
+        // the first (exterior) layer is on the wall's left when the
+        // layers run towards its right
+        let flip = layered.and_then(|l| l.1).is_some_and(|positive| {
+            let y = world.y_axis.truncate().truncate();
+            let left = (w.end - w.start).normalize_or_zero().perp();
+            positive == (y.dot(left) < 0.0)
+        });
+        // an axis on a face is that face's location line
+        let axis = if part.is_some() {
+            None
+        } else {
+            self.axis(e, &world)
+        };
+        let location = axis.map_or(LocationLine::Centre, |(a, _)| {
+            let off = (a - w.start).dot((w.end - w.start).normalize_or_zero().perp());
+            let t = w.thickness / 2.0;
+            let ext = if flip { t } else { -t };
+            if t > 1e-3 && (off - ext).abs() < 1e-3 {
+                LocationLine::ExteriorFace
+            } else if t > 1e-3 && (off + ext).abs() < 1e-3 {
+                LocationLine::InteriorFace
+            } else {
+                LocationLine::Centre
+            }
+        });
+        let material = match layered {
+            Some((a, _)) => self.core_material(a),
+            None => self.material_for(id),
+        };
+        let eid = match part {
+            Some(i) if i > 0 => ElementId::new(),
+            _ => self.new_id(e),
+        };
+        self.walls.entry(id).or_default().push(HostWall {
+            id: eid,
+            start: w.start,
+            end: w.end,
+            thickness: w.thickness,
+            base_z: level_elev + w.base_offset,
+            top_z: level_elev + w.base_offset + w.height,
+        });
+        if !voids.is_empty() {
+            self.wall_voids
+                .insert(eid, voids.into_iter().map(|v| (v, false)).collect());
+        }
+        self.wall_elems.push(Element {
+            source: None,
+            of_type: self.type_ref(id),
+            id: eid,
+            name: match part {
+                Some(i) => format!("{} {}", Self::name(e, "Wall"), i + 1),
+                None => Self::name(e, "Wall"),
+            },
+            kind: ElementKind::Wall(Wall {
+                material,
+                assembly: layered.map(|l| l.0),
+                flip,
+                location,
+                ..w
+            }),
+        });
+    }
+
+    /// Native walls along a wall's axis when it is a polyline of several
+    /// runs; `None` for a straight axis or none.
+    fn multi_wall(
+        &mut self,
+        id: u64,
+        e: &Entity,
+        world: &DMat4,
+    ) -> Option<Result<Vec<WallPart>, String>> {
+        let pts = self.axis_polyline(e, world)?;
+        if pts.len() < 3 || remove_collinear(&pts).len() < 3 {
             return None;
         }
-        if prism.clipped {
-            self.g
-                .warnings
-                .add("a wall's clipping was ignored to keep it a native wall");
-        }
+        let mesh = self.g.product_mesh(e, world);
+        let shapes = match brep::walls_along(&mesh, &pts) {
+            Ok(s) => s,
+            Err(why) => return Some(Err(why)),
+        };
+        let walls = shapes
+            .into_iter()
+            .map(|w| {
+                let (lid, elev) = self.level_for(id, w.z0);
+                let mut wall = Wall::new(lid, w.start, w.end, w.thickness, w.z1 - w.z0);
+                wall.base_offset = w.z0 - elev;
+                (wall, w.voids)
+            })
+            .collect();
+        Some(Ok(walls))
+    }
+
+    /// The points of a wall's axis in world plan coordinates.
+    fn axis_polyline(&mut self, e: &Entity, world: &DMat4) -> Option<Vec<DVec2>> {
+        let rep = self
+            .g
+            .reps(e)
+            .into_iter()
+            .find(|r| r.identifier.eq_ignore_ascii_case("Axis"))?;
+        let pts = self.g.curve(&Value::Ref(*rep.items.first()?))?;
+        Some(
+            pts.iter()
+                .map(|p| world.transform_point3(*p).truncate())
+                .collect(),
+        )
+    }
+
+    /// A native wall for an IFC wall, with the holes already cut through
+    /// its body (a B-rep exported with its doors and windows cut), or why
+    /// it can't be one.
+    fn native_wall(
+        &mut self,
+        id: u64,
+        e: &Entity,
+        world: &DMat4,
+    ) -> Result<(Wall, Vec<brep::Void>), String> {
         let axis = self.axis(e, world);
-        let fp = &prism.footprint;
-        let (start, end, thickness) = match wall_from_footprint(fp, axis) {
-            Some(w) => w,
+        let extruded = self
+            .prism(e, world)
+            .filter(|p| p.holes.is_empty())
+            .and_then(|p| {
+                let w = match wall_from_footprint(&p.footprint, axis) {
+                    Some(w) => w,
+                    None => self.stepped_wall(id, &p.footprint, axis, world)?,
+                };
+                Some((w, p))
+            });
+        let (start, end, thickness, z0, z1, voids) = match extruded {
+            Some(((start, end, thickness), p)) => {
+                if p.clipped {
+                    self.note(
+                        id,
+                        "walls whose clipping was ignored to keep them native walls",
+                        "is clipped (by a roof or a sloped cut); the clipping was ignored to keep it a native wall",
+                    );
+                }
+                (start, end, thickness, p.z0, p.z1, vec![])
+            }
             None => {
-                // stepped ends: the layer set usage still gives the faces
-                let (a, b) = axis?;
-                let (t, centre) = self.layer_band(id)?;
-                let n = world.y_axis.truncate().truncate().normalize_or_zero();
-                let d = (b - a).normalize_or_zero();
-                if n == DVec2::ZERO || d.perp().dot(n).abs() < 0.999 {
-                    return None;
+                let mesh = self.g.product_mesh(e, world);
+                let mut w = brep::wall_of_mesh(&mesh, axis)?;
+                // run the way the element's placement does
+                let x = world.x_axis.truncate().truncate();
+                if axis.is_none() && (w.end - w.start).dot(x) < 0.0 {
+                    let len = w.start.distance(w.end);
+                    std::mem::swap(&mut w.start, &mut w.end);
+                    for v in &mut w.voids {
+                        (v.u0, v.u1) = (len - v.u1, len - v.u0);
+                    }
                 }
-                let (lo, hi) = (centre - t / 2.0, centre + t / 2.0);
-                let inside = fp.iter().all(|p| {
-                    let s = (*p - a).dot(n);
-                    s > lo - 1e-3 && s < hi + 1e-3
-                });
-                if !inside {
-                    return None;
-                }
-                (a + n * centre, b + n * centre, t)
+                (w.start, w.end, w.thickness, w.z0, w.z1, w.voids)
             }
         };
-        let (lid, elev) = self.level_for(id, prism.z0);
-        Some(Wall {
+        let (lid, elev) = self.level_for(id, z0);
+        let wall = Wall {
             level: lid,
             start,
             end,
             thickness,
-            height: prism.z1 - prism.z0,
-            base_offset: prism.z0 - elev,
+            height: z1 - z0,
+            base_offset: z0 - elev,
             material: None,
             assembly: None,
             flip: false,
@@ -1322,26 +1527,77 @@ impl<'a> Importer<'a> {
             disallow_join: [false; 2],
             attach_top: vec![],
             curtain: None,
-        })
+        };
+        Ok((wall, voids))
+    }
+
+    /// A wall extruded from a footprint with stepped ends: the layer set
+    /// usage still gives its faces.
+    fn stepped_wall(
+        &self,
+        id: u64,
+        fp: &[DVec2],
+        axis: Option<(DVec2, DVec2)>,
+        world: &DMat4,
+    ) -> Option<(DVec2, DVec2, f64)> {
+        let (a, b) = axis?;
+        let (t, centre) = self.layer_band(id)?;
+        let n = world.y_axis.truncate().truncate().normalize_or_zero();
+        let d = (b - a).normalize_or_zero();
+        if n == DVec2::ZERO || d.perp().dot(n).abs() < 0.999 {
+            return None;
+        }
+        let (lo, hi) = (centre - t / 2.0, centre + t / 2.0);
+        let inside = fp.iter().all(|p| {
+            let s = (*p - a).dot(n);
+            s > lo - 1e-3 && s < hi + 1e-3
+        });
+        inside.then(|| (a + n * centre, b + n * centre, t))
+    }
+
+    /// A slab's outline, holes and heights, from its extrusion or its
+    /// mesh, or why it is not a flat slab.
+    fn slab_shape(&mut self, e: &Entity, world: &DMat4) -> Result<brep::SlabShape, String> {
+        if let Some(p) = self.prism(e, world).filter(|p| !p.clipped) {
+            return Ok(brep::SlabShape {
+                outline: remove_collinear(&p.footprint),
+                holes: p.holes,
+                z0: p.z0,
+                z1: p.z1,
+            });
+        }
+        brep::slab_of_mesh(&self.g.product_mesh(e, world))
     }
 
     fn import_slab(&mut self, id: u64) {
         let Some(e) = self.f.get(id) else { return };
+        if self.written_as_mesh(id) {
+            return self.import_free_mesh(id);
+        }
         let world = self.g.placement(e.arg(5));
-        let native = self.prism(e, &world).filter(|p| !p.holes && !p.clipped);
-        let level = native.as_ref().and_then(|p| {
-            // the slab's own storey if its top is there, else any storey at its top
-            let own = self.storey_of(id).map(|s| (s.id, s.elevation));
-            own.filter(|(_, z)| (z - p.z1).abs() < 0.01).or_else(|| {
-                self.levels
-                    .iter()
-                    .find(|(z, _)| (z - p.z1).abs() < 0.01)
-                    .map(|&(z, l)| (l, z))
-            })
-        });
-        let (Some(p), Some((lid, _))) = (native, level) else {
-            self.import_free_mesh(id);
-            return;
+        let p = match self.slab_shape(e, &world) {
+            Ok(p) => p,
+            Err(why) => {
+                let kind = self.body_kind(e);
+                self.mesh_reason
+                    .insert(id, format!("is {kind} that {why}; imported as a mesh"));
+                self.import_free_mesh(id);
+                return;
+            }
+        };
+        // a storey at its top, its own storey first; else its own storey
+        // or the level under its top, with the top offset from it
+        let own = self.storey_of(id).map(|s| (s.id, s.elevation));
+        let at_top = |(_, z): &(ElementId, f64)| (z - p.z1).abs() < 0.01;
+        let (lid, elev) = own
+            .filter(at_top)
+            .or_else(|| self.levels.iter().map(|&(z, l)| (l, z)).find(at_top))
+            .or(own)
+            .unwrap_or_else(|| self.level_at(p.z1));
+        let top_offset = if (p.z1 - elev).abs() < 1e-6 {
+            0.0
+        } else {
+            p.z1 - elev
         };
         self.done.insert(id);
         let layered = self.assembly_for(id, creabim_core::AssemblyUse::Floor);
@@ -1358,19 +1614,103 @@ impl<'a> Importer<'a> {
             name: Self::name(e, "Slab"),
             kind: ElementKind::Slab(Slab {
                 level: lid,
-                boundary: p.footprint,
+                boundary: p.outline,
                 thickness: p.z1 - p.z0,
                 material,
-                top_offset: 0.0,
+                top_offset,
                 bulges: vec![],
                 assembly: layered.map(|l| l.0),
-                holes: vec![],
+                holes: p.holes,
             }),
         });
     }
 
+    /// Fit a measured opening to the hole cut through its wall's body, if
+    /// the wall's B-rep had one there, and mark that hole as filled.
+    fn snap_to_void(
+        &mut self,
+        wall: &HostWall,
+        (offset, sill, width, height): (f64, f64, f64, f64),
+    ) -> (f64, f64, f64, f64) {
+        let Some(voids) = self.wall_voids.get_mut(&wall.id) else {
+            return (offset, sill, width, height);
+        };
+        let (z0, z1) = (wall.base_z + sill, wall.base_z + sill + height);
+        let best = voids
+            .iter_mut()
+            .filter(|(_, used)| !used)
+            .map(|(v, used)| (v.covered_by(offset, offset + width, z0, z1), v, used))
+            .filter(|(c, _, _)| *c > 0.5)
+            .max_by(|a, b| a.0.total_cmp(&b.0));
+        match best {
+            Some((_, v, used)) => {
+                *used = true;
+                (v.u0, v.z0 - wall.base_z, v.u1 - v.u0, v.z1 - v.z0)
+            }
+            None => (offset, sill, width, height),
+        }
+    }
+
+    /// The holes cut through native walls' bodies that no door, window or
+    /// opening of the file fills: bare openings, so the wall keeps them.
+    fn import_wall_voids(&mut self) {
+        let mut walls: Vec<(ElementId, Vec<brep::Void>)> = self
+            .wall_voids
+            .iter()
+            .map(|(w, v)| (*w, v.iter().filter(|x| !x.1).map(|x| x.0).collect()))
+            .collect();
+        walls.sort_by_key(|w| w.0);
+        for (wid, voids) in walls {
+            let Some(host) = self.walls.values().flatten().find(|h| h.id == wid).copied() else {
+                continue;
+            };
+            let name = self
+                .wall_elems
+                .iter()
+                .find(|e| e.id == wid)
+                .map_or("Wall".to_string(), |e| e.name.clone());
+            for (i, v) in voids.into_iter().enumerate() {
+                self.opening_elems.push(Element::new(
+                    format!("{name} opening {}", i + 1),
+                    ElementKind::Opening(Opening {
+                        host: wid,
+                        kind: OpeningKind::Hole,
+                        offset: v.u0.max(0.0),
+                        sill: (v.z0 - host.base_z).max(0.0),
+                        width: v.u1 - v.u0,
+                        height: v.z1 - v.z0,
+                        material: None,
+                        frame: Default::default(),
+                        flip_hand: false,
+                        flip_facing: false,
+                    }),
+                ));
+            }
+        }
+    }
+
+    /// The native wall a door's or window's body sits in, for one with no
+    /// opening relationship: the nearest whose thickness and height hold
+    /// the body's centre.
+    fn wall_around(&self, mesh: &EditMesh) -> Option<HostWall> {
+        let mut walls: Vec<&HostWall> = self.walls.values().flatten().collect();
+        walls.sort_by_key(|w| w.id);
+        nearest_wall(walls, mesh, 0.05)
+    }
+
+    /// Which of the native walls an IFC wall became an opening's body is in.
+    fn host_wall(&self, host: u64, mesh: &EditMesh) -> Option<HostWall> {
+        match self.walls.get(&host)?.as_slice() {
+            [w] => Some(*w),
+            walls => nearest_wall(walls.iter().collect(), mesh, 0.5),
+        }
+    }
+
     fn import_filling(&mut self, id: u64) {
         let Some(e) = self.f.get(id) else { return };
+        if self.written_as_mesh(id) {
+            return self.import_free_mesh(id);
+        }
         let kind = if e.class.starts_with("IFCDOOR") {
             OpeningKind::Door
         } else {
@@ -1379,56 +1719,75 @@ impl<'a> Importer<'a> {
         let world = self.g.placement(e.arg(5));
         let opening = self.fills.get(&id).copied();
         let host = opening.and_then(|o| self.voids.get(&o)).copied();
-        let filled = host
-            .and_then(|h| self.walls.get(&h).copied())
-            .and_then(|wall| {
-                // the hole is what the wall sees, so measure the opening element
-                let o = self.f.get(opening?)?;
+        let mut why = None;
+        // the hole is what the wall sees, so measure the opening element
+        let mut mesh = opening
+            .and_then(|o| self.f.get(o))
+            .map_or_else(EditMesh::default, |o| {
                 let ow = self.g.placement(o.arg(5));
-                let mut mesh = self.g.product_mesh(o, &ow);
-                if mesh.faces.is_empty() {
-                    mesh = self.g.product_mesh(e, &world);
-                }
-                let r = opening_in_wall(&wall, &mesh, None)?;
-                Some((wall, r))
+                self.g.product_mesh(o, &ow)
             });
+        if mesh.faces.is_empty() {
+            mesh = self.g.product_mesh(e, &world);
+        }
+        let filled = match host.map(|h| (h, self.host_wall(h, &mesh))) {
+            Some((_, Some(wall))) => {
+                let r = opening_in_wall(&wall, &mesh, None);
+                if r.is_none() {
+                    why = Some("could not be measured in its wall".to_string());
+                }
+                r.map(|r| (wall, r))
+            }
+            Some((h, None)) => {
+                why = Some(format!(
+                    "fills an opening in {}, which is not a native wall",
+                    self.label(h)
+                ));
+                None
+            }
+            None => None,
+        };
         let placed = filled.or_else(|| {
+            if why.is_some() {
+                return None;
+            }
             // no opening relationship: find a wall the door's body sits in
             let mesh = self.g.product_mesh(e, &world);
-            let (lo, hi) = bounds(mesh.vertices.iter().copied())?;
-            let c = (lo + hi) / 2.0;
             let overall = (self.g.length(e.arg(9)), self.g.length(e.arg(8)));
-            let wall = self
-                .walls
-                .values()
-                .filter(|w| {
-                    let d = (w.end - w.start).normalize_or_zero();
-                    let u = (c.truncate() - w.start).dot(d);
-                    let s = (c.truncate() - w.start).perp_dot(d).abs();
-                    s <= w.thickness / 2.0 + 0.05
-                        && u >= 0.0
-                        && u <= w.start.distance(w.end)
-                        && c.z >= w.base_z - 0.01
-                })
-                .min_by(|a, b| {
-                    let s = |w: &HostWall| {
-                        let d = (w.end - w.start).normalize_or_zero();
-                        (c.truncate() - w.start).perp_dot(d).abs()
-                    };
-                    s(a).total_cmp(&s(b))
-                })
-                .copied()?;
+            let Some(wall) = self.wall_around(&mesh) else {
+                why = Some("has no opening relationship and sits in no native wall".into());
+                return None;
+            };
             let r = opening_in_wall(&wall, &mesh, Some(overall))?;
             Some((wall, r))
         });
-        let Some((wall, (offset, sill, width, height))) = placed else {
+        let Some((wall, r)) = placed else {
+            let why = why.unwrap_or_else(|| "could not be measured in its wall".into());
+            self.mesh_reason
+                .insert(id, format!("{why}; imported as a mesh"));
             self.import_free_mesh(id);
             return;
         };
+        if opening.is_none() {
+            let wall_ifc = self
+                .walls
+                .iter()
+                .find(|(_, w)| w.iter().any(|w| w.id == wall.id))
+                .map(|(i, _)| *i);
+            let host = wall_ifc.map_or_else(|| "a wall".into(), |w| self.label(w));
+            self.note(
+                id,
+                "doors and windows with no opening relationship were placed in the wall they sit in",
+                format!("has no IfcRelFillsElement; placed in {host}"),
+            );
+        }
+        let (offset, sill, width, height) = self.snap_to_void(&wall, r);
         if offset < -0.01 || sill < -0.01 {
-            self.g
-                .warnings
-                .add("a door or window reaching past its wall's start or base was clipped to it");
+            self.note(
+                id,
+                "doors and windows reaching past their wall's start or base were clipped to it",
+                "reaches past its wall's start or base; clipped to it",
+            );
         }
         self.done.insert(id);
         let material = self.material_for(id);
@@ -1470,10 +1829,11 @@ impl<'a> Importer<'a> {
         if mesh.faces.is_empty() {
             let has_parts = self.has_parts.contains(&id);
             if !has_parts && !e.arg(6).is_null() && class != "IfcSite" {
-                self.g.warnings.add(format!(
-                    "{class} {:?} has no geometry CreaBIM can read",
-                    Self::name(e, "")
-                ));
+                self.note(
+                    id,
+                    "elements with no geometry CreaBIM can read were skipped",
+                    "has no geometry CreaBIM can read; skipped",
+                );
             }
             return;
         }
@@ -1483,24 +1843,25 @@ impl<'a> Importer<'a> {
             return;
         };
         let (lid, elev) = self.level_for(id, lo.z);
+        if let Some(why) = self.mesh_reason.remove(&id) {
+            let group = if class.starts_with("IfcWall") {
+                "walls that are not straight upright prisms were imported as meshes"
+            } else if class.starts_with("IfcSlab") {
+                "slabs that are not flat upright prisms were imported as meshes"
+            } else if class.starts_with("IfcDoor") || class.starts_with("IfcWindow") {
+                "doors and windows not in a native wall were imported as meshes"
+            } else {
+                "columns and beams that are not straight prisms were imported as meshes"
+            };
+            self.note(id, group, why);
+        }
+        if self.voided.contains(&id) {
+            self.cut_openings(id, &mut mesh);
+        }
         // vertices relative to the element's own placement, as authored
         let at = world.w_axis.truncate();
         for v in &mut mesh.vertices {
             *v -= at;
-        }
-        if class.starts_with("IfcWall") {
-            self.g
-                .warnings
-                .add("walls that are not straight vertical prisms were imported as meshes");
-        } else if class.starts_with("IfcSlab") {
-            self.g.warnings.add(
-                "slabs that are not horizontal prisms topped at a storey were imported as meshes",
-            );
-        }
-        if self.voided.contains(&id) {
-            self.g
-                .warnings
-                .add("openings in elements imported as meshes are not cut");
         }
         let material = self.material_for(id);
         let eid = self.new_id(e);
@@ -1523,6 +1884,113 @@ impl<'a> Importer<'a> {
             of_type: None,
         });
     }
+
+    /// Cut an element's openings (IfcOpeningElement through
+    /// IfcRelVoidsElement) out of its mesh, noting any that can't be.
+    fn cut_openings(&mut self, id: u64, mesh: &mut EditMesh) {
+        use creabim_core::csg::{boolean, BoolOp, Polygon};
+        const GROUP: &str = "openings that could not be cut into a mesh";
+        let mut openings: Vec<u64> = self
+            .voids
+            .iter()
+            .filter(|(_, h)| **h == id)
+            .map(|(o, _)| *o)
+            .collect();
+        openings.sort_unstable();
+        // work near the origin, where the cut is most precise
+        let Some((origin, _)) = bounds(mesh.vertices.iter().copied()) else {
+            return;
+        };
+        let polygons = |m: &EditMesh| -> Vec<Polygon> {
+            (0..m.faces.len())
+                .flat_map(|f| m.face_triangles(f))
+                .filter_map(|t| {
+                    Polygon::new(t.iter().map(|&v| m.vertices[v as usize] - origin).collect())
+                })
+                .collect()
+        };
+        let mut solid = polygons(mesh);
+        let mut changed = false;
+        for oid in openings {
+            let Some(o) = self.f.get(oid) else { continue };
+            let ow = self.g.placement(o.arg(5));
+            let mut om = self.g.product_mesh(o, &ow);
+            if om.faces.is_empty() {
+                self.note(
+                    oid,
+                    GROUP,
+                    format!("has no shape to cut into {}", self.label(id)),
+                );
+                continue;
+            }
+            weld(&mut om, 1e-6);
+            let before = volume(&solid);
+            let cut = boolean(solid.clone(), polygons(&om), BoolOp::Difference);
+            let after = volume(&cut);
+            if cut.is_empty() || after > before + 1e-6 || after < 1e-9 {
+                self.note(
+                    oid,
+                    GROUP,
+                    format!("could not be cut into {}", self.label(id)),
+                );
+                continue;
+            }
+            // a body exported with its holes already cut loses nothing
+            if before - after > 1e-6 {
+                solid = cut;
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+        let mut out = EditMesh::default();
+        for p in &solid {
+            let base = out.vertices.len() as u32;
+            out.vertices.extend(p.points.iter().map(|v| *v + origin));
+            out.faces
+                .push((0..p.points.len() as u32).map(|i| base + i).collect());
+        }
+        weld(&mut out, 1e-6);
+        merge_coplanar(&mut out);
+        *mesh = out;
+    }
+}
+
+/// The wall nearest a body's centre whose thickness (give or take `slack`)
+/// and height hold it.
+fn nearest_wall(walls: Vec<&HostWall>, mesh: &EditMesh, slack: f64) -> Option<HostWall> {
+    let (lo, hi) = bounds(mesh.vertices.iter().copied())?;
+    let c = (lo + hi) / 2.0;
+    let across = |w: &HostWall| {
+        let d = (w.end - w.start).normalize_or_zero();
+        (c.truncate() - w.start).perp_dot(d).abs()
+    };
+    walls
+        .into_iter()
+        .filter(|w| {
+            let d = (w.end - w.start).normalize_or_zero();
+            let u = (c.truncate() - w.start).dot(d);
+            across(w) <= w.thickness / 2.0 + slack
+                && u >= 0.0
+                && u <= w.start.distance(w.end)
+                && c.z >= w.base_z - 0.01
+                && c.z <= w.top_z + 0.01
+        })
+        .min_by(|a, b| across(a).total_cmp(&across(b)))
+        .copied()
+}
+
+/// The volume a set of outward polygons encloses.
+fn volume(polygons: &[creabim_core::csg::Polygon]) -> f64 {
+    let mut v = 0.0;
+    for p in polygons {
+        let q = &p.points;
+        for i in 1..q.len().saturating_sub(1) {
+            v += q[0].dot(q[i].cross(q[i + 1])) / 6.0;
+        }
+    }
+    v
 }
 
 /// Recognise a vertical prism in a closed mesh: every vertex at the bottom or
@@ -1588,7 +2056,7 @@ pub(crate) fn prism_of_mesh(mut mesh: EditMesh) -> Option<Prism> {
         footprint: remove_collinear(&plan),
         z0,
         z1,
-        holes: false,
+        holes: vec![],
         clipped: false,
     })
 }
@@ -1613,7 +2081,18 @@ pub(crate) fn wall_from_footprint(
             (fp[i], (fp[(i + 1) % fp.len()] - fp[i]).normalize_or_zero())
         }
     };
-    if d == DVec2::ZERO {
+    wall_from_points(fp, origin, d, axis)
+}
+
+/// A straight wall's centreline and thickness from corners that must lie
+/// on two lines running `d` (through `origin` or parallel to it).
+pub(crate) fn wall_from_points(
+    fp: &[DVec2],
+    origin: DVec2,
+    d: DVec2,
+    axis: Option<(DVec2, DVec2)>,
+) -> Option<(DVec2, DVec2, f64)> {
+    if fp.len() < 4 || d == DVec2::ZERO {
         return None;
     }
     let n = d.perp();
@@ -1630,7 +2109,8 @@ pub(crate) fn wall_from_footprint(
     }
     let centre = (smin + smax) / 2.0;
     if let Some((a, b)) = axis.filter(|(a, b)| a.distance(*b) > 1e-6) {
-        return Some((a + n * centre, b + n * centre, thickness));
+        let shift = n * ((a - origin).dot(n) - centre);
+        return Some((a - shift, b - shift, thickness));
     }
     // the centreline ends halfway between the two faces' ends, which is
     // exact for square and mitred ends
@@ -1685,22 +2165,7 @@ pub(crate) fn opening_in_wall(
     Some((offset, sill, width, height))
 }
 
-/// Drop vertices that lie on the line through their neighbours.
-fn remove_collinear(poly: &[DVec2]) -> Vec<DVec2> {
-    let n = poly.len();
-    let keep: Vec<DVec2> = (0..n)
-        .filter(|&i| {
-            let (a, b, c) = (poly[(i + n - 1) % n], poly[i], poly[(i + 1) % n]);
-            (b - a).perp_dot(c - b).abs() > 1e-9 * (1.0 + (c - a).length_squared())
-        })
-        .map(|i| poly[i])
-        .collect();
-    if keep.len() >= 3 {
-        keep
-    } else {
-        poly.to_vec()
-    }
-}
+use brep::remove_collinear;
 
 /// Metres per length unit and radians per angle unit, from the project's units.
 fn units(f: &StepFile, by_class: &HashMap<&str, Vec<u64>>) -> (f64, f64, Option<String>) {

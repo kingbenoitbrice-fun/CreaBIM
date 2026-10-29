@@ -38,7 +38,7 @@ pub fn room_outline(model: &Model, level: ElementId, p: DVec2) -> Option<Vec<DVe
 }
 
 /// The smallest closed face of the line arrangement `segs` around `p`.
-fn room_in_lines(segs: &[(DVec2, DVec2)], p: DVec2) -> Option<Vec<DVec2>> {
+pub(crate) fn room_in_lines(segs: &[(DVec2, DVec2)], p: DVec2) -> Option<Vec<DVec2>> {
     // split every segment where others cross it
     let mut nodes: Vec<DVec2> = Vec::new();
     let mut node = |q: DVec2| -> usize {
@@ -57,6 +57,14 @@ fn room_in_lines(segs: &[(DVec2, DVec2)], p: DVec2) -> Option<Vec<DVec2>> {
             if i != j {
                 if let Some(t) = crossing(a, b, c, d) {
                     ts.push(t);
+                }
+                // and where another one, running along it, ends on it
+                let len2 = (b - a).length_squared();
+                for q in [c, d] {
+                    let t = (q - a).dot(b - a) / len2;
+                    if (0.0..=1.0).contains(&t) && a.lerp(b, t).distance(q) < 1e-9 {
+                        ts.push(t);
+                    }
                 }
             }
         }

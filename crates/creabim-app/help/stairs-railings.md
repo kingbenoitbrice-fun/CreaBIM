@@ -9,7 +9,7 @@ It rises to the next level in equal risers no higher than *Max riser*. *Properti
 
 Turn on **L-shaped** for a landing: set after how many risers it comes and which way the stair turns.
 
-In plan, a stair is drawn with its risers below the cut, a break line, the treads above the cut dashed, and a walking line with an arrow and *UP*.
+In plan, a stair is drawn with its risers below the cut, a break line, the treads above the cut dashed, and a walking line with an arrow and *UP*. On the level it climbs to, the whole stair is drawn where its well lets you see it, with *DN*; the plan's *View depth* sets how far down it looks (see [Views](views#plan-graphics)).
 
 > **Note:** A stair doesn't cut the slab above by itself. Draw a [shaft](holes#shafts) for its stair well.
 

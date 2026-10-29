@@ -13,6 +13,9 @@ pub enum Pen {
     Projection,
     /// Symbols such as door swings: light line.
     Symbol,
+    /// Small things seen below the cut, furniture and fixtures: the
+    /// lightest line.
+    Fine,
     /// Grid lines: dashed.
     Grid,
     /// Construction guides: shown while working, never printed.
@@ -315,6 +318,42 @@ fn boxes_overlap(a: &[DVec2], b: &[DVec2]) -> bool {
     alo.x < bhi.x - eps && blo.x < ahi.x - eps && alo.y < bhi.y - eps && blo.y < ahi.y - eps
 }
 
+/// The stretches of segment `a` → `b` running strictly inside `poly`, as
+/// distances along it.
+fn inside_spans(a: DVec2, b: DVec2, poly: &[DVec2], eps: f64) -> Vec<(f64, f64)> {
+    let len = a.distance(b);
+    if len < eps || poly.len() < 3 {
+        return vec![];
+    }
+    let d = (b - a) / len;
+    let mut ts = vec![0.0, len];
+    let n = poly.len();
+    for i in 0..n {
+        let (p, q) = (poly[i], poly[(i + 1) % n]);
+        let e = q - p;
+        let den = d.perp_dot(e);
+        if den.abs() < 1e-12 {
+            continue;
+        }
+        // a + d t = p + e s
+        let t = (p - a).perp_dot(e) / den;
+        let s = (p - a).perp_dot(d) / den;
+        if (-1e-9..=1.0 + 1e-9).contains(&s) && t > 0.0 && t < len {
+            ts.push(t);
+        }
+    }
+    ts.sort_by(|x, y| x.total_cmp(y));
+    ts.dedup_by(|x, y| (*x - *y).abs() < eps);
+    ts.windows(2)
+        .filter(|w| w[1] > w[0] + eps)
+        .filter(|w| {
+            let m = a + d * ((w[0] + w[1]) / 2.0);
+            point_in(m, poly) && edge_distance(m, poly) > eps
+        })
+        .map(|w| (w[0], w[1]))
+        .collect()
+}
+
 /// Turn cut polygons into fills plus outlines, leaving out outline segments
 /// shared with a neighbouring cut so joined elements read as one mass.
 pub fn clean_up_cuts(model: &Model, items: &mut Vec<PlanItem>) {
@@ -414,6 +453,12 @@ pub fn clean_up_pieces(model: &Model, items: &mut Vec<PlanItem>, layers: Vec<Cut
                             }
                         }
                     }
+                }
+                // where two of the same overlap (footings lapped at a
+                // corner), the edges running inside the other are merged
+                // away too, leaving one outline round both
+                if same {
+                    covered.extend(inside_spans(a, b, &other.points, eps));
                 }
             }
             // split the edge where any of that changes, and draw each part
@@ -548,6 +593,21 @@ pub enum PlanItem {
         points: Vec<DVec2>,
         rgb: [f32; 3],
     },
+    /// A room's floor: washed in `rgb` when the view colours its rooms,
+    /// otherwise not drawn; picked by a click inside it that finds nothing
+    /// else.
+    Room {
+        id: ElementId,
+        points: Vec<DVec2>,
+        rgb: Option<[f32; 3]>,
+    },
+    /// The footprint of something below the cut, filled flat in a light
+    /// tint (sRGB, 0..1) under the linework, with no outline.
+    Shade {
+        id: ElementId,
+        points: Vec<DVec2>,
+        rgb: [f32; 3],
+    },
     /// Shaded surfaces as an image spanning `lo`..`hi`, drawn only inside `clip`.
     Image {
         id: ElementId,
@@ -561,7 +621,8 @@ pub enum PlanItem {
 /// Is a label short enough to sit in a bubble, as grid and section marks
 /// do (level datums and longer text are plain)?
 pub fn is_bubble(text: &str) -> bool {
-    !text.contains(' ') && (1..=5).contains(&text.chars().count())
+    // a roof pitch (35°, 1:60) is short too, but plain
+    !text.contains([' ', '°', ':']) && (1..=5).contains(&text.chars().count())
 }
 
 /// A bubble's radius for `text`, in units of the bubble for one or two
@@ -583,6 +644,8 @@ impl PlanItem {
             | PlanItem::Tag { id, .. }
             | PlanItem::Annotation { id, .. }
             | PlanItem::Tint { id, .. }
+            | PlanItem::Room { id, .. }
+            | PlanItem::Shade { id, .. }
             | PlanItem::Image { id, .. } => *id,
         }
     }
@@ -594,7 +657,9 @@ impl PlanItem {
         match self {
             PlanItem::Polygon { points, .. }
             | PlanItem::Fill { points, .. }
-            | PlanItem::Tint { points, .. } => pts.extend(points.iter().copied()),
+            | PlanItem::Tint { points, .. }
+            | PlanItem::Room { points, .. }
+            | PlanItem::Shade { points, .. } => pts.extend(points.iter().copied()),
             PlanItem::Line {
                 pen: Pen::Guide, ..
             } => {}
@@ -766,7 +831,28 @@ fn footing_cut_at(
 }
 
 pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
+    plan_view_with(
+        model,
+        level,
+        cut_height,
+        &creabim_core::PlanGraphics::default(),
+    )
+}
+
+/// [`plan_view`] with a view's graphics: what lies wholly below the cut
+/// tinted, and the stair from the level below seen through its well, as
+/// far down as the view depth.
+pub fn plan_view_with(
+    model: &Model,
+    level: ElementId,
+    cut_height: f64,
+    graphics: &creabim_core::PlanGraphics,
+) -> PlanView {
     let mut items = Vec::new();
+    // tinted footprints, drawn under everything else
+    let mut shades: Vec<PlanItem> = Vec::new();
+    // dashed over the cut fills: openings above the cut
+    let mut overhead: Vec<PlanItem> = Vec::new();
     let joins = creabim_core::wall_joins(model);
     let cuts = crate::scene::cuts(model);
     let cutters: std::collections::HashSet<ElementId> = cuts.iter().map(|c| c.1).collect();
@@ -860,6 +946,18 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                     if cut_v > c.v0 && cut_v < c.v1 {
                         gaps.push((c.u0, c.u1));
                         items.extend(opening_symbol(oid, o, w, &c, cut_v, &at));
+                    } else if c.v0 >= cut_v {
+                        // wholly above the cut (a duct hole, a high
+                        // window): its outline in the wall, dashed
+                        let corners = [at(c.u0, -t), at(c.u1, -t), at(c.u1, t), at(c.u0, t)];
+                        for i in 0..4 {
+                            overhead.push(PlanItem::Line {
+                                id: oid,
+                                pen: Pen::Hidden,
+                                a: corners[i],
+                                b: corners[(i + 1) % 4],
+                            });
+                        }
                     }
                 }
                 // a curtain wall set in it leaves its own gap, and draws itself
@@ -952,6 +1050,7 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
             }
             ElementKind::Object(o) if o.level == level => {
                 items.extend(crate::objects::object_plan(model, e, cut_height));
+                shades.extend(crate::objects::object_shade(model, e, cut_height, graphics));
             }
             k if on_level && creabim_core::members::is_member(k) => {
                 items.extend(crate::members::member_plan(model, e, cut_height));
@@ -980,7 +1079,19 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
                 // the level its top reaches too, whose floor it cuts
                 let z = model.level(level).map_or(0.0, |l| l.elevation);
                 let (z0, z1) = sh.span(model);
-                if z0 - 1e-6 <= z && z <= z1 + 1e-6 {
+                if (z - z0).abs() < 1e-6 && stair_in(model, level, &sh.boundary) {
+                    // a stair well where its stair starts: no floor is
+                    // open here, the edge of the floor above is dashed
+                    let n = sh.boundary.len();
+                    for i in 0..n {
+                        items.push(PlanItem::Line {
+                            id: e.id,
+                            pen: Pen::Hidden,
+                            a: sh.boundary[i],
+                            b: sh.boundary[(i + 1) % n],
+                        });
+                    }
+                } else if z0 - 1e-6 <= z && z <= z1 + 1e-6 {
                     items.extend(hole_marks(e.id, &sh.boundary, Pen::Symbol));
                 }
             }
@@ -1015,14 +1126,240 @@ pub fn plan_view(model: &Model, level: ElementId, cut_height: f64) -> PlanView {
     items.retain(|it| !sliced.contains(&it.id()) || matches!(it, PlanItem::Label { .. }));
     layers.retain(|p| !sliced.contains(&p.id));
     clean_up_pieces(model, &mut items, layers);
+    items.append(&mut overhead);
     if !sliced.is_empty() {
         let z = model.level(level).map_or(0.0, |l| l.elevation) + cut_height;
         let scene = crate::scene::build_scene(model);
         for item in scene.iter().filter(|i| sliced.contains(&i.id)) {
             sliced_plan(model, item, z, &mut items);
+            // an imported mesh wholly below the cut: its footprint tinted
+            if matches!(
+                model.get(item.id).map(|e| &e.kind),
+                Some(ElementKind::FreeMesh(_))
+            ) {
+                shades.extend(mesh_shade(item, z, graphics));
+            }
         }
     }
-    PlanView { items }
+    items.extend(stairs_beyond(model, level, graphics));
+    category_pens(model, &mut items, graphics);
+    shades.append(&mut items);
+    PlanView { items: shades }
+}
+
+/// The lines a category draws in projection given the pen its view's
+/// table names for it: furniture and fixtures in the fine pen.
+pub(crate) fn category_pens(
+    model: &Model,
+    items: &mut [PlanItem],
+    graphics: &creabim_core::PlanGraphics,
+) {
+    if graphics.category_pens.is_empty() {
+        return;
+    }
+    let cutters = std::collections::HashSet::new();
+    let mut of: std::collections::HashMap<ElementId, Option<Pen>> = Default::default();
+    for it in items.iter_mut() {
+        let (PlanItem::Line { id, pen, .. }
+        | PlanItem::Polygon { id, pen, .. }
+        | PlanItem::Arc { id, pen, .. }) = it
+        else {
+            continue;
+        };
+        if !matches!(pen, Pen::Projection | Pen::Symbol | Pen::Fine) {
+            continue;
+        }
+        let to = *of.entry(*id).or_insert_with(|| {
+            let e = model.get(*id)?;
+            let c = creabim_core::visibility::Category::of(e, &cutters)?;
+            graphics.pen_of(c).map(|p| match p {
+                creabim_core::graphics::PenClass::Projection => Pen::Projection,
+                creabim_core::graphics::PenClass::Symbol => Pen::Symbol,
+                creabim_core::graphics::PenClass::Fine => Pen::Fine,
+            })
+        });
+        if let Some(to) = to {
+            *pen = to;
+        }
+    }
+}
+
+/// Does a stair standing on `level` start inside `outline`?
+fn stair_in(model: &Model, level: ElementId, outline: &[DVec2]) -> bool {
+    model.iter().any(|e| match &e.kind {
+        ElementKind::Stair(s) => s.level == level && point_in(s.start, outline),
+        _ => false,
+    })
+}
+
+/// The footprint of a mesh lying wholly below `z`, as the faces it shows
+/// from above, tinted. Very large meshes are tinted as their hull.
+fn mesh_shade(
+    item: &crate::scene::SceneItem,
+    z: f64,
+    graphics: &creabim_core::PlanGraphics,
+) -> Vec<PlanItem> {
+    let Some(rgb) = graphics.below_tint(item.color) else {
+        return vec![];
+    };
+    let m = &item.mesh;
+    let p = |i: u32| glam::Vec3::from(m.positions[i as usize]).as_dvec3();
+    if m.positions.is_empty() || m.positions.iter().any(|q| q[2] as f64 >= z - 1e-6) {
+        return vec![];
+    }
+    let tris = m.indices.chunks(3).filter(|t| t.len() == 3);
+    if m.indices.len() / 3 > 4000 {
+        let pts: Vec<DVec2> = m
+            .positions
+            .iter()
+            .map(|q| DVec2::new(q[0] as f64, q[1] as f64))
+            .collect();
+        let hull = creabim_core::objects::hull(&pts);
+        return vec![PlanItem::Shade {
+            id: item.id,
+            points: hull,
+            rgb,
+        }];
+    }
+    tris.filter_map(|t| {
+        let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+        let (a, b, c) = (a.truncate(), b.truncate(), c.truncate());
+        // faces turned up, seen from above
+        ((b - a).perp_dot(c - a) > 1e-9).then(|| PlanItem::Shade {
+            id: item.id,
+            points: vec![a, b, c],
+            rgb,
+        })
+    })
+    .collect()
+}
+
+/// Stairs climbing from a level below up to `level`, seen through the
+/// holes in its floor (a stair well, a void): their treads, sides and
+/// landing in projection, clipped to the holes, with the walking line, an
+/// arrow and DN where it reaches this floor. What lies deeper than the
+/// view depth is left out.
+fn stairs_beyond(
+    model: &Model,
+    level: ElementId,
+    graphics: &creabim_core::PlanGraphics,
+) -> Vec<PlanItem> {
+    let Some(here) = model.level(level).map(|l| l.elevation) else {
+        return vec![];
+    };
+    let below = model
+        .levels()
+        .map(|(_, l)| l.elevation)
+        .filter(|z| *z < here - 1e-6)
+        .reduce(f64::max);
+    let bottom = here - graphics.depth(here, below);
+    // the floor's holes: shafts reaching up to it and holes in its slabs
+    let mut holes: Vec<Vec<DVec2>> = Vec::new();
+    for e in model.iter() {
+        match &e.kind {
+            ElementKind::Shaft(sh) => {
+                let (z0, z1) = sh.span(model);
+                if z0 < here - 1e-6 && here <= z1 + 1e-6 {
+                    holes.push(sh.boundary.clone());
+                }
+            }
+            ElementKind::Slab(s) if s.level == level => {
+                holes.extend(creabim_core::slab::holes_of(model, e));
+            }
+            _ => {}
+        }
+    }
+    if holes.is_empty() {
+        return vec![];
+    }
+    let mut out = Vec::new();
+    for e in model.iter() {
+        let ElementKind::Stair(s) = &e.kind else {
+            continue;
+        };
+        let base = s.base(model);
+        let rise = s.rise(model);
+        // it arrives at this floor from below
+        if base >= here - 1e-6 || (base + rise - here).abs() > 0.05 {
+            continue;
+        }
+        let mut lines: Vec<(Pen, DVec2, DVec2)> = Vec::new();
+        crate::members::stair_lines(s, rise, &mut |pen, a, b, z| {
+            if base + z >= bottom - 1e-6 {
+                lines.push((pen, a, b));
+            }
+        });
+        for (pen, a, b) in lines {
+            for (p, q) in clip_to_holes(a, b, &holes) {
+                out.push(PlanItem::Line {
+                    id: e.id,
+                    pen,
+                    a: p,
+                    b: q,
+                });
+            }
+        }
+        let lay = s.layout(rise);
+        if let Some(f) = lay.flights.last() {
+            let top = f.end(s.tread);
+            if holes.iter().any(|h| point_in(top, h)) {
+                out.push(PlanItem::Label {
+                    id: e.id,
+                    at: top + f.dir * 0.35,
+                    text: "DN".into(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The parts of `a` → `b` inside any of `holes`.
+fn clip_to_holes(a: DVec2, b: DVec2, holes: &[Vec<DVec2>]) -> Vec<(DVec2, DVec2)> {
+    let len = a.distance(b);
+    if len < 1e-9 {
+        return vec![];
+    }
+    let d = (b - a) / len;
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for h in holes {
+        let mut ts = vec![0.0, len];
+        let n = h.len();
+        for i in 0..n {
+            let (p, q) = (h[i], h[(i + 1) % n]);
+            let e = q - p;
+            let den = d.perp_dot(e);
+            if den.abs() < 1e-12 {
+                continue;
+            }
+            let t = (p - a).perp_dot(e) / den;
+            let s = (p - a).perp_dot(d) / den;
+            if (0.0..=1.0).contains(&s) && t > 0.0 && t < len {
+                ts.push(t);
+            }
+        }
+        ts.sort_by(|x, y| x.total_cmp(y));
+        for w in ts.windows(2) {
+            // on or inside the hole's edge
+            let m = a + d * ((w[0] + w[1]) / 2.0);
+            if w[1] > w[0] + 1e-9 && (point_in(m, h) || edge_distance(m, h) < 1e-6) {
+                out.push((w[0], w[1]));
+            }
+        }
+    }
+    out.sort_by(|x, y| x.0.total_cmp(&y.0));
+    // join what touches, so overlapping holes give one line
+    let mut joined: Vec<(f64, f64)> = Vec::new();
+    for (lo, hi) in out {
+        match joined.last_mut() {
+            Some(last) if lo <= last.1 + 1e-9 => last.1 = last.1.max(hi),
+            _ => joined.push((lo, hi)),
+        }
+    }
+    joined
+        .into_iter()
+        .map(|(lo, hi)| (a + d * lo, a + d * hi))
+        .collect()
 }
 
 /// The plan of `level` as an underlay: its linework (cut outlines,
@@ -1088,27 +1425,181 @@ pub fn hole_marks(id: ElementId, hole: &[DVec2], pen: Pen) -> Vec<PlanItem> {
         pen,
         points: hole.to_vec(),
     }];
-    let n = hole.len();
-    if n >= 4 {
-        // the two diagonals of its box, kept inside it
-        let lo = hole.iter().copied().reduce(DVec2::min).unwrap_or_default();
-        let hi = hole.iter().copied().reduce(DVec2::max).unwrap_or_default();
-        let far = |p: DVec2| {
-            hole.iter()
+    for (a, b) in hole_cross(hole) {
+        out.push(PlanItem::Line {
+            id,
+            pen: Pen::Fine,
+            a,
+            b,
+        });
+    }
+    out
+}
+
+/// The cross drawn in a hole: corner to corner of each convex piece of
+/// it, so an L-shaped stair well has a cross in each leg and no line
+/// leaves the opening.
+pub fn hole_cross(hole: &[DVec2]) -> Vec<(DVec2, DVec2)> {
+    let mut out = Vec::new();
+    for piece in convex_pieces(hole) {
+        if piece.len() < 4 {
+            continue;
+        }
+        // the corners nearest the corners of its box: in a convex piece
+        // the lines between them stay inside it
+        let lo = piece.iter().copied().reduce(DVec2::min).unwrap_or_default();
+        let hi = piece.iter().copied().reduce(DVec2::max).unwrap_or_default();
+        let near = |p: DVec2| {
+            piece
+                .iter()
                 .copied()
                 .min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)))
                 .unwrap_or(p)
         };
         for (a, b) in [(lo, hi), (DVec2::new(lo.x, hi.y), DVec2::new(hi.x, lo.y))] {
-            out.push(PlanItem::Line {
-                id,
-                pen: Pen::Symbol,
-                a: far(a),
-                b: far(b),
-            });
+            let (a, b) = (near(a), near(b));
+            if a.distance(b) > 1e-6 {
+                out.push((a, b));
+            }
         }
     }
     out
+}
+
+/// A polygon split into convex pieces: itself when convex, rectangles
+/// when its sides all run along x and y, otherwise its triangles merged
+/// while they stay convex (Hertel and Mehlhorn).
+pub fn convex_pieces(poly: &[DVec2]) -> Vec<Vec<DVec2>> {
+    let mut poly = poly.to_vec();
+    poly.dedup_by(|a, b| a.distance(*b) < 1e-9);
+    if poly.len() > 1 && poly[0].distance(poly[poly.len() - 1]) < 1e-9 {
+        poly.pop();
+    }
+    if poly.len() < 3 || is_convex(&poly) {
+        return vec![poly];
+    }
+    let n = poly.len();
+    let square = (0..n).all(|i| {
+        let e = poly[(i + 1) % n] - poly[i];
+        e.x.abs() < 1e-9 || e.y.abs() < 1e-9
+    });
+    if square {
+        return rectangles(&poly);
+    }
+    let mut pieces: Vec<Vec<DVec2>> = creabim_core::polygon::triangulate(&poly)
+        .into_iter()
+        .map(|t| t.iter().map(|i| poly[*i]).collect())
+        .collect();
+    // merge neighbours across a shared side while the result is convex
+    let mut merged = true;
+    while merged {
+        merged = false;
+        'outer: for i in 0..pieces.len() {
+            for j in i + 1..pieces.len() {
+                if let Some(m) = join_pieces(&pieces[i], &pieces[j]) {
+                    if is_convex(&m) {
+                        pieces[i] = m;
+                        pieces.remove(j);
+                        merged = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+    pieces
+}
+
+/// Two polygons sharing a side, as one (none when they share none).
+fn join_pieces(a: &[DVec2], b: &[DVec2]) -> Option<Vec<DVec2>> {
+    let close = |p: DVec2, q: DVec2| p.distance(q) < 1e-9;
+    let (na, nb) = (a.len(), b.len());
+    for i in 0..na {
+        let (p, q) = (a[i], a[(i + 1) % na]);
+        for j in 0..nb {
+            if close(b[j], q) && close(b[(j + 1) % nb], p) {
+                // a from q round to p, then b from p round to q
+                let mut out: Vec<DVec2> = (0..na).map(|k| a[(i + 1 + k) % na]).collect();
+                out.extend((1..nb - 1).map(|k| b[(j + 1 + k) % nb]));
+                // drop corners left in a straight line
+                let m = out.len();
+                let keep: Vec<DVec2> = (0..m)
+                    .filter(|k| {
+                        let (u, v, w) = (out[(k + m - 1) % m], out[*k], out[(k + 1) % m]);
+                        (v - u).perp_dot(w - v).abs() > 1e-12
+                    })
+                    .map(|k| out[k])
+                    .collect();
+                return Some(keep);
+            }
+        }
+    }
+    None
+}
+
+/// A polygon with sides along x and y as rectangles: the cells between
+/// its corner lines, merged into bands across and then down.
+fn rectangles(poly: &[DVec2]) -> Vec<Vec<DVec2>> {
+    let sorted = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.total_cmp(b));
+        v.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        v
+    };
+    let xs = sorted(poly.iter().map(|p| p.x).collect());
+    let ys = sorted(poly.iter().map(|p| p.y).collect());
+    // each row of cells as runs [x0, x1) inside the polygon
+    let mut rows: Vec<Vec<(usize, usize)>> = Vec::new();
+    for j in 0..ys.len().saturating_sub(1) {
+        let y = (ys[j] + ys[j + 1]) / 2.0;
+        let mut runs = Vec::new();
+        let mut start: Option<usize> = None;
+        for i in 0..xs.len() - 1 {
+            let inside = point_in(DVec2::new((xs[i] + xs[i + 1]) / 2.0, y), poly);
+            match (inside, start) {
+                (true, None) => start = Some(i),
+                (false, Some(s)) => {
+                    runs.push((s, i));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(s) = start {
+            runs.push((s, xs.len() - 1));
+        }
+        rows.push(runs);
+    }
+    // runs repeated row on row make one rectangle
+    let mut out = Vec::new();
+    let mut open: Vec<((usize, usize), usize)> = Vec::new();
+    for (j, runs) in rows.iter().enumerate() {
+        let mut next = Vec::new();
+        for (run, from) in open.drain(..) {
+            if runs.contains(&run) {
+                next.push((run, from));
+            } else {
+                out.push((run, from, j));
+            }
+        }
+        for run in runs {
+            if !next.iter().any(|(r, _)| r == run) {
+                next.push((*run, j));
+            }
+        }
+        open = next;
+    }
+    out.extend(open.into_iter().map(|(run, from)| (run, from, rows.len())));
+    out.into_iter()
+        .map(|((i0, i1), j0, j1)| {
+            let (x0, x1, y0, y1) = (xs[i0], xs[i1], ys[j0], ys[j1]);
+            vec![
+                DVec2::new(x0, y0),
+                DVec2::new(x1, y0),
+                DVec2::new(x1, y1),
+                DVec2::new(x0, y1),
+            ]
+        })
+        .collect()
 }
 
 /// Is this the linework of an underlay (drawn faintly, never picked)?
@@ -1486,5 +1977,340 @@ mod tests {
         assert_eq!(cut_footings(&m, "Foundation", 0.25), 16);
         // a cut above their tops passes none of them
         assert_eq!(cut_footings(&m, "Foundation", 0.6), 0);
+    }
+
+    fn named(m: &Model, name: &str) -> ElementId {
+        m.iter().find(|e| e.name == name).expect(name).id
+    }
+
+    fn view_items(m: &Model, view: &str) -> Vec<PlanItem> {
+        crate::section::view_drawing(m, named(m, view))
+            .unwrap()
+            .items
+    }
+
+    /// How many closed outlines a set of segments makes, joined end to
+    /// end; every corner must be met by an even number of them.
+    fn loops(segs: &[(DVec2, DVec2)]) -> usize {
+        type Key = (i64, i64);
+        let key = |p: DVec2| ((p.x * 1e4).round() as i64, (p.y * 1e4).round() as i64);
+        fn find(p: &mut std::collections::HashMap<Key, Key>, k: Key) -> Key {
+            let up = *p.entry(k).or_insert(k);
+            if up == k {
+                k
+            } else {
+                let r = find(p, up);
+                p.insert(k, r);
+                r
+            }
+        }
+        let mut parent: std::collections::HashMap<Key, Key> = Default::default();
+        let mut degree: std::collections::HashMap<Key, usize> = Default::default();
+        for (a, b) in segs {
+            let (ka, kb) = (key(*a), key(*b));
+            *degree.entry(ka).or_default() += 1;
+            *degree.entry(kb).or_default() += 1;
+            let (ra, rb) = (find(&mut parent, ka), find(&mut parent, kb));
+            parent.insert(ra, rb);
+        }
+        assert!(degree.values().all(|d| d % 2 == 0), "an open outline");
+        let keys: Vec<Key> = parent.keys().copied().collect();
+        let roots: std::collections::HashSet<Key> =
+            keys.into_iter().map(|k| find(&mut parent, k)).collect();
+        roots.len()
+    }
+
+    #[test]
+    fn footings_meeting_at_corners_merge_into_one_outline() {
+        let m = creabim_core::starter::starter_house();
+        let items = view_items(&m, "Foundation plan");
+        let footing =
+            |id: &ElementId| matches!(m.get(*id).map(|e| &e.kind), Some(ElementKind::Footing(_)));
+        let fills: Vec<&Vec<DVec2>> = items
+            .iter()
+            .filter_map(|it| match it {
+                PlanItem::Fill { id, points, .. } if footing(id) => Some(points),
+                _ => None,
+            })
+            .collect();
+        let cut: Vec<(DVec2, DVec2)> = items
+            .iter()
+            .filter_map(|it| match it {
+                PlanItem::Line {
+                    id,
+                    pen: Pen::Cut,
+                    a,
+                    b,
+                } if footing(id) => Some((*a, *b)),
+                _ => None,
+            })
+            .collect();
+        // no outline runs inside another footing: no overlap squares
+        for (a, b) in &cut {
+            let mid = (*a + *b) / 2.0;
+            for f in &fills {
+                assert!(
+                    !(point_in(mid, f) && edge_distance(mid, f) > 1e-3),
+                    "a footing edge {a} {b} runs inside another"
+                );
+            }
+        }
+        // the strips make one network: an outline round its outside and
+        // one round each bay inside it; each pad stands alone
+        let pads = m
+            .iter()
+            .filter(|e| {
+                matches!(&e.kind, ElementKind::Footing(f)
+                    if f.kind == creabim_core::FootingKind::Pad)
+            })
+            .count();
+        let n = loops(&cut);
+        // (the starter house has seven bays between its strips)
+        assert_eq!(n, 1 + 7 + pads, "{n} outlines, {pads} pads");
+    }
+
+    #[test]
+    fn an_l_shaped_hole_is_crossed_in_each_leg_inside_its_outline() {
+        let l = vec![
+            DVec2::new(0.0, 0.0),
+            DVec2::new(1.0, 0.0),
+            DVec2::new(1.0, 3.0),
+            DVec2::new(3.0, 3.0),
+            DVec2::new(3.0, 4.0),
+            DVec2::new(0.0, 4.0),
+        ];
+        let pieces = convex_pieces(&l);
+        assert_eq!(pieces.len(), 2);
+        let area: f64 = pieces.iter().map(|p| signed_area(p).abs()).sum();
+        assert!((area - signed_area(&l).abs()).abs() < 1e-9);
+        let cross = hole_cross(&l);
+        assert_eq!(cross.len(), 4);
+        for (a, b) in cross {
+            for t in [0.25, 0.5, 0.75] {
+                let p = a + (b - a) * t;
+                assert!(point_in(p, &l), "{p} is outside the hole");
+            }
+        }
+        // a hole that isn't square splits into convex pieces too
+        let tilted: Vec<DVec2> = l
+            .iter()
+            .map(|p| DVec2::from_angle(0.3).rotate(*p))
+            .collect();
+        let pieces = convex_pieces(&tilted);
+        assert!(pieces.len() >= 2);
+        for piece in pieces {
+            assert!(is_convex(&piece));
+        }
+    }
+
+    #[test]
+    fn the_first_floor_shows_the_stair_through_its_well() {
+        let m = creabim_core::starter::starter_house();
+        let stair = named(&m, "Stair");
+        let shaft = named(&m, "Stair Well");
+        let well = match &m.get(shaft).unwrap().kind {
+            ElementKind::Shaft(s) => s.boundary.clone(),
+            _ => unreachable!(),
+        };
+        let items = view_items(&m, "First Floor plan");
+        let treads = items
+            .iter()
+            .filter(
+                |it| matches!(it, PlanItem::Line { id, pen: Pen::Projection, .. } if *id == stair),
+            )
+            .count();
+        assert!(treads >= 15, "{treads} lines of the stair");
+        // all of it inside the well
+        for it in items.iter().filter(|it| it.id() == stair) {
+            if let PlanItem::Line { a, b, .. } = it {
+                let mid = (*a + *b) / 2.0;
+                assert!(point_in(mid, &well) || edge_distance(mid, &well) < 1e-6);
+            }
+        }
+        assert!(items.iter().any(
+            |it| matches!(it, PlanItem::Label { id, text, .. } if *id == stair && text == "DN")
+        ));
+        // the well's cross stays inside the L of the well
+        let mut crossing = 0;
+        for it in &items {
+            if let PlanItem::Line {
+                id,
+                pen: Pen::Fine,
+                a,
+                b,
+            } = it
+            {
+                if *id == shaft {
+                    crossing += 1;
+                    assert!(point_in((*a + *b) / 2.0, &well));
+                }
+            }
+        }
+        assert_eq!(crossing, 4);
+        // a view depth too shallow to reach the stair's foot shows less
+        let f = named(&m, "First Floor");
+        let shallow = creabim_core::PlanGraphics {
+            range: creabim_core::graphics::PlanRange {
+                view_depth: Some(1.0),
+            },
+            ..Default::default()
+        };
+        let count = |g: &creabim_core::PlanGraphics| {
+            plan_view_with(&m, f, 1.2, g)
+                .items
+                .iter()
+                .filter(|it| it.id() == stair)
+                .count()
+        };
+        let (some, all) = (count(&shallow), count(&Default::default()));
+        assert!(some > 0 && some < all, "{some} of {all}");
+        // on the ground floor the well is only the dashed edge above
+        let g = view_items(&m, "Ground Floor plan");
+        assert!(g.iter().filter(|it| it.id() == shaft).all(|it| matches!(
+            it,
+            PlanItem::Line {
+                pen: Pen::Hidden,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn what_lies_below_the_cut_is_tinted() {
+        let m = creabim_core::starter::starter_house();
+        let g = named(&m, "Ground Floor");
+        let shades = |graphics: &creabim_core::PlanGraphics| {
+            plan_view_with(&m, g, 1.2, graphics)
+                .items
+                .iter()
+                .filter(|it| matches!(it, PlanItem::Shade { .. }))
+                .count()
+        };
+        let on = shades(&Default::default());
+        assert!(on >= 10, "{on}");
+        let off = creabim_core::PlanGraphics {
+            below_fill: false,
+            ..Default::default()
+        };
+        assert_eq!(shades(&off), 0);
+        // tints come first, under every line, and are light
+        let items = plan_view(&m, g, 1.2).items;
+        let last = items
+            .iter()
+            .rposition(|it| matches!(it, PlanItem::Shade { .. }))
+            .unwrap();
+        for it in &items[..=last] {
+            let PlanItem::Shade { rgb, .. } = it else {
+                panic!("{it:?} under a tint");
+            };
+            assert!(rgb.iter().all(|c| *c > 0.6), "{rgb:?}");
+        }
+    }
+
+    #[test]
+    fn furniture_is_drawn_lighter_than_walls_and_slabs() {
+        let m = creabim_core::starter::starter_house();
+        let items = view_items(&m, "Ground Floor plan");
+        let objects: std::collections::HashSet<String> = items
+            .iter()
+            .filter(|it| {
+                m.get(it.id())
+                    .is_some_and(|e| matches!(e.kind, ElementKind::Object(_)))
+            })
+            .filter_map(|it| match it {
+                PlanItem::Line { pen, .. } | PlanItem::Polygon { pen, .. } => {
+                    Some(format!("{pen:?}"))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(objects.contains("Fine"));
+        assert!(!objects.contains("Projection") && !objects.contains("Cut"));
+        let w = creabim_core::LineWeights::for_scale(50.0);
+        let width = |p| crate::paper::pen_stroke_with(p, &w).width;
+        assert!(width(Pen::Cut) > width(Pen::Projection));
+        assert!(width(Pen::Projection) > width(Pen::Symbol));
+        assert!(width(Pen::Symbol) > width(Pen::Fine));
+        // a view's own weights reach its sheet
+        let mut m2 = m.clone();
+        let v = named(&m2, "Ground Floor plan");
+        let before = m2.get(v).unwrap().clone();
+        let mut after = before.clone();
+        if let ElementKind::View(view) = &mut after.kind {
+            let mut heavy = creabim_core::LineWeights::for_scale(50.0);
+            heavy.cut = 1.4;
+            view.graphics.weights = Some(heavy);
+        }
+        creabim_core::Transaction::new("Line weights")
+            .replace(before, after)
+            .apply(&mut m2)
+            .unwrap();
+        let sheet = named(&m2, "Ground Floor Plan");
+        let svg = crate::sheet::sheet_svg(&m2, sheet, &crate::sheet::SheetInfo::default()).unwrap();
+        assert!(svg.contains("stroke-width=\"1.4\""));
+    }
+
+    #[test]
+    fn an_opening_above_the_cut_is_drawn_dashed_in_its_wall() {
+        use creabim_core::{Element, Level, Opening, Transaction, Wall};
+        let mut m = Model::new();
+        let l = Element::new(
+            "Ground",
+            ElementKind::Level(Level {
+                elevation: 0.0,
+                height: 3.0,
+            }),
+        );
+        let level = l.id;
+        let w = Element::new(
+            "W",
+            ElementKind::Wall(Wall::new(
+                level,
+                DVec2::ZERO,
+                DVec2::new(4.0, 0.0),
+                0.2,
+                3.0,
+            )),
+        );
+        let wall = w.id;
+        let duct = Element::new(
+            "Duct",
+            ElementKind::Opening(Opening {
+                host: wall,
+                kind: OpeningKind::Hole,
+                offset: 1.0,
+                sill: 2.2,
+                width: 0.4,
+                height: 0.3,
+                material: None,
+                frame: Default::default(),
+                flip_hand: false,
+                flip_facing: false,
+            }),
+        );
+        let hole = duct.id;
+        Transaction::new("t")
+            .insert(l)
+            .insert(w)
+            .insert(duct)
+            .apply(&mut m)
+            .unwrap();
+        let items = plan_view(&m, level, 1.2).items;
+        let dashed: Vec<&PlanItem> = items
+            .iter()
+            .filter(|it| matches!(it, PlanItem::Line { id, pen: Pen::Hidden, .. } if *id == hole))
+            .collect();
+        assert_eq!(dashed.len(), 4);
+        // drawn over the wall's fill, so it shows
+        let fill = items
+            .iter()
+            .position(|it| matches!(it, PlanItem::Fill { id, .. } if *id == wall))
+            .unwrap();
+        let first = items.iter().position(|it| it.id() == hole).unwrap();
+        assert!(first > fill);
+        // the wall stays whole at the cut
+        assert!(!items
+            .iter()
+            .any(|it| matches!(it, PlanItem::Line { id, pen: Pen::Symbol, .. } if *id == hole)));
     }
 }
