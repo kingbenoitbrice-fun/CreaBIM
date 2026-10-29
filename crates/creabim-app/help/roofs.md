@@ -24,6 +24,10 @@ In *Properties*:
 
 The summary line gives the corners, the area including the overhang and the roof's height.
 
+## Roofs in plan
+
+A plan that looks down on a roof from above it, such as a roof plan, draws an arrow down each sloping face toward its eave, with the pitch beside it. The arrows come from the roof's shape, so they follow changes to its pitch and edges. A flat roof has none; write its fall in a [note](notes).
+
 ## Walls under a roof
 
 Select walls and use *Attach top to roof/slab*: their tops follow the roof's underside, cut to its slope. See [Walls](walls#base-and-top).

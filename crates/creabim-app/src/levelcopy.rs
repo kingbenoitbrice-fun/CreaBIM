@@ -142,44 +142,44 @@ impl CreaBimApp {
     /// tool's types when it has them.
     pub(super) fn footings_under_selection(&mut self) {
         let ids = self.selection.all();
-        let model = self.doc.model();
-        let state = &self.plan;
-        let (mut tx, new) = creabim_core::footing::under(model, &ids, &|e| {
-            if let ElementKind::Footing(f) = &e.kind {
-                // the tool's type for this kind, if there is one
-                let t = creabim_core::types::types_for(model, &e.kind)
-                    .into_iter()
-                    .map(|(id, _, _)| id)
-                    .find(|id| state.types.get(&creabim_core::TypeCategory::Footing) == Some(id));
-                let kind = f.kind;
-                if let Some(t) = t {
-                    creabim_core::types::stamp(model, e, t);
-                } else if kind == creabim_core::FootingKind::Strip {
-                    // as wide as the bar says, but never narrower than the wall
-                    if let ElementKind::Footing(f) = &mut e.kind {
-                        f.width = f.width.max(state.members.footing_width);
-                    }
-                }
-            }
-        });
+        let (tx, new) = footings_under(self.doc.model(), &self.plan, &ids);
         if new.is_empty() {
-            self.status =
-                "Select walls or columns without footings to put footings under them.".into();
+            let model = self.doc.model();
+            let hosts = ids
+                .iter()
+                .filter(|id| !creabim_core::footing::footings_under(model, **id).is_empty())
+                .count();
+            self.status = if hosts > 0 {
+                format!(
+                    "{hosts} {} picked, but each already has a footing.",
+                    if hosts == 1 {
+                        "wall or column"
+                    } else {
+                        "walls and columns"
+                    }
+                )
+            } else {
+                "Select walls or columns without footings to put footings under them.".into()
+            };
             return;
         }
-        tx.label = "Footings under selection".into();
         let r = self.doc.commit(tx);
         if r.is_ok() {
             self.selection.clear();
             self.selection.extend(new.clone(), false);
         }
-        self.report(
-            r,
-            format!(
-                "{} footings placed: they follow their walls and columns, and strips meet where the walls join. Set their depth in Properties.",
-                new.len()
-            ),
-        );
+        self.report(r, footings_placed(new.len()));
+    }
+
+    /// The selected walls and columns a footing can go under that have
+    /// none yet.
+    pub(super) fn footing_hosts(&self) -> Vec<ElementId> {
+        let model = self.doc.model();
+        self.selection
+            .all()
+            .into_iter()
+            .filter(|id| footing_host(model, *id))
+            .collect()
     }
 
     fn level_names(&self, ids: &[ElementId]) -> String {
@@ -372,6 +372,54 @@ impl CreaBimApp {
             self.level_copy.open = None;
         }
     }
+}
+
+/// Can a footing go under `id`: a wall that isn't a curtain wall, or a
+/// column, with no footing under it yet?
+pub(crate) fn footing_host(model: &creabim_core::Model, id: ElementId) -> bool {
+    let fits = match model.get(id).map(|e| &e.kind) {
+        Some(ElementKind::Wall(w)) => w.curtain.is_none(),
+        Some(ElementKind::Column(_)) => true,
+        _ => false,
+    };
+    fits && creabim_core::footing::footings_under(model, id).is_empty()
+}
+
+/// Footings under those of `ids` that can take one, of the Footing tool's
+/// type when it has one, else as wide as its bar says: one undo step.
+/// Returns the edit and the new footings.
+pub(crate) fn footings_under(
+    model: &creabim_core::Model,
+    state: &crate::planview::PlanState,
+    ids: &[ElementId],
+) -> (creabim_core::Transaction, Vec<ElementId>) {
+    let (mut tx, new) = creabim_core::footing::under(model, ids, &|e| {
+        if let ElementKind::Footing(f) = &e.kind {
+            // the tool's type for this kind, if there is one
+            let t = creabim_core::types::types_for(model, &e.kind)
+                .into_iter()
+                .map(|(id, _, _)| id)
+                .find(|id| state.types.get(&creabim_core::TypeCategory::Footing) == Some(id));
+            let kind = f.kind;
+            if let Some(t) = t {
+                creabim_core::types::stamp(model, e, t);
+            } else if kind == creabim_core::FootingKind::Strip {
+                // as wide as the bar says, but never narrower than the wall
+                if let ElementKind::Footing(f) = &mut e.kind {
+                    f.width = f.width.max(state.members.footing_width);
+                }
+            }
+        }
+    });
+    tx.label = "Footings under selection".into();
+    (tx, new)
+}
+
+/// What the status bar says once `n` footings are placed in one go.
+pub(crate) fn footings_placed(n: usize) -> String {
+    format!(
+        "{n} footings placed: they follow their walls and columns, and strips meet where the walls join. Ctrl+Z takes them all back. Set their depth in Properties."
+    )
 }
 
 #[cfg(test)]

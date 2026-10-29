@@ -34,7 +34,9 @@ mod editui;
 #[path = "gridvis.rs"]
 mod gridvis;
 #[path = "helpui.rs"]
-mod helpui;
+pub(crate) mod helpui;
+#[path = "importui.rs"]
+mod importui;
 #[path = "levelcopy.rs"]
 mod levelcopy;
 #[path = "levelsui.rs"]
@@ -45,6 +47,8 @@ mod materials;
 mod objectsui;
 #[path = "shell.rs"]
 mod shell;
+#[path = "typepreview.rs"]
+mod typepreview;
 #[path = "typesui.rs"]
 mod typesui;
 #[path = "wallsui.rs"]
@@ -172,12 +176,16 @@ pub struct CreaBimApp {
     asm: assemblies::AssembliesUi,
     /// The Types window.
     types: typesui::TypesUi,
+    /// A type opened on its own, and the type Show in model lights.
+    type_preview: typepreview::TypePreview,
     /// The Catalogue window and the user's own catalogue.
     catalogue: objectsui::CatalogueUi,
     /// The Levels manager and the Project units dialog.
     levels: levelsui::LevelsUi,
     /// The Copy to levels and Move to level windows.
     level_copy: levelcopy::LevelCopyUi,
+    /// What the last IFC import brought across, and what it couldn't.
+    import_report: Option<importui::ImportReport>,
     /// The annotation styles and sheet templates windows.
     drafting: drafting::DraftingUi,
     /// Orbit about the selection rather than the middle of the view.
@@ -253,9 +261,11 @@ impl CreaBimApp {
             mat: Default::default(),
             asm: Default::default(),
             types: Default::default(),
+            type_preview: Default::default(),
             catalogue: Default::default(),
             levels: Default::default(),
             level_copy: Default::default(),
+            import_report: None,
             drafting: Default::default(),
             orbit_selection: false,
             rect_3d: None,
@@ -307,6 +317,14 @@ impl CreaBimApp {
                 Ok(imported) => {
                     let n = imported.model.len();
                     let warnings = imported.warnings.len();
+                    let report = importui::ImportReport::new(&file_label(path), &imported);
+                    for w in &imported.warnings {
+                        eprintln!("IFC import: {w}");
+                    }
+                    for d in &imported.details {
+                        eprintln!("IFC import:   {d}");
+                    }
+                    self.import_report = Some(report);
                     self.load_model(imported.model);
                     self.watch = Default::default();
                     self.recent.add(path);
@@ -316,15 +334,12 @@ impl CreaBimApp {
                         file_label(path),
                         imported.schema,
                         if warnings > 0 {
-                            format!(", {warnings} notes (see the terminal)")
+                            format!(", {warnings} notes (File › Import report)")
                         } else {
                             String::new()
                         },
                         file_label(&self.path)
                     );
-                    for w in &imported.warnings {
-                        eprintln!("IFC import: {w}");
-                    }
                 }
                 Err(e) => self.status = format!("Couldn't open {path}: {e}"),
             }
@@ -1165,17 +1180,22 @@ impl CreaBimApp {
         let xray = self.shell.settings.xray;
         let mode = self.shell.settings.render_3d;
         let edge_colour = [0.10, 0.10, 0.11];
+        // a type shown in the model: its instances lit as if selected, the
+        // rest see-through when asked
+        let spot = &self.plan.spotlight;
+        let ghost = self.plan.spotlight_ghost && !spot.is_empty();
         for item in &self.scene {
-            let selected = self.selection.contains(item.id);
+            let selected = self.selection.contains(item.id) || spot.contains(&item.id);
             // X-ray: what holds others turns see-through with its edges
             // drawn; the framing that sits in it stays solid
-            let xrayed = xray
-                && !selected
-                && !self
-                    .doc
-                    .model()
-                    .get(item.id)
-                    .is_some_and(|e| is_framing(&e.kind));
+            let xrayed = !selected
+                && (ghost
+                    || xray
+                        && !self
+                            .doc
+                            .model()
+                            .get(item.id)
+                            .is_some_and(|e| is_framing(&e.kind)));
             if item.ghost {
                 // cutters show as their outline only
                 let c = if selected {
@@ -1416,6 +1436,7 @@ impl CreaBimApp {
                         | PlanItem::Annotation { .. }
                         | PlanItem::Tint { .. }
                         | PlanItem::Room { .. }
+                        | PlanItem::Shade { .. }
                         | PlanItem::Image { .. } => {}
                     }
                 }
@@ -3548,7 +3569,7 @@ impl CreaBimApp {
             .to_string();
         let mut changed = false;
         let mut create = false;
-        egui::ComboBox::from_label("Material")
+        crate::app::helpui::combo(ui, "Material")
             .selected_text(name)
             .show_ui(ui, |ui| {
                 changed |= ui.selectable_value(current, None, "By type").changed();
@@ -3741,12 +3762,29 @@ impl CreaBimApp {
             if let Some(gridvis::VisTarget::View(v)) = self.vis_target(false) {
                 ui.add_space(8.0);
                 let name = self.doc.model().get(v).map_or("", |e| e.name.as_str());
-                ui.label(egui::RichText::new(format!("View: {name}")).strong());
-                self.visibility_panel(ui, gridvis::VisTarget::View(v));
+                let name = name.to_string();
+                self.visibility_panel(
+                    ui,
+                    gridvis::VisTarget::View(v),
+                    Some(&format!("View: {name}")),
+                );
+                // a plan's graphics: weights, below-cut tint, view depth
+                if let Some(ElementKind::View(view)) = self.doc.model().get(v).map(|e| &e.kind) {
+                    if matches!(view.kind, ViewKind::Plan { .. }) {
+                        let (mut g, scale) = (view.graphics.clone(), view.scale);
+                        if let Some(label) = plan_graphics_ui(ui, &mut g, scale) {
+                            let r = self.doc.edit_merged(v, label, |e| {
+                                if let ElementKind::View(x) = &mut e.kind {
+                                    x.graphics = g;
+                                }
+                            });
+                            self.report(r, "View changed.");
+                        }
+                    }
+                }
             }
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("3D view").strong());
-            self.visibility_panel(ui, gridvis::VisTarget::Window3d);
+            self.visibility_panel(ui, gridvis::VisTarget::Window3d, Some("3D view"));
             ui.add_space(8.0);
             self.crop_list(ui, self.crop_owner());
             return;
@@ -3789,7 +3827,15 @@ impl CreaBimApp {
         // an object is what its type says: a basin an IfcSanitaryTerminal
         let class = creabim_core::objects::type_of(self.doc.model(), &e)
             .map_or_else(|| e.ifc_class().to_string(), |t| t.ifc.class.clone());
-        ui.label(egui::RichText::new(class).weak());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(class).weak());
+            // what this kind of element is, and its page in the guide
+            let page = crate::help::element_page(&e.kind);
+            let title = crate::help::text(page.split('#').next().unwrap_or(page))
+                .map(crate::help::title)
+                .unwrap_or("This element");
+            self.quick_help_button(ui, page, title);
+        });
         let mut name = e.name.clone();
         if matches!(e.kind, ElementKind::Level(_)) {
             // a level is renamed with the plans named after it, once typed
@@ -3845,28 +3891,38 @@ impl CreaBimApp {
         };
         let mut redraw = false;
         let mut new_style = false;
-        let mut show_visibility = false;
+        let show_visibility = matches!(e.kind, ElementKind::View(_));
         let mut object_type = false;
-        match &mut edited.kind {
-            ElementKind::Level(l) => {
-                if num(ui, "Elevation", &mut l.elevation, -100.0, 1000.0) {
-                    label = "Level elevation"
+        // a placed view's new scale: (its view, the scale)
+        let mut rescale: Option<(ElementId, f64)> = None;
+        // who it is comes first (above), then its sizes and build here,
+        // then how views show it; each section folds and stays folded
+        let section = if creabim_core::types::TypeCategory::of(&e.kind).is_some() {
+            "Geometry and build"
+        } else {
+            "Settings"
+        };
+        if self.prop_header(ui, "element", section, true, None) {
+            match &mut edited.kind {
+                ElementKind::Level(l) => {
+                    if num(ui, "Elevation", &mut l.elevation, -100.0, 1000.0) {
+                        label = "Level elevation"
+                    }
+                    if num(ui, "Height", &mut l.height, 0.5, 50.0) {
+                        label = "Level height"
+                    }
+                    ui.label(egui::RichText::new("Moving a level moves everything on it.").weak());
+                    if ui
+                        .button("Levels…")
+                        .on_hover_text("Add, duplicate, rename and delete levels")
+                        .clicked()
+                    {
+                        self.open_levels();
+                    }
                 }
-                if num(ui, "Height", &mut l.height, 0.5, 50.0) {
-                    label = "Level height"
-                }
-                ui.label(egui::RichText::new("Moving a level moves everything on it.").weak());
-                if ui
-                    .button("Levels…")
-                    .on_hover_text("Add, duplicate, rename and delete levels")
-                    .clicked()
-                {
-                    self.open_levels();
-                }
-            }
-            ElementKind::Wall(w) => {
-                let mut curtain = w.curtain.is_some();
-                if ui
+                ElementKind::Wall(w) => {
+                    let mut curtain = w.curtain.is_some();
+                    if ui
                     .checkbox(&mut curtain, "Curtain wall")
                     .on_hover_text("A grid of mullions holding glass or solid panels; doors in it take the place of panels")
                     .changed()
@@ -3880,96 +3936,102 @@ impl CreaBimApp {
                     }
                     label = "Curtain wall"
                 }
-                if let Some(c) = &mut w.curtain {
-                    let hosts: Vec<String> = creabim_core::curtain::hosts_of(self.doc.model(), id)
-                        .iter()
-                        .filter_map(|(h, _)| self.doc.model().get(*h).map(|e| e.name.clone()))
-                        .collect();
-                    if !hosts.is_empty() {
-                        ui.label(
+                    if let Some(c) = &mut w.curtain {
+                        let hosts: Vec<String> =
+                            creabim_core::curtain::hosts_of(self.doc.model(), id)
+                                .iter()
+                                .filter_map(|(h, _)| {
+                                    self.doc.model().get(*h).map(|e| e.name.clone())
+                                })
+                                .collect();
+                        if !hosts.is_empty() {
+                            ui.label(
                             egui::RichText::new(format!(
                                 "Set in {}: it cuts its own opening there, like a door, and the opening moves with it.",
                                 hosts.join(", ")
                             ))
                             .weak(),
                         );
+                        }
+                        let l = typesui::curtain_fields(ui, c);
+                        if !l.is_empty() {
+                            label = l;
+                        }
+                        // a curtain wall is as thick as its mullions
+                        w.thickness = c.mullion_depth;
+                        if self.material_combo(ui, &mut w.material) {
+                            label = "Wall material"
+                        }
+                    } else {
+                        if self.assembly_combo(ui, creabim_core::AssemblyUse::Wall, &mut w.assembly)
+                        {
+                            label = "Wall assembly"
+                        }
+                        let layered = w.assembly.is_some_and(|a| {
+                            matches!(
+                                self.doc.model().get(a).map(|e| &e.kind),
+                                Some(ElementKind::Assembly(_))
+                            )
+                        });
+                        if layered {
+                            ui.label(format!(
+                                "Thickness {}, from its layers",
+                                crate::units::len(w.thickness)
+                            ));
+                        } else if num(ui, "Thickness", &mut w.thickness, 0.02, 2.0) {
+                            label = "Wall thickness"
+                        }
+                        if !layered && self.material_combo(ui, &mut w.material) {
+                            label = "Wall material"
+                        }
                     }
-                    let l = typesui::curtain_fields(ui, c);
+                    let l = wallsui::wall_fields(ui, self.doc.model(), id, w);
                     if !l.is_empty() {
                         label = l;
                     }
-                    // a curtain wall is as thick as its mullions
-                    w.thickness = c.mullion_depth;
-                    if self.material_combo(ui, &mut w.material) {
-                        label = "Wall material"
-                    }
-                } else {
-                    if self.assembly_combo(ui, creabim_core::AssemblyUse::Wall, &mut w.assembly) {
-                        label = "Wall assembly"
-                    }
-                    let layered = w.assembly.is_some_and(|a| {
-                        matches!(
-                            self.doc.model().get(a).map(|e| &e.kind),
-                            Some(ElementKind::Assembly(_))
-                        )
-                    });
-                    if layered {
-                        ui.label(format!(
-                            "Thickness {}, from its layers",
-                            crate::units::len(w.thickness)
-                        ));
-                    } else if num(ui, "Thickness", &mut w.thickness, 0.02, 2.0) {
-                        label = "Wall thickness"
-                    }
-                    if !layered && self.material_combo(ui, &mut w.material) {
-                        label = "Wall material"
-                    }
-                }
-                let l = wallsui::wall_fields(ui, self.doc.model(), id, w);
-                if !l.is_empty() {
-                    label = l;
-                }
-                if ui
+                    if ui
                     .button("Redraw path")
                     .on_hover_text("Click a new path for this wall, in a plan or the 3D view. More corners make more walls like it.")
                     .clicked()
                 {
                     redraw = true;
                 }
-            }
-            ElementKind::Slab(s) => {
-                if self.assembly_combo(ui, creabim_core::AssemblyUse::Floor, &mut s.assembly) {
-                    label = "Slab assembly"
                 }
-                let layered = s.assembly.is_some_and(|a| {
-                    matches!(
-                        self.doc.model().get(a).map(|e| &e.kind),
-                        Some(ElementKind::Assembly(_))
-                    )
-                });
-                let mut thickness = s.thickness;
-                if layered {
-                    ui.label(format!(
-                        "Thickness {}, from its layers",
-                        crate::units::len(s.thickness)
-                    ));
-                } else if num(ui, "Thickness", &mut thickness, 0.02, 3.0) {
-                    s.set_thickness(thickness, self.plan.slab_keep_bottom);
-                    label = "Slab thickness"
-                }
-                let keep = &mut self.plan.slab_keep_bottom;
-                ui.horizontal(|ui| {
-                    ui.label("Keep");
-                    ui.selectable_value(keep, false, "Top")
-                        .on_hover_text("A new thickness moves the underside; the top stays put.");
-                    ui.selectable_value(keep, true, "Bottom")
-                        .on_hover_text("A new thickness moves the top; the underside stays put.");
-                });
-                if num(ui, "Top offset", &mut s.top_offset, -100.0, 100.0) {
-                    label = "Slab top offset"
-                }
-                let level = self.doc.model().level(s.level).map_or(0.0, |l| l.elevation);
-                ui.label(
+                ElementKind::Slab(s) => {
+                    if self.assembly_combo(ui, creabim_core::AssemblyUse::Floor, &mut s.assembly) {
+                        label = "Slab assembly"
+                    }
+                    let layered = s.assembly.is_some_and(|a| {
+                        matches!(
+                            self.doc.model().get(a).map(|e| &e.kind),
+                            Some(ElementKind::Assembly(_))
+                        )
+                    });
+                    let mut thickness = s.thickness;
+                    if layered {
+                        ui.label(format!(
+                            "Thickness {}, from its layers",
+                            crate::units::len(s.thickness)
+                        ));
+                    } else if num(ui, "Thickness", &mut thickness, 0.02, 3.0) {
+                        s.set_thickness(thickness, self.plan.slab_keep_bottom);
+                        label = "Slab thickness"
+                    }
+                    let keep = &mut self.plan.slab_keep_bottom;
+                    ui.horizontal(|ui| {
+                        ui.label("Keep");
+                        ui.selectable_value(keep, false, "Top").on_hover_text(
+                            "A new thickness moves the underside; the top stays put.",
+                        );
+                        ui.selectable_value(keep, true, "Bottom").on_hover_text(
+                            "A new thickness moves the top; the underside stays put.",
+                        );
+                    });
+                    if num(ui, "Top offset", &mut s.top_offset, -100.0, 100.0) {
+                        label = "Slab top offset"
+                    }
+                    let level = self.doc.model().level(s.level).map_or(0.0, |l| l.elevation);
+                    ui.label(
                     egui::RichText::new(format!(
                         "Top at {}, underside at {}. The top handle moves the top, the underside handle the underside.",
                         crate::units::elevation(s.top(level)),
@@ -3977,363 +4039,372 @@ impl CreaBimApp {
                     ))
                     .weak(),
                 );
-                if !layered && self.material_combo(ui, &mut s.material) {
-                    label = "Slab material"
-                }
-                let arcs = s.bulges.iter().filter(|b| b.abs() > 1e-9).count();
-                ui.label(match arcs {
-                    0 => format!(
-                        "{} corners, {}",
-                        s.boundary.len(),
-                        crate::units::area(s.area())
-                    ),
-                    n => format!(
-                        "{} corners, {n} arc{}, {}",
-                        s.boundary.len(),
-                        if n == 1 { "" } else { "s" },
-                        crate::units::area(s.area())
-                    ),
-                });
-                if ui
-                    .button("Redraw outline")
-                    .on_hover_text("Click a new outline for this slab, in a plan or the 3D view.")
-                    .clicked()
-                {
-                    redraw = true;
-                }
-                let shafts = creabim_core::slab::holes_of(self.doc.model(), &e)
-                    .len()
-                    .saturating_sub(s.holes.len());
-                let (l, draw) = typesui::holes_fields(ui, &mut s.holes, shafts);
-                if !l.is_empty() {
-                    label = l;
-                }
-                draw_hole |= draw;
-            }
-            ElementKind::Opening(o) => {
-                if num(ui, "Width", &mut o.width, 0.1, 20.0) {
-                    label = "Opening width"
-                }
-                if num(ui, "Height", &mut o.height, 0.1, 20.0) {
-                    label = "Opening height"
-                }
-                if num(ui, "Sill", &mut o.sill, 0.0, 20.0) {
-                    label = "Opening sill"
-                }
-                if num(ui, "Offset along wall", &mut o.offset, 0.0, 1e4) {
-                    label = "Move opening"
-                }
-                if self.material_combo(ui, &mut o.material) {
-                    label = "Material";
-                }
-                let l = wallsui::opening_fields(ui, self.doc.model(), o);
-                if !l.is_empty() {
-                    label = l;
-                }
-                ui.separator();
-                ui.label(egui::RichText::new("Frame").strong());
-                if num(ui, "Frame width", &mut o.frame.width, 0.01, 0.5) {
-                    label = "Frame width"
-                }
-                if num(ui, "Frame depth", &mut o.frame.depth, 0.02, 1.0) {
-                    label = "Frame depth"
-                }
-                if o.kind == creabim_core::OpeningKind::Window {
-                    let panes = |ui: &mut egui::Ui, text: &str, v: &mut u32| {
-                        ui.horizontal(|ui| {
-                            ui.label(text);
-                            ui.add(egui::DragValue::new(v).range(1..=12)).changed()
-                        })
-                        .inner
-                    };
-                    if panes(ui, "Panes across", &mut o.frame.panes_across) {
-                        label = "Window panes"
+                    if !layered && self.material_combo(ui, &mut s.material) {
+                        label = "Slab material"
                     }
-                    if panes(ui, "Panes up", &mut o.frame.panes_up) {
-                        label = "Window panes"
-                    }
-                }
-            }
-            ElementKind::View(v) if matches!(v.kind, ViewKind::Schedule { .. }) => {
-                if let ViewKind::Schedule { category, by_type } = &mut v.kind {
-                    egui::ComboBox::from_label("Lists")
-                        .selected_text(category.label())
-                        .show_ui(ui, |ui| {
-                            for c in ScheduleCategory::ALL {
-                                if ui.selectable_value(category, c, c.label()).changed() {
-                                    label = "Schedule category"
-                                }
-                            }
-                        });
+                    let arcs = s.bulges.iter().filter(|b| b.abs() > 1e-9).count();
+                    ui.label(match arcs {
+                        0 => format!(
+                            "{} corners, {}",
+                            s.boundary.len(),
+                            crate::units::area(s.area())
+                        ),
+                        n => format!(
+                            "{} corners, {n} arc{}, {}",
+                            s.boundary.len(),
+                            if n == 1 { "" } else { "s" },
+                            crate::units::area(s.area())
+                        ),
+                    });
                     if ui
-                        .checkbox(by_type, "Group by type")
+                        .button("Redraw outline")
                         .on_hover_text(
-                            "List the rows under a heading per element type, with its count.",
+                            "Click a new outline for this slab, in a plan or the 3D view.",
                         )
-                        .changed()
+                        .clicked()
                     {
-                        label = "Group schedule by type"
+                        redraw = true;
                     }
-                }
-                if self.active_view != Some(id) && ui.button("Open this schedule").clicked() {
-                    self.active_view = Some(id);
-                }
-            }
-            ElementKind::View(v) => {
-                ui.horizontal(|ui| {
-                    ui.label("Scale 1:");
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut v.scale)
-                                .speed(1.0)
-                                .range(1.0..=5000.0),
-                        )
-                        .changed()
-                    {
-                        label = "View scale"
+                    let shafts = creabim_core::slab::holes_of(self.doc.model(), &e)
+                        .len()
+                        .saturating_sub(s.holes.len());
+                    let (l, draw) = typesui::holes_fields(ui, &mut s.holes, shafts);
+                    if !l.is_empty() {
+                        label = l;
                     }
-                });
-                match &mut v.kind {
-                    ViewKind::Plan { cut_height, level } => {
-                        if num(ui, "Cut height", cut_height, 0.1, 50.0) {
-                            label = "View cut height"
+                    draw_hole |= draw;
+                }
+                ElementKind::Opening(o) => {
+                    if num(ui, "Width", &mut o.width, 0.1, 20.0) {
+                        label = "Opening width"
+                    }
+                    if num(ui, "Height", &mut o.height, 0.1, 20.0) {
+                        label = "Opening height"
+                    }
+                    if num(ui, "Sill", &mut o.sill, 0.0, 20.0) {
+                        label = "Opening sill"
+                    }
+                    if num(ui, "Offset along wall", &mut o.offset, 0.0, 1e4) {
+                        label = "Move opening"
+                    }
+                    if self.material_combo(ui, &mut o.material) {
+                        label = "Material";
+                    }
+                    let l = wallsui::opening_fields(ui, self.doc.model(), o);
+                    if !l.is_empty() {
+                        label = l;
+                    }
+                    ui.separator();
+                    ui.label(egui::RichText::new("Frame").strong());
+                    if num(ui, "Frame width", &mut o.frame.width, 0.01, 0.5) {
+                        label = "Frame width"
+                    }
+                    if num(ui, "Frame depth", &mut o.frame.depth, 0.02, 1.0) {
+                        label = "Frame depth"
+                    }
+                    if o.kind == creabim_core::OpeningKind::Window {
+                        let panes = |ui: &mut egui::Ui, text: &str, v: &mut u32| {
+                            ui.horizontal(|ui| {
+                                ui.label(text);
+                                ui.add(egui::DragValue::new(v).range(1..=12)).changed()
+                            })
+                            .inner
+                        };
+                        if panes(ui, "Panes across", &mut o.frame.panes_across) {
+                            label = "Window panes"
                         }
-                        let choices = self.underlay_choices(*level);
-                        let current = choices
-                            .iter()
-                            .find(|(u, _)| *u == v.underlay)
-                            .map_or("None".to_string(), |(_, l)| l.clone());
-                        egui::ComboBox::from_label("Underlay")
-                            .selected_text(current)
+                        if panes(ui, "Panes up", &mut o.frame.panes_up) {
+                            label = "Window panes"
+                        }
+                    }
+                }
+                ElementKind::View(v) if matches!(v.kind, ViewKind::Schedule { .. }) => {
+                    if let ViewKind::Schedule { category, by_type } = &mut v.kind {
+                        crate::app::helpui::combo(ui, "Lists")
+                            .selected_text(category.label())
                             .show_ui(ui, |ui| {
-                                for (u, l) in &choices {
-                                    if ui.selectable_value(&mut v.underlay, *u, l).changed() {
-                                        label = "View underlay"
+                                for c in ScheduleCategory::ALL {
+                                    if ui.selectable_value(category, c, c.label()).changed() {
+                                        label = "Schedule category"
                                     }
                                 }
                             });
-                        ui.label(
+                        if ui
+                            .checkbox(by_type, "Group by type")
+                            .on_hover_text(
+                                "List the rows under a heading per element type, with its count.",
+                            )
+                            .changed()
+                        {
+                            label = "Group schedule by type"
+                        }
+                    }
+                    if self.active_view != Some(id) && ui.button("Open this schedule").clicked() {
+                        self.active_view = Some(id);
+                    }
+                }
+                ElementKind::View(v) => {
+                    // on its sheets too, each viewport round its centre
+                    if let Some(s) = sheetview::scale_picker(ui, id, v.scale) {
+                        rescale = Some((id, s));
+                    }
+                    match &mut v.kind {
+                        ViewKind::Plan { cut_height, level } => {
+                            if num(ui, "Cut height", cut_height, 0.1, 50.0) {
+                                label = "View cut height"
+                            }
+                            let choices = self.underlay_choices(*level);
+                            let current = choices
+                                .iter()
+                                .find(|(u, _)| *u == v.underlay)
+                                .map_or("None".to_string(), |(_, l)| l.clone());
+                            crate::app::helpui::combo(ui, "Underlay")
+                                .selected_text(current)
+                                .show_ui(ui, |ui| {
+                                    for (u, l) in &choices {
+                                        if ui.selectable_value(&mut v.underlay, *u, l).changed() {
+                                            label = "View underlay"
+                                        }
+                                    }
+                                });
+                            ui.label(
                             egui::RichText::new(
                                 "Another level drawn faintly under this one, to trace and snap to. Not printed.",
                             )
                             .weak(),
                         );
-                    }
-                    ViewKind::Section {
-                        start,
-                        end,
-                        depth,
-                        cut,
-                    } => {
-                        if ui
-                            .checkbox(cut, "Cut through the model (section)")
-                            .changed()
-                        {
-                            label = "Section or elevation"
-                        }
-                        if num(ui, "Depth", depth, 0.1, 500.0) {
-                            label = "View depth"
-                        }
-                        if num(ui, "Start X", &mut start.x, -1e4, 1e4)
-                            | num(ui, "Start Y", &mut start.y, -1e4, 1e4)
-                            | num(ui, "End X", &mut end.x, -1e4, 1e4)
-                            | num(ui, "End Y", &mut end.y, -1e4, 1e4)
-                        {
-                            label = "Move section line"
-                        }
-                    }
-                    ViewKind::Axonometric { azimuth, altitude } => {
-                        let deg = |ui: &mut egui::Ui, text: &str, v: &mut f64, lo: f64, hi: f64| {
-                            ui.horizontal(|ui| {
-                                ui.label(text);
-                                ui.add(
-                                    egui::DragValue::new(v)
-                                        .speed(0.5)
-                                        .range(lo..=hi)
-                                        .suffix("°"),
-                                )
-                                .changed()
-                            })
-                            .inner
-                        };
-                        if deg(ui, "Azimuth", azimuth, 0.0, 360.0)
-                            | deg(ui, "Altitude", altitude, -89.0, 89.0)
-                        {
-                            label = "Orbit 3D view"
-                        }
-                        ui.label(egui::RichText::new("Or drag in the view to orbit it.").weak());
-                    }
-                    ViewKind::Schedule { .. } => {}
-                }
-                if matches!(
-                    v.kind,
-                    ViewKind::Plan { .. } | ViewKind::Section { cut: true, .. }
-                ) && ui
-                    .checkbox(&mut v.room_colours, "Colour rooms")
-                    .on_hover_text(
-                        "Fill each room with a colour of its own, the same in every view",
-                    )
-                    .changed()
-                {
-                    label = "Colour rooms"
-                }
-                if matches!(v.kind, ViewKind::Plan { .. })
-                    && ui
-                        .checkbox(&mut v.ceiling_plan, "Reflected ceiling plan")
-                        .on_hover_text("Draw the ceilings and what hangs from them, not the floor and furniture")
-                        .changed()
-                {
-                    label = "Ceiling plan"
-                }
-                if matches!(
-                    v.kind,
-                    ViewKind::Section { .. } | ViewKind::Axonometric { .. }
-                ) && view_style_combo(ui, "view_style", &mut v.style)
-                {
-                    label = "View style"
-                }
-                if self.active_view != Some(id) && ui.button("Open this view").clicked() {
-                    self.active_view = Some(id);
-                }
-                if matches!(v.kind, ViewKind::Axonometric { .. }) {
-                    ui.add_space(6.0);
-                    self.crop_list(ui, Some(id));
-                }
-                show_visibility = true;
-            }
-            ElementKind::Sheet(sh) => {
-                ui.horizontal(|ui| {
-                    ui.label("Number");
-                    if ui.text_edit_singleline(&mut sh.number).changed() {
-                        label = "Sheet number"
-                    }
-                });
-                let current = sh.size_name().unwrap_or("Custom");
-                egui::ComboBox::from_label("Paper")
-                    .selected_text(current)
-                    .show_ui(ui, |ui| {
-                        for (name, w, h) in Sheet::SIZES {
-                            if ui.selectable_label(current == *name, *name).clicked() {
-                                (sh.width, sh.height) = (*w, *h);
-                                label = "Sheet size"
+                            if let Some(l) = plan_graphics_ui(ui, &mut v.graphics, v.scale) {
+                                label = l;
                             }
                         }
-                    });
-                if let Some(l) = self.sheet_template_ui(ui, sh) {
-                    label = l;
-                }
-                if self.active_view != Some(id) && ui.button("Open this sheet").clicked() {
-                    self.active_view = Some(id);
-                }
-            }
-            ElementKind::Viewport(vp) => {
-                let view_name = self
-                    .doc
-                    .model()
-                    .get(vp.view)
-                    .map(|e| e.name.clone())
-                    .unwrap_or_default();
-                ui.label(format!("Shows {view_name}"));
-                let mm = |ui: &mut egui::Ui, text: &str, v: &mut f64| {
-                    ui.horizontal(|ui| {
-                        ui.label(text);
-                        ui.add(egui::DragValue::new(v).speed(1.0).suffix(" mm"))
-                            .changed()
-                    })
-                    .inner
-                };
-                if mm(ui, "Centre X", &mut vp.center.x) | mm(ui, "Centre Y", &mut vp.center.y) {
-                    label = "Move view on sheet"
-                }
-                let mut cropped = vp.crop.is_some();
-                if ui.checkbox(&mut cropped, "Crop the view").changed() {
-                    vp.crop = if cropped {
-                        let view = vp.view;
-                        self.drawing(view)
-                            .and_then(|d| d.bounds())
-                            .map(|(lo, hi)| [lo, hi])
-                    } else {
-                        None
-                    };
-                    label = "Crop view"
-                }
-                if let Some([lo, hi]) = &mut vp.crop {
-                    if num(ui, "Crop left", &mut lo.x, -1e4, hi.x - 0.1)
-                        | num(ui, "Crop right", &mut hi.x, lo.x + 0.1, 1e4)
-                        | num(ui, "Crop bottom", &mut lo.y, -1e4, hi.y - 0.1)
-                        | num(ui, "Crop top", &mut hi.y, lo.y + 0.1, 1e4)
+                        ViewKind::Section {
+                            start,
+                            end,
+                            depth,
+                            cut,
+                        } => {
+                            if ui
+                                .checkbox(cut, "Cut through the model (section)")
+                                .changed()
+                            {
+                                label = "Section or elevation"
+                            }
+                            if num(ui, "Depth", depth, 0.1, 500.0) {
+                                label = "View depth"
+                            }
+                            if num(ui, "Start X", &mut start.x, -1e4, 1e4)
+                                | num(ui, "Start Y", &mut start.y, -1e4, 1e4)
+                                | num(ui, "End X", &mut end.x, -1e4, 1e4)
+                                | num(ui, "End Y", &mut end.y, -1e4, 1e4)
+                            {
+                                label = "Move section line"
+                            }
+                        }
+                        ViewKind::Axonometric { azimuth, altitude } => {
+                            let deg =
+                                |ui: &mut egui::Ui, text: &str, v: &mut f64, lo: f64, hi: f64| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(text);
+                                        ui.add(
+                                            egui::DragValue::new(v)
+                                                .speed(0.5)
+                                                .range(lo..=hi)
+                                                .suffix("°"),
+                                        )
+                                        .changed()
+                                    })
+                                    .inner
+                                };
+                            if deg(ui, "Azimuth", azimuth, 0.0, 360.0)
+                                | deg(ui, "Altitude", altitude, -89.0, 89.0)
+                            {
+                                label = "Orbit 3D view"
+                            }
+                            ui.label(
+                                egui::RichText::new("Or drag in the view to orbit it.").weak(),
+                            );
+                        }
+                        ViewKind::Schedule { .. } => {}
+                    }
+                    if matches!(
+                        v.kind,
+                        ViewKind::Plan { .. } | ViewKind::Section { cut: true, .. }
+                    ) && ui
+                        .checkbox(&mut v.room_colours, "Colour rooms")
+                        .on_hover_text(
+                            "Fill each room with a colour of its own, the same in every view",
+                        )
+                        .changed()
                     {
-                        label = "Crop view"
+                        label = "Colour rooms"
+                    }
+                    if matches!(v.kind, ViewKind::Plan { .. })
+                        && ui
+                            .checkbox(&mut v.ceiling_plan, "Reflected ceiling plan")
+                            .on_hover_text("Draw the ceilings and what hangs from them, not the floor and furniture")
+                            .changed()
+                    {
+                        label = "Ceiling plan"
+                    }
+                    if matches!(
+                        v.kind,
+                        ViewKind::Section { .. } | ViewKind::Axonometric { .. }
+                    ) && view_style_combo(ui, "view_style", &mut v.style)
+                    {
+                        label = "View style"
+                    }
+                    if self.active_view != Some(id) && ui.button("Open this view").clicked() {
+                        self.active_view = Some(id);
+                    }
+                    if matches!(v.kind, ViewKind::Axonometric { .. }) {
+                        ui.add_space(6.0);
+                        self.crop_list(ui, Some(id));
                     }
                 }
-                ui.label(
+                ElementKind::Sheet(sh) => {
+                    ui.horizontal(|ui| {
+                        ui.label("Number");
+                        if ui.text_edit_singleline(&mut sh.number).changed() {
+                            label = "Sheet number"
+                        }
+                    });
+                    let current = sh.size_name().unwrap_or("Custom");
+                    crate::app::helpui::combo(ui, "Paper")
+                        .selected_text(current)
+                        .show_ui(ui, |ui| {
+                            for (name, w, h) in Sheet::SIZES {
+                                if ui.selectable_label(current == *name, *name).clicked() {
+                                    (sh.width, sh.height) = (*w, *h);
+                                    label = "Sheet size"
+                                }
+                            }
+                        });
+                    if let Some(l) = self.sheet_template_ui(ui, sh) {
+                        label = l;
+                    }
+                    if self.active_view != Some(id) && ui.button("Open this sheet").clicked() {
+                        self.active_view = Some(id);
+                    }
+                }
+                ElementKind::Viewport(vp) => {
+                    let view_name = self
+                        .doc
+                        .model()
+                        .get(vp.view)
+                        .map(|e| e.name.clone())
+                        .unwrap_or_default();
+                    ui.label(format!("Shows {view_name}"));
+                    // its scale is the view's: a new one redraws it at that
+                    // size, round the viewport's centre
+                    let view = vp.view;
+                    let scale = self.view(view).and_then(|v| {
+                        (!matches!(v.kind, ViewKind::Schedule { .. })).then_some(v.scale)
+                    });
+                    if let Some(scale) = scale {
+                        if let Some(s) = sheetview::scale_picker(ui, id, scale) {
+                            rescale = Some((view, s));
+                        }
+                    }
+                    let mm = |ui: &mut egui::Ui, text: &str, v: &mut f64| {
+                        ui.horizontal(|ui| {
+                            ui.label(text);
+                            ui.add(egui::DragValue::new(v).speed(1.0).suffix(" mm"))
+                                .changed()
+                        })
+                        .inner
+                    };
+                    if mm(ui, "Centre X", &mut vp.center.x) | mm(ui, "Centre Y", &mut vp.center.y) {
+                        label = "Move view on sheet"
+                    }
+                    let mut cropped = vp.crop.is_some();
+                    if ui.checkbox(&mut cropped, "Crop the view").changed() {
+                        vp.crop = if cropped {
+                            let view = vp.view;
+                            self.drawing(view)
+                                .and_then(|d| d.bounds())
+                                .map(|(lo, hi)| [lo, hi])
+                        } else {
+                            None
+                        };
+                        label = "Crop view"
+                    }
+                    if let Some([lo, hi]) = &mut vp.crop {
+                        if num(ui, "Crop left", &mut lo.x, -1e4, hi.x - 0.1)
+                            | num(ui, "Crop right", &mut hi.x, lo.x + 0.1, 1e4)
+                            | num(ui, "Crop bottom", &mut lo.y, -1e4, hi.y - 0.1)
+                            | num(ui, "Crop top", &mut hi.y, lo.y + 0.1, 1e4)
+                        {
+                            label = "Crop view"
+                        }
+                    }
+                    ui.label(
                     egui::RichText::new(
                         "Drag the view on the sheet to move it; double-click it to edit the model through it.",
                     )
                     .weak(),
                 );
-                if ui.button("Open the view itself").clicked() {
-                    self.active_view = Some(vp.view);
+                    if ui.button("Open the view itself").clicked() {
+                        self.active_view = Some(vp.view);
+                    }
                 }
-            }
-            ElementKind::Assembly(_) => {
-                self.assembly_properties(ui, id);
-            }
-            ElementKind::CropBox(c) => {
-                if let Some(l) = self.crop_properties(ui, id, c) {
-                    label = l
+                ElementKind::Assembly(_) => {
+                    self.assembly_properties(ui, id);
                 }
-            }
-            ElementKind::ElementType(_) => {
-                self.type_properties(ui, id);
-            }
-            ElementKind::Shaft(s) => {
-                let levels: Vec<(ElementId, String)> = self
-                    .doc
-                    .model()
-                    .levels()
-                    .map(|(e, _)| (e.id, e.name.clone()))
-                    .collect();
-                let name = |id: Option<ElementId>| {
-                    id.and_then(|i| levels.iter().find(|l| l.0 == i))
-                        .map_or("One storey up".to_string(), |l| l.1.clone())
-                };
-                egui::ComboBox::from_label("Base level")
-                    .selected_text(name(Some(s.level)))
-                    .show_ui(ui, |ui| {
-                        for (lid, n) in &levels {
-                            if ui.selectable_value(&mut s.level, *lid, n).changed() {
-                                label = "Shaft base"
+                ElementKind::CropBox(c) => {
+                    if let Some(l) = self.crop_properties(ui, id, c) {
+                        label = l
+                    }
+                }
+                ElementKind::ElementType(_) => {
+                    self.type_properties(ui, id);
+                }
+                ElementKind::Shaft(s) => {
+                    let levels: Vec<(ElementId, String)> = self
+                        .doc
+                        .model()
+                        .levels()
+                        .map(|(e, _)| (e.id, e.name.clone()))
+                        .collect();
+                    let name = |id: Option<ElementId>| {
+                        id.and_then(|i| levels.iter().find(|l| l.0 == i))
+                            .map_or("One storey up".to_string(), |l| l.1.clone())
+                    };
+                    crate::app::helpui::combo(ui, "Base level")
+                        .selected_text(name(Some(s.level)))
+                        .show_ui(ui, |ui| {
+                            for (lid, n) in &levels {
+                                if ui.selectable_value(&mut s.level, *lid, n).changed() {
+                                    label = "Shaft base"
+                                }
                             }
-                        }
-                    });
-                if num(ui, "Base offset", &mut s.base_offset, -100.0, 100.0) {
-                    label = "Shaft base"
-                }
-                egui::ComboBox::from_label("Top level")
-                    .selected_text(name(s.top_level))
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_value(&mut s.top_level, None, "One storey up")
-                            .changed()
-                        {
-                            label = "Shaft top"
-                        }
-                        for (lid, n) in &levels {
+                        });
+                    if num(ui, "Base offset", &mut s.base_offset, -100.0, 100.0) {
+                        label = "Shaft base"
+                    }
+                    crate::app::helpui::combo(ui, "Top level")
+                        .selected_text(name(s.top_level))
+                        .show_ui(ui, |ui| {
                             if ui
-                                .selectable_value(&mut s.top_level, Some(*lid), n)
+                                .selectable_value(&mut s.top_level, None, "One storey up")
                                 .changed()
                             {
                                 label = "Shaft top"
                             }
-                        }
-                    });
-                if num(ui, "Top offset", &mut s.top_offset, -100.0, 100.0) {
-                    label = "Shaft top"
-                }
-                let (z0, z1) = s.span(self.doc.model());
-                let area = creabim_core::polygon::signed_area2(&s.boundary).abs() / 2.0;
-                ui.label(
+                            for (lid, n) in &levels {
+                                if ui
+                                    .selectable_value(&mut s.top_level, Some(*lid), n)
+                                    .changed()
+                                {
+                                    label = "Shaft top"
+                                }
+                            }
+                        });
+                    if num(ui, "Top offset", &mut s.top_offset, -100.0, 100.0) {
+                        label = "Shaft top"
+                    }
+                    let (z0, z1) = s.span(self.doc.model());
+                    let area = creabim_core::polygon::signed_area2(&s.boundary).abs() / 2.0;
+                    ui.label(
                     egui::RichText::new(format!(
                         "From {} up to {}, {}. It cuts a hole in every slab and roof in between that it lies inside; move or reshape it (Edit) and they follow. Pick it in any view it passes through.",
                         crate::units::elevation(z0),
@@ -4342,293 +4413,297 @@ impl CreaBimApp {
                     ))
                     .weak(),
                 );
-            }
-            ElementKind::Material(m) => {
-                materials::preview(ui, m, 72.0);
-                label = materials::material_fields(ui, m);
-                let users = creabim_core::library::users(self.doc.model(), id).len();
-                ui.label(egui::RichText::new(format!("Used by {users} elements.")).weak());
-                if ui.button("Open in the material browser").clicked() {
-                    self.open_materials(Some(id));
                 }
-            }
-            ElementKind::Dimension(d) => {
-                let measured = self
-                    .drawing(d.view)
-                    .and_then(|dr| {
-                        dr.items.into_iter().find_map(|i| match i {
-                            PlanItem::Dimension { id: i, text, .. } if i == id => Some(text),
-                            PlanItem::Annotation { id: i, item } if i == id => Some(item.text),
-                            _ => None,
+                ElementKind::Material(m) => {
+                    materials::preview(ui, m, 72.0);
+                    label = materials::material_fields(ui, m);
+                    let users = creabim_core::library::users(self.doc.model(), id).len();
+                    ui.label(egui::RichText::new(format!("Used by {users} elements.")).weak());
+                    if ui.button("Open in the material browser").clicked() {
+                        self.open_materials(Some(id));
+                    }
+                }
+                ElementKind::Dimension(d) => {
+                    let measured = self
+                        .drawing(d.view)
+                        .and_then(|dr| {
+                            dr.items.into_iter().find_map(|i| match i {
+                                PlanItem::Dimension { id: i, text, .. } if i == id => Some(text),
+                                PlanItem::Annotation { id: i, item } if i == id => Some(item.text),
+                                _ => None,
+                            })
                         })
-                    })
-                    .unwrap_or_else(|| "-".into());
-                // metric dimension text carries no unit; say which here
-                let unit = if !matches!(
-                    d.kind,
-                    creabim_core::DimensionKind::Linear | creabim_core::DimensionKind::ArcLength
-                ) || crate::units::get().is_imperial()
-                {
-                    String::new()
-                } else {
-                    format!(" {}", crate::units::symbol())
-                };
-                ui.label(format!("{}: {measured}{unit}", d.kind.label()));
-                let attached = [Some(d.a), Some(d.b), d.center]
-                    .iter()
-                    .flatten()
-                    .filter(|p| p.host.is_some())
-                    .count();
-                ui.label(
-                    egui::RichText::new(match attached {
-                        0 => "Not attached: it stays where it was drawn.".to_string(),
-                        n => format!("Attached at {n} end(s): it follows what it measures."),
-                    })
-                    .weak(),
-                );
-                let what = crate::annotate::offset_label(d.kind);
-                if num(ui, what, &mut d.offset, -100.0, 100.0) {
-                    label = "Move dimension line"
-                }
-                if d.kind == creabim_core::DimensionKind::Linear {
-                    egui::ComboBox::from_label("Measures")
-                        .selected_text(d.axis.label())
-                        .show_ui(ui, |ui| {
-                            for a in creabim_core::DimAxis::ALL {
-                                if ui.selectable_value(&mut d.axis, a, a.label()).changed() {
-                                    label = "Dimension direction"
+                        .unwrap_or_else(|| "-".into());
+                    // metric dimension text carries no unit; say which here
+                    let unit = if !matches!(
+                        d.kind,
+                        creabim_core::DimensionKind::Linear
+                            | creabim_core::DimensionKind::ArcLength
+                    ) || crate::units::get().is_imperial()
+                    {
+                        String::new()
+                    } else {
+                        format!(" {}", crate::units::symbol())
+                    };
+                    ui.label(format!("{}: {measured}{unit}", d.kind.label()));
+                    let attached = [Some(d.a), Some(d.b), d.center]
+                        .iter()
+                        .flatten()
+                        .filter(|p| p.host.is_some())
+                        .count();
+                    ui.label(
+                        egui::RichText::new(match attached {
+                            0 => "Not attached: it stays where it was drawn.".to_string(),
+                            n => format!("Attached at {n} end(s): it follows what it measures."),
+                        })
+                        .weak(),
+                    );
+                    let what = crate::annotate::offset_label(d.kind);
+                    if num(ui, what, &mut d.offset, -100.0, 100.0) {
+                        label = "Move dimension line"
+                    }
+                    if d.kind == creabim_core::DimensionKind::Linear {
+                        crate::app::helpui::combo(ui, "Measures")
+                            .selected_text(d.axis.label())
+                            .show_ui(ui, |ui| {
+                                for a in creabim_core::DimAxis::ALL {
+                                    if ui.selectable_value(&mut d.axis, a, a.label()).changed() {
+                                        label = "Dimension direction"
+                                    }
                                 }
-                            }
-                        });
+                            });
+                    }
+                    match crate::annotate::look_ui(ui, self.doc.model(), &mut d.style, &mut d.color)
+                    {
+                        crate::annotate::LookEdit::Changed(l) => label = l,
+                        crate::annotate::LookEdit::NewStyle => new_style = true,
+                        crate::annotate::LookEdit::None => {}
+                    }
                 }
-                match crate::annotate::look_ui(ui, self.doc.model(), &mut d.style, &mut d.color) {
-                    crate::annotate::LookEdit::Changed(l) => label = l,
-                    crate::annotate::LookEdit::NewStyle => new_style = true,
-                    crate::annotate::LookEdit::None => {}
+                ElementKind::Tag(t) => {
+                    let host = self
+                        .doc
+                        .model()
+                        .get(t.host)
+                        .map(|e| e.name.clone())
+                        .unwrap_or_default();
+                    ui.label(format!("Tags {host}"));
+                    if num(ui, "Offset X", &mut t.offset.x, -100.0, 100.0)
+                        | num(ui, "Offset Y", &mut t.offset.y, -100.0, 100.0)
+                    {
+                        label = "Move tag"
+                    }
+                    if ui.button("Select the tagged element").clicked() {
+                        self.selection.only(t.host);
+                    }
+                    if matches!(
+                        self.doc.model().get(t.host).map(|e| &e.kind),
+                        Some(ElementKind::Room(_))
+                    ) {
+                        let l = crate::roomtool::tag_fields(ui, &mut t.fields);
+                        if !l.is_empty() {
+                            label = l;
+                        }
+                    }
+                    match crate::annotate::look_ui(ui, self.doc.model(), &mut t.style, &mut t.color)
+                    {
+                        crate::annotate::LookEdit::Changed(l) => label = l,
+                        crate::annotate::LookEdit::NewStyle => new_style = true,
+                        crate::annotate::LookEdit::None => {}
+                    }
                 }
-            }
-            ElementKind::Tag(t) => {
-                let host = self
-                    .doc
-                    .model()
-                    .get(t.host)
-                    .map(|e| e.name.clone())
-                    .unwrap_or_default();
-                ui.label(format!("Tags {host}"));
-                if num(ui, "Offset X", &mut t.offset.x, -100.0, 100.0)
-                    | num(ui, "Offset Y", &mut t.offset.y, -100.0, 100.0)
-                {
-                    label = "Move tag"
+                ElementKind::Note(n) => {
+                    // a leader's default reach: a metre at 1:100, 10 mm on a sheet
+                    let unit = match self.view(n.view) {
+                        Some(v) => v.scale / 100.0,
+                        None => 10.0,
+                    };
+                    if let Some(l) =
+                        crate::annotate::note_ui(ui, n, &mut self.plan.anno.focus_text, unit)
+                    {
+                        label = l;
+                    }
+                    match crate::annotate::look_ui(ui, self.doc.model(), &mut n.style, &mut n.color)
+                    {
+                        crate::annotate::LookEdit::Changed(l) => label = l,
+                        crate::annotate::LookEdit::NewStyle => new_style = true,
+                        crate::annotate::LookEdit::None => {}
+                    }
                 }
-                if ui.button("Select the tagged element").clicked() {
-                    self.selection.only(t.host);
+                ElementKind::Units(_) => {
+                    if ui.button("Project units…").clicked() {
+                        self.levels.units_open = true;
+                    }
                 }
-                if matches!(
-                    self.doc.model().get(t.host).map(|e| &e.kind),
-                    Some(ElementKind::Room(_))
-                ) {
-                    let l = crate::roomtool::tag_fields(ui, &mut t.fields);
+                ElementKind::TextStyle(s) => {
+                    if let Some(l) = crate::annotate::style_ui(ui, s) {
+                        label = l;
+                    }
+                    let users = crate::annotate::style_users(self.doc.model(), id);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Used by {users} dimensions, tags and notes. Rename it above."
+                        ))
+                        .weak(),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(users > 0, egui::Button::new("Select all using it"))
+                            .clicked()
+                        {
+                            self.select_style_users(id);
+                        }
+                        if ui.button("Annotation styles…").clicked() {
+                            self.open_styles(Some(id));
+                        }
+                    });
+                }
+                ElementKind::SheetTemplate(_) => {
+                    let users = sheets::sheets(self.doc.model())
+                        .into_iter()
+                        .filter(|(_, s)| s.template == Some(id))
+                        .count();
+                    ui.label(egui::RichText::new(format!("Used by {users} sheets.")).weak());
+                    if ui.button("Sheet templates…").clicked() {
+                        self.drafting.templates_open = true;
+                    }
+                }
+                ElementKind::Grid(g) => {
+                    ui.horizontal(|ui| {
+                        ui.label("Label");
+                        if let Some((_, gg)) = creabim_core::grids::group_of(self.doc.model(), g) {
+                            ui.label(egui::RichText::new(&gg.prefix).weak());
+                        }
+                        if ui.text_edit_singleline(&mut g.label).changed() {
+                            label = "Grid label"
+                        }
+                    });
+                    let l = self.grid_properties(ui, g);
                     if !l.is_empty() {
                         label = l;
                     }
                 }
-                match crate::annotate::look_ui(ui, self.doc.model(), &mut t.style, &mut t.color) {
-                    crate::annotate::LookEdit::Changed(l) => label = l,
-                    crate::annotate::LookEdit::NewStyle => new_style = true,
-                    crate::annotate::LookEdit::None => {}
+                ElementKind::GridGroup(g) => {
+                    label = self.grid_group_properties(ui, id, g);
                 }
-            }
-            ElementKind::Note(n) => {
-                // a leader's default reach: a metre at 1:100, 10 mm on a sheet
-                let unit = match self.view(n.view) {
-                    Some(v) => v.scale / 100.0,
-                    None => 10.0,
-                };
-                if let Some(l) =
-                    crate::annotate::note_ui(ui, n, &mut self.plan.anno.focus_text, unit)
-                {
-                    label = l;
-                }
-                match crate::annotate::look_ui(ui, self.doc.model(), &mut n.style, &mut n.color) {
-                    crate::annotate::LookEdit::Changed(l) => label = l,
-                    crate::annotate::LookEdit::NewStyle => new_style = true,
-                    crate::annotate::LookEdit::None => {}
-                }
-            }
-            ElementKind::Units(_) => {
-                if ui.button("Project units…").clicked() {
-                    self.levels.units_open = true;
-                }
-            }
-            ElementKind::TextStyle(s) => {
-                if let Some(l) = crate::annotate::style_ui(ui, s) {
-                    label = l;
-                }
-                let users = crate::annotate::style_users(self.doc.model(), id);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Used by {users} dimensions, tags and notes. Rename it above."
-                    ))
-                    .weak(),
-                );
-                ui.horizontal(|ui| {
+                ElementKind::Sketch(sk) => {
+                    match crate::sketch::properties(ui, sk) {
+                        crate::sketch::Edit::Done(l) => label = l,
+                        crate::sketch::Edit::Refused(why) => self.status = why,
+                        crate::sketch::Edit::None => {}
+                    }
+                    ui.add_space(4.0);
+                    if num(ui, "Plane X", &mut sk.plane.origin.x, -1e4, 1e4)
+                        | num(ui, "Plane Y", &mut sk.plane.origin.y, -1e4, 1e4)
+                        | num(ui, "Plane Z", &mut sk.plane.origin.z, -1e3, 1e3)
+                    {
+                        label = "Move sketch"
+                    }
+                    let n = sk.plane.normal();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Its plane faces ({:.2}, {:.2}, {:.2}).",
+                            n.x, n.y, n.z
+                        ))
+                        .weak(),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label("Extrude by");
+                        ui.add(crate::units::drag(&mut self.extrude_distance));
+                    });
                     if ui
-                        .add_enabled(users > 0, egui::Button::new("Select all using it"))
+                        .button(if sk.closed {
+                            "Extrude into a mass (E)"
+                        } else {
+                            "Extrude into a surface (E)"
+                        })
                         .clicked()
                     {
-                        self.select_style_users(id);
+                        extrude_sketch = true;
                     }
-                    if ui.button("Annotation styles…").clicked() {
-                        self.open_styles(Some(id));
-                    }
-                });
-            }
-            ElementKind::SheetTemplate(_) => {
-                let users = sheets::sheets(self.doc.model())
-                    .into_iter()
-                    .filter(|(_, s)| s.template == Some(id))
-                    .count();
-                ui.label(egui::RichText::new(format!("Used by {users} sheets.")).weak());
-                if ui.button("Sheet templates…").clicked() {
-                    self.drafting.templates_open = true;
                 }
-            }
-            ElementKind::Grid(g) => {
-                ui.horizontal(|ui| {
-                    ui.label("Label");
-                    if let Some((_, gg)) = creabim_core::grids::group_of(self.doc.model(), g) {
-                        ui.label(egui::RichText::new(&gg.prefix).weak());
-                    }
-                    if ui.text_edit_singleline(&mut g.label).changed() {
-                        label = "Grid label"
-                    }
-                });
-                let l = self.grid_properties(ui, g);
-                if !l.is_empty() {
-                    label = l;
-                }
-            }
-            ElementKind::GridGroup(g) => {
-                label = self.grid_group_properties(ui, id, g);
-            }
-            ElementKind::Sketch(sk) => {
-                match crate::sketch::properties(ui, sk) {
-                    crate::sketch::Edit::Done(l) => label = l,
-                    crate::sketch::Edit::Refused(why) => self.status = why,
-                    crate::sketch::Edit::None => {}
-                }
-                ui.add_space(4.0);
-                if num(ui, "Plane X", &mut sk.plane.origin.x, -1e4, 1e4)
-                    | num(ui, "Plane Y", &mut sk.plane.origin.y, -1e4, 1e4)
-                    | num(ui, "Plane Z", &mut sk.plane.origin.z, -1e3, 1e3)
-                {
-                    label = "Move sketch"
-                }
-                let n = sk.plane.normal();
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Its plane faces ({:.2}, {:.2}, {:.2}).",
-                        n.x, n.y, n.z
-                    ))
-                    .weak(),
-                );
-                ui.horizontal(|ui| {
-                    ui.label("Extrude by");
-                    ui.add(crate::units::drag(&mut self.extrude_distance));
-                });
-                if ui
-                    .button(if sk.closed {
-                        "Extrude into a mass (E)"
-                    } else {
-                        "Extrude into a surface (E)"
-                    })
-                    .clicked()
-                {
-                    extrude_sketch = true;
-                }
-            }
-            ElementKind::FreeMesh(m) => {
-                egui::ComboBox::from_label("IFC class")
-                    .selected_text(m.ifc_class.clone())
-                    .show_ui(ui, |ui| {
-                        for c in FREE_MESH_CLASSES {
-                            if ui
-                                .selectable_value(&mut m.ifc_class, c.to_string(), *c)
-                                .changed()
-                            {
-                                label = "Classify mesh"
+                ElementKind::FreeMesh(m) => {
+                    crate::app::helpui::combo(ui, "IFC class")
+                        .selected_text(m.ifc_class.clone())
+                        .show_ui(ui, |ui| {
+                            for c in FREE_MESH_CLASSES {
+                                if ui
+                                    .selectable_value(&mut m.ifc_class, c.to_string(), *c)
+                                    .changed()
+                                {
+                                    label = "Classify mesh"
+                                }
                             }
+                        });
+                    if self.material_combo(ui, &mut m.material) {
+                        label = "Mesh material"
+                    }
+                    if num(ui, "X", &mut m.origin.x, -1e4, 1e4)
+                        | num(ui, "Y", &mut m.origin.y, -1e4, 1e4)
+                        | num(ui, "Z", &mut m.origin.z, -1e3, 1e3)
+                    {
+                        label = "Move mesh"
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Rotation");
+                        if ui
+                            .add(egui::DragValue::new(&mut m.rotation).speed(1.0).suffix("°"))
+                            .changed()
+                        {
+                            label = "Rotate mesh"
+                        }
+                        ui.label("Scale");
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut m.scale)
+                                    .speed(0.01)
+                                    .range(0.01..=100.0),
+                            )
+                            .changed()
+                        {
+                            label = "Scale mesh"
                         }
                     });
-                if self.material_combo(ui, &mut m.material) {
-                    label = "Mesh material"
-                }
-                if num(ui, "X", &mut m.origin.x, -1e4, 1e4)
-                    | num(ui, "Y", &mut m.origin.y, -1e4, 1e4)
-                    | num(ui, "Z", &mut m.origin.z, -1e3, 1e3)
-                {
-                    label = "Move mesh"
-                }
-                ui.horizontal(|ui| {
-                    ui.label("Rotation");
-                    if ui
-                        .add(egui::DragValue::new(&mut m.rotation).speed(1.0).suffix("°"))
-                        .changed()
-                    {
-                        label = "Rotate mesh"
-                    }
-                    ui.label("Scale");
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut m.scale)
-                                .speed(0.01)
-                                .range(0.01..=100.0),
-                        )
-                        .changed()
-                    {
-                        label = "Scale mesh"
-                    }
-                });
-                ui.label(
+                    ui.label(
                     egui::RichText::new(
                         "M moves by a base point. With the pointer over a view: G moves, R rotates, S scales, Shift+D duplicates.",
                     )
                     .weak(),
                 );
 
-                ui.separator();
-                ui.label(egui::RichText::new("Modifiers").strong());
-                if m.modifiers.is_empty() {
-                    ui.label(
-                        egui::RichText::new(
-                            "None yet. They change the shape without touching the mesh.",
-                        )
-                        .weak(),
-                    );
-                }
-                let count = m.modifiers.len();
-                let mut action: Option<(usize, i32)> = None; // (index, -1 up, 1 down, 0 remove, 2 apply)
-                for (i, md) in m.modifiers.iter_mut().enumerate() {
-                    ui.push_id(("modifier", i), |ui| {
-                        egui::Frame::group(ui.style()).show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .checkbox(&mut md.enabled, md.kind.label())
-                                    .on_hover_text("Switch it off to see the mesh without it")
-                                    .changed()
-                                {
-                                    label = "Switch modifier"
-                                }
-                                if ui.small_button("Remove").clicked() {
-                                    action = Some((i, 0));
-                                }
-                                if i + 1 < count && ui.small_button("Down").clicked() {
-                                    action = Some((i, 1));
-                                }
-                                if i > 0 && ui.small_button("Up").clicked() {
-                                    action = Some((i, -1));
-                                }
-                                if i == 0
+                    ui.separator();
+                    ui.label(egui::RichText::new("Modifiers").strong());
+                    if m.modifiers.is_empty() {
+                        ui.label(
+                            egui::RichText::new(
+                                "None yet. They change the shape without touching the mesh.",
+                            )
+                            .weak(),
+                        );
+                    }
+                    let count = m.modifiers.len();
+                    let mut action: Option<(usize, i32)> = None; // (index, -1 up, 1 down, 0 remove, 2 apply)
+                    for (i, md) in m.modifiers.iter_mut().enumerate() {
+                        ui.push_id(("modifier", i), |ui| {
+                            egui::Frame::group(ui.style()).show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .checkbox(&mut md.enabled, md.kind.label())
+                                        .on_hover_text("Switch it off to see the mesh without it")
+                                        .changed()
+                                    {
+                                        label = "Switch modifier"
+                                    }
+                                    if ui.small_button("Remove").clicked() {
+                                        action = Some((i, 0));
+                                    }
+                                    if i + 1 < count && ui.small_button("Down").clicked() {
+                                        action = Some((i, 1));
+                                    }
+                                    if i > 0 && ui.small_button("Up").clicked() {
+                                        action = Some((i, -1));
+                                    }
+                                    if i == 0
                                     && ui
                                         .small_button("Apply")
                                         .on_hover_text(
@@ -4638,252 +4713,256 @@ impl CreaBimApp {
                                 {
                                     action = Some((i, 2));
                                 }
-                            });
-                            match &mut md.kind {
-                                ModifierKind::Array { count, offset } => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("Count");
-                                        if ui
-                                            .add(
-                                                egui::DragValue::new(count)
-                                                    .speed(0.1)
-                                                    .range(1..=200),
-                                            )
-                                            .changed()
-                                        {
-                                            label = "Array count"
-                                        }
-                                    });
-                                    if num(ui, "Offset X", &mut offset.x, -1e3, 1e3)
-                                        | num(ui, "Offset Y", &mut offset.y, -1e3, 1e3)
-                                        | num(ui, "Offset Z", &mut offset.z, -1e3, 1e3)
-                                    {
-                                        label = "Array offset"
-                                    }
-                                }
-                                ModifierKind::Mirror { axis, plane } => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("Across");
-                                        for a in Axis::ALL {
-                                            if ui.radio_value(axis, a, a.label()).changed() {
-                                                label = "Mirror axis"
+                                });
+                                match &mut md.kind {
+                                    ModifierKind::Array { count, offset } => {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Count");
+                                            if ui
+                                                .add(
+                                                    egui::DragValue::new(count)
+                                                        .speed(0.1)
+                                                        .range(1..=200),
+                                                )
+                                                .changed()
+                                            {
+                                                label = "Array count"
                                             }
-                                        }
-                                    });
-                                    if num(ui, "Mirror plane at", plane, -1e3, 1e3) {
-                                        label = "Mirror plane"
-                                    }
-                                }
-                                ModifierKind::Solidify { thickness } => {
-                                    if num(ui, "Thickness", thickness, -10.0, 10.0) {
-                                        label = "Solidify thickness"
-                                    }
-                                }
-                                ModifierKind::Subdivision { levels } => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("Levels");
-                                        if ui
-                                            .add(
-                                                egui::DragValue::new(levels)
-                                                    .speed(0.05)
-                                                    .range(0..=4),
-                                            )
-                                            .changed()
+                                        });
+                                        if num(ui, "Offset X", &mut offset.x, -1e3, 1e3)
+                                            | num(ui, "Offset Y", &mut offset.y, -1e3, 1e3)
+                                            | num(ui, "Offset Z", &mut offset.z, -1e3, 1e3)
                                         {
-                                            label = "Subdivision levels"
+                                            label = "Array offset"
                                         }
-                                    });
+                                    }
+                                    ModifierKind::Mirror { axis, plane } => {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Across");
+                                            for a in Axis::ALL {
+                                                if ui.radio_value(axis, a, a.label()).changed() {
+                                                    label = "Mirror axis"
+                                                }
+                                            }
+                                        });
+                                        if num(ui, "Mirror plane at", plane, -1e3, 1e3) {
+                                            label = "Mirror plane"
+                                        }
+                                    }
+                                    ModifierKind::Solidify { thickness } => {
+                                        if num(ui, "Thickness", thickness, -10.0, 10.0) {
+                                            label = "Solidify thickness"
+                                        }
+                                    }
+                                    ModifierKind::Subdivision { levels } => {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Levels");
+                                            if ui
+                                                .add(
+                                                    egui::DragValue::new(levels)
+                                                        .speed(0.05)
+                                                        .range(0..=4),
+                                                )
+                                                .changed()
+                                            {
+                                                label = "Subdivision levels"
+                                            }
+                                        });
+                                    }
+                                }
+                            });
+                        });
+                    }
+                    match action {
+                        Some((i, 0)) => {
+                            m.modifiers.remove(i);
+                            label = "Remove modifier";
+                        }
+                        Some((i, 1)) => {
+                            m.modifiers.swap(i, i + 1);
+                            label = "Reorder modifiers";
+                        }
+                        Some((i, -1)) => {
+                            m.modifiers.swap(i, i - 1);
+                            label = "Reorder modifiers";
+                        }
+                        Some((_, _)) => {
+                            let first = m.modifiers.remove(0);
+                            m.mesh = creabim_core::modifiers::evaluate(&m.mesh, &[first]).mesh;
+                            self.face = None;
+                            label = "Apply modifier";
+                        }
+                        None => {}
+                    }
+                    egui::ComboBox::from_id_salt("add_modifier")
+                        .selected_text("Add modifier…")
+                        .show_ui(ui, |ui| {
+                            for k in ModifierKind::presets() {
+                                if ui.selectable_label(false, k.label()).clicked() {
+                                    m.modifiers.push(Modifier::new(k));
+                                    label = "Add modifier";
                                 }
                             }
                         });
+                    ui.label(format!(
+                        "{} vertices, {} faces",
+                        m.mesh.vertices.len(),
+                        m.mesh.faces.len()
+                    ));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Mesh edit").strong());
+                    if !m.modifiers.is_empty() {
+                        ui.label(
+                            egui::RichText::new("Edits change the mesh under the modifiers.")
+                                .weak(),
+                        );
+                    }
+                    match self.face {
+                        Some(f) => ui.label(format!("Face {f} selected (click a face in 3D)")),
+                        None => ui.label("Click a face in the 3D view to edit it."),
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label("Distance");
+                        ui.add(crate::units::drag(&mut self.extrude_distance));
                     });
-                }
-                match action {
-                    Some((i, 0)) => {
-                        m.modifiers.remove(i);
-                        label = "Remove modifier";
-                    }
-                    Some((i, 1)) => {
-                        m.modifiers.swap(i, i + 1);
-                        label = "Reorder modifiers";
-                    }
-                    Some((i, -1)) => {
-                        m.modifiers.swap(i, i - 1);
-                        label = "Reorder modifiers";
-                    }
-                    Some((_, _)) => {
-                        let first = m.modifiers.remove(0);
-                        m.mesh = creabim_core::modifiers::evaluate(&m.mesh, &[first]).mesh;
-                        self.face = None;
-                        label = "Apply modifier";
-                    }
-                    None => {}
-                }
-                egui::ComboBox::from_id_salt("add_modifier")
-                    .selected_text("Add modifier…")
-                    .show_ui(ui, |ui| {
-                        for k in ModifierKind::presets() {
-                            if ui.selectable_label(false, k.label()).clicked() {
-                                m.modifiers.push(Modifier::new(k));
-                                label = "Add modifier";
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(self.face.is_some(), egui::Button::new("Extrude (E)"))
+                            .clicked()
+                        {
+                            if let Some(f) = self.face {
+                                m.mesh.extrude_face(f, self.extrude_distance);
+                                label = "Extrude face";
+                            }
+                        }
+                        if ui
+                            .add_enabled(self.face.is_some(), egui::Button::new("Taper"))
+                            .on_hover_text("Scale the face to 80%")
+                            .clicked()
+                        {
+                            if let Some(f) = self.face {
+                                m.mesh.scale_face(f, 0.8);
+                                label = "Taper face";
+                            }
+                        }
+                        if ui
+                            .add_enabled(self.face.is_some(), egui::Button::new("Move"))
+                            .on_hover_text("Move the face along its normal by the distance")
+                            .clicked()
+                        {
+                            if let Some(f) = self.face {
+                                let n = m.mesh.face_normal(f) * self.extrude_distance;
+                                let verts = m.mesh.faces[f].clone();
+                                m.mesh.translate_vertices(&verts, n);
+                                label = "Move face";
                             }
                         }
                     });
-                ui.label(format!(
-                    "{} vertices, {} faces",
-                    m.mesh.vertices.len(),
-                    m.mesh.faces.len()
-                ));
-                ui.separator();
-                ui.label(egui::RichText::new("Mesh edit").strong());
-                if !m.modifiers.is_empty() {
-                    ui.label(
-                        egui::RichText::new("Edits change the mesh under the modifiers.").weak(),
-                    );
+                    if ui.button("Subdivide (Catmull-Clark)").clicked() {
+                        m.mesh = m.mesh.subdivide();
+                        self.face = None;
+                        label = "Subdivide mesh";
+                    }
                 }
-                match self.face {
-                    Some(f) => ui.label(format!("Face {f} selected (click a face in 3D)")),
-                    None => ui.label("Click a face in the 3D view to edit it."),
-                };
-                ui.horizontal(|ui| {
-                    ui.label("Distance");
-                    ui.add(crate::units::drag(&mut self.extrude_distance));
-                });
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(self.face.is_some(), egui::Button::new("Extrude (E)"))
-                        .clicked()
-                    {
-                        if let Some(f) = self.face {
-                            m.mesh.extrude_face(f, self.extrude_distance);
-                            label = "Extrude face";
+                ElementKind::Cut(c) => {
+                    let name = |id| {
+                        self.doc
+                            .model()
+                            .get(id)
+                            .map_or("(missing)".to_string(), |e| e.name.clone())
+                    };
+                    ui.label(format!(
+                        "{} {} with {}",
+                        c.op.label(),
+                        name(c.target),
+                        name(c.cutter)
+                    ));
+                    for op in BoolOp::ALL {
+                        if ui.radio_value(&mut c.op, op, op.label()).changed() {
+                            label = "Change boolean";
                         }
                     }
-                    if ui
-                        .add_enabled(self.face.is_some(), egui::Button::new("Taper"))
-                        .on_hover_text("Scale the face to 80%")
-                        .clicked()
-                    {
-                        if let Some(f) = self.face {
-                            m.mesh.scale_face(f, 0.8);
-                            label = "Taper face";
-                        }
-                    }
-                    if ui
-                        .add_enabled(self.face.is_some(), egui::Button::new("Move"))
-                        .on_hover_text("Move the face along its normal by the distance")
-                        .clicked()
-                    {
-                        if let Some(f) = self.face {
-                            let n = m.mesh.face_normal(f) * self.extrude_distance;
-                            let verts = m.mesh.faces[f].clone();
-                            m.mesh.translate_vertices(&verts, n);
-                            label = "Move face";
-                        }
-                    }
-                });
-                if ui.button("Subdivide (Catmull-Clark)").clicked() {
-                    m.mesh = m.mesh.subdivide();
-                    self.face = None;
-                    label = "Subdivide mesh";
                 }
-            }
-            ElementKind::Cut(c) => {
-                let name = |id| {
-                    self.doc
-                        .model()
-                        .get(id)
-                        .map_or("(missing)".to_string(), |e| e.name.clone())
-                };
-                ui.label(format!(
-                    "{} {} with {}",
-                    c.op.label(),
-                    name(c.target),
-                    name(c.cutter)
-                ));
-                for op in BoolOp::ALL {
-                    if ui.radio_value(&mut c.op, op, op.label()).changed() {
-                        label = "Change boolean";
-                    }
+                ElementKind::Room(r) => {
+                    label = crate::roomtool::room_fields(ui, self.doc.model(), r);
                 }
-            }
-            ElementKind::Room(r) => {
-                label = crate::roomtool::room_fields(ui, self.doc.model(), r);
-            }
-            ElementKind::Ceiling(c) => {
-                label = crate::roomtool::ceiling_fields(ui, self.doc.model(), c);
-                if self.material_combo(ui, &mut c.material) {
-                    label = "Material";
-                }
-            }
-            ElementKind::RoomSeparator(sep) => {
-                ui.label(format!(
-                    "{} long. Rooms on either side of it are measured apart.",
-                    crate::units::len(sep.a.distance(sep.b))
-                ));
-            }
-            ElementKind::Object(o) => {
-                let hung = creabim_core::objects::hung(self.doc.model(), &e);
-                label = objectsui::object_fields(ui, o, hung);
-                object_type = true;
-            }
-            k @ (ElementKind::Column(_)
-            | ElementKind::Beam(_)
-            | ElementKind::Roof(_)
-            | ElementKind::Stair(_)
-            | ElementKind::Railing(_)
-            | ElementKind::Footing(_)) => {
-                if let ElementKind::Roof(r) = k {
-                    if self.assembly_combo(ui, creabim_core::AssemblyUse::Roof, &mut r.assembly) {
-                        label = "Roof assembly";
-                    }
-                }
-                let layered = matches!(k, ElementKind::Roof(r) if r.assembly.is_some_and(|a| {
-                    matches!(self.doc.model().get(a).map(|e| &e.kind), Some(ElementKind::Assembly(_)))
-                }));
-                let l = crate::memberstool::properties(ui, self.doc.model(), k);
-                if !l.is_empty() {
-                    label = l;
-                }
-                let shafts = creabim_core::slab::holes_of(self.doc.model(), &e).len();
-                if let ElementKind::Roof(r) = k {
-                    let shafts = shafts.saturating_sub(r.holes.len());
-                    let (l, draw) = typesui::holes_fields(ui, &mut r.holes, shafts);
-                    if !l.is_empty() {
-                        label = l;
-                    }
-                    draw_hole |= draw;
-                }
-                if let Some(m) = creabim_core::members::material_mut(k).filter(|_| !layered) {
-                    if self.material_combo(ui, m) {
+                ElementKind::Ceiling(c) => {
+                    label = crate::roomtool::ceiling_fields(ui, self.doc.model(), c);
+                    if self.material_combo(ui, &mut c.material) {
                         label = "Material";
                     }
                 }
-                if matches!(k, ElementKind::Stair(_))
-                    && ui
-                        .button("Add railings")
-                        .on_hover_text("A railing along each side; they follow the stair.")
-                        .clicked()
-                {
-                    let mut sel = self.selection.clone();
-                    let h = self.plan.members.railing_height;
-                    let r = crate::memberstool::add_stair_railings(&mut self.doc, id, h, &mut sel);
-                    self.report(r, "Railings added along both sides.");
+                ElementKind::RoomSeparator(sep) => {
+                    ui.label(format!(
+                        "{} long. Rooms on either side of it are measured apart.",
+                        crate::units::len(sep.a.distance(sep.b))
+                    ));
                 }
-            }
-            ElementKind::Guide(g) => {
-                ui.label(
-                    egui::RichText::new(
-                        "A construction line to snap to. It is never printed or exported.",
-                    )
-                    .weak(),
-                );
-                if num(ui, "From X", &mut g.a.x, -1e4, 1e4)
-                    | num(ui, "From Y", &mut g.a.y, -1e4, 1e4)
-                    | num(ui, "To X", &mut g.b.x, -1e4, 1e4)
-                    | num(ui, "To Y", &mut g.b.y, -1e4, 1e4)
-                {
-                    label = "Move guide";
+                ElementKind::Object(o) => {
+                    let hung = creabim_core::objects::hung(self.doc.model(), &e);
+                    label = objectsui::object_fields(ui, o, hung);
+                    object_type = true;
+                }
+                k @ (ElementKind::Column(_)
+                | ElementKind::Beam(_)
+                | ElementKind::Roof(_)
+                | ElementKind::Stair(_)
+                | ElementKind::Railing(_)
+                | ElementKind::Footing(_)) => {
+                    if let ElementKind::Roof(r) = k {
+                        if self.assembly_combo(ui, creabim_core::AssemblyUse::Roof, &mut r.assembly)
+                        {
+                            label = "Roof assembly";
+                        }
+                    }
+                    let layered = matches!(k, ElementKind::Roof(r) if r.assembly.is_some_and(|a| {
+                        matches!(self.doc.model().get(a).map(|e| &e.kind), Some(ElementKind::Assembly(_)))
+                    }));
+                    let l = crate::memberstool::properties(ui, self.doc.model(), k);
+                    if !l.is_empty() {
+                        label = l;
+                    }
+                    let shafts = creabim_core::slab::holes_of(self.doc.model(), &e).len();
+                    if let ElementKind::Roof(r) = k {
+                        let shafts = shafts.saturating_sub(r.holes.len());
+                        let (l, draw) = typesui::holes_fields(ui, &mut r.holes, shafts);
+                        if !l.is_empty() {
+                            label = l;
+                        }
+                        draw_hole |= draw;
+                    }
+                    if let Some(m) = creabim_core::members::material_mut(k).filter(|_| !layered) {
+                        if self.material_combo(ui, m) {
+                            label = "Material";
+                        }
+                    }
+                    if matches!(k, ElementKind::Stair(_))
+                        && ui
+                            .button("Add railings")
+                            .on_hover_text("A railing along each side; they follow the stair.")
+                            .clicked()
+                    {
+                        let mut sel = self.selection.clone();
+                        let h = self.plan.members.railing_height;
+                        let r =
+                            crate::memberstool::add_stair_railings(&mut self.doc, id, h, &mut sel);
+                        self.report(r, "Railings added along both sides.");
+                    }
+                }
+                ElementKind::Guide(g) => {
+                    ui.label(
+                        egui::RichText::new(
+                            "A construction line to snap to. It is never printed or exported.",
+                        )
+                        .weak(),
+                    );
+                    if num(ui, "From X", &mut g.a.x, -1e4, 1e4)
+                        | num(ui, "From Y", &mut g.a.y, -1e4, 1e4)
+                        | num(ui, "To X", &mut g.b.x, -1e4, 1e4)
+                        | num(ui, "To Y", &mut g.b.y, -1e4, 1e4)
+                    {
+                        label = "Move guide";
+                    }
                 }
             }
         }
@@ -4908,6 +4987,9 @@ impl CreaBimApp {
         if object_type {
             self.object_type_section(ui, id);
         }
+        if let Some((view, scale)) = rescale {
+            self.set_view_scale(view, scale);
+        }
         if new_style {
             self.status = "New text style: set its font, size and colour below.".into();
         }
@@ -4921,7 +5003,7 @@ impl CreaBimApp {
         }
         if show_visibility {
             ui.add_space(6.0);
-            self.visibility_panel(ui, gridvis::VisTarget::View(id));
+            self.visibility_panel(ui, gridvis::VisTarget::View(id), None);
         }
         if redraw {
             self.plan.cancel();
@@ -4981,6 +5063,7 @@ impl eframe::App for CreaBimApp {
         crate::units::set(self.doc.model().units());
         self.shortcuts(&ctx);
         self.keep_edit_mode();
+        self.refresh_spotlight();
         let dropped: Vec<String> = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -5026,7 +5109,7 @@ impl eframe::App for CreaBimApp {
                 ui.horizontal(|ui| {
                     ui.label(&self.status);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(format!("{} elements", self.doc.model().len()));
+                        ui.label(format!("{} elements", self.element_count()));
                     });
                 });
             });
@@ -5042,9 +5125,21 @@ impl eframe::App for CreaBimApp {
                     .inner_margin(egui::Margin::symmetric(14, 12)),
             )
             .show(ui, |ui| {
+                // the panel keeps the width it was given: what is wider
+                // wraps, folds into one column or is clipped, and never
+                // pushes the panel wider as the selection changes
+                let rect = ui.available_rect_before_wrap();
+                let clip = rect.expand2(egui::vec2(6.0, 0.0)).intersect(ui.clip_rect());
+                let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                inner.set_clip_rect(clip);
+                inner.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 egui::ScrollArea::vertical()
                     .auto_shrink(false)
-                    .show(ui, |ui| self.properties(ui))
+                    .show(&mut inner, |ui| {
+                        ui.set_max_width(rect.width());
+                        self.properties(ui)
+                    });
+                ui.allocate_rect(rect, egui::Sense::hover());
             })
             .response
             .rect;
@@ -5119,10 +5214,18 @@ impl eframe::App for CreaBimApp {
         if std::mem::take(&mut self.plan.want_catalogue) {
             self.catalogue.open = true;
         }
+        // a box dragged with the Footing tool: footings under all it took
+        let hosts = std::mem::take(&mut self.plan.want_footings);
+        if !hosts.is_empty() {
+            self.selection.clear();
+            self.selection.extend(hosts, false);
+            self.footings_under_selection();
+        }
         self.open_view_menu();
         self.materials_window(&ctx);
         self.assemblies_window(&ctx);
         self.types_window(&ctx);
+        self.type_preview_window(&ctx);
         self.catalogue_window(&ctx);
         self.levels_window(&ctx);
         self.level_copy_window(&ctx);
@@ -5130,6 +5233,7 @@ impl eframe::App for CreaBimApp {
         self.templates_window(&ctx);
         self.units_window(&ctx);
         self.ground_spacing_window(&ctx);
+        self.import_report_window(&ctx);
         self.help_window(&ctx);
         // a plan in its own window keeps egui's menus
         self.plan.web_menus = false;
@@ -5455,6 +5559,127 @@ fn draw_guide_3d(
     if run.len() > 1 {
         painter.extend(egui::Shape::dashed_line(&run, stroke, 6.0, 4.0));
     }
+}
+
+/// A plan's graphics in its Properties: the tint of what lies below the
+/// cut, how far below its floor it looks, and its pens' line weights.
+/// Returns the undo label of a change.
+fn plan_graphics_ui(
+    ui: &mut egui::Ui,
+    g: &mut creabim_core::PlanGraphics,
+    scale: f64,
+) -> Option<&'static str> {
+    let mut label = None;
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Graphics").strong());
+    if ui
+        .checkbox(&mut g.below_fill, "Tint what lies below the cut")
+        .on_hover_text("Furniture, fittings and imported meshes under the cut get a light fill.")
+        .changed()
+    {
+        label = Some("Below-cut fill");
+    }
+    if g.below_fill {
+        ui.horizontal(|ui| {
+            ui.label("Strength");
+            if ui
+                .add(egui::Slider::new(&mut g.below_strength, 0.05..=1.0))
+                .changed()
+            {
+                label = Some("Below-cut fill");
+            }
+        });
+        if ui
+            .checkbox(&mut g.below_grey, "In grey, not material colours")
+            .changed()
+        {
+            label = Some("Below-cut fill");
+        }
+    }
+    let mut to_level = g.range.view_depth.is_none();
+    if ui
+        .checkbox(&mut to_level, "View depth: down to the level below")
+        .on_hover_text(
+            "How far below its floor the plan looks, through holes in the floor such as a stair well.",
+        )
+        .changed()
+    {
+        g.range.view_depth = if to_level { None } else { Some(1.0) };
+        label = Some("View depth");
+    }
+    if let Some(d) = &mut g.range.view_depth {
+        ui.horizontal(|ui| {
+            ui.label("View depth below the floor");
+            if ui.add(crate::units::drag(d).range(0.0..=100.0)).changed() {
+                label = Some("View depth");
+            }
+        });
+    }
+    let mut auto = g.weights.is_none();
+    if ui
+        .checkbox(&mut auto, "Line weights from the scale")
+        .on_hover_text("Heavier pens at 1:50 and larger, lighter at 1:100 and smaller.")
+        .changed()
+    {
+        g.weights = if auto {
+            None
+        } else {
+            Some(creabim_core::LineWeights::for_scale(scale))
+        };
+        label = Some("Line weights");
+    }
+    egui::CollapsingHeader::new("Pens by category")
+        .id_salt("plan_category_pens")
+        .show(ui, |ui| {
+            use creabim_core::graphics::{CategoryPen, PenClass};
+            use creabim_core::Category as C;
+            for c in [
+                C::Objects,
+                C::Railings,
+                C::Stairs,
+                C::Slabs,
+                C::Roofs,
+                C::FreeMeshes,
+            ] {
+                let current = g.pen_of(c);
+                let mut pick = current;
+                egui::ComboBox::from_label(c.label())
+                    .selected_text(current.map_or("As drawn", |p| p.label()))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut pick, None, "As drawn");
+                        for p in PenClass::ALL {
+                            ui.selectable_value(&mut pick, Some(p), p.label());
+                        }
+                    });
+                if pick != current {
+                    g.category_pens.retain(|x| x.category != c);
+                    if let Some(pen) = pick {
+                        g.category_pens.push(CategoryPen { category: c, pen });
+                    }
+                    label = Some("Pens by category");
+                }
+            }
+        });
+    if let Some(w) = &mut g.weights {
+        for (name, v) in w.fields_mut() {
+            ui.horizontal(|ui| {
+                ui.label(name);
+                if ui
+                    .add(
+                        egui::DragValue::new(v)
+                            .speed(0.01)
+                            .range(0.02..=2.0)
+                            .max_decimals(2)
+                            .suffix(" mm"),
+                    )
+                    .changed()
+                {
+                    label = Some("Line weights");
+                }
+            });
+        }
+    }
+    label
 }
 
 /// A drop-down of the ways a section, elevation or 3D view draws.

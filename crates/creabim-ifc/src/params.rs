@@ -30,6 +30,8 @@ pub(crate) enum Prop {
     Real(f64),
     Label(String),
     Bool(bool),
+    /// Text of any length (a label is at most 255 characters).
+    Text(String),
 }
 
 impl Prop {
@@ -41,6 +43,7 @@ impl Prop {
             Prop::Real(v) => format!("IFCREAL({})", real(*v)),
             Prop::Label(s) => format!("IFCLABEL({})", string(s)),
             Prop::Bool(b) => format!("IFCBOOLEAN({})", if *b { ".T." } else { ".F." }),
+            Prop::Text(s) => format!("IFCTEXT({})", string(s)),
         }
     }
 }
@@ -463,7 +466,7 @@ mod tests {
                     Prop::Length(x) => (Some(*x), None),
                     Prop::Count(n) => (Some(*n as f64), None),
                     Prop::Real(x) => (Some(*x), None),
-                    Prop::Label(s) => (None, Some(s.clone())),
+                    Prop::Label(s) | Prop::Text(s) => (None, Some(s.clone())),
                     Prop::Bool(b) => (Some(*b as i64 as f64), None),
                 };
                 (k.to_string(), r)

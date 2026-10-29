@@ -116,7 +116,7 @@ impl Importer<'_> {
                 continue;
             }
             let world = self.g.placement(e.arg(5));
-            let Some(p) = self.prism(e, &world).filter(|p| !p.holes) else {
+            let Some(p) = self.prism(e, &world).filter(|p| p.holes.is_empty()) else {
                 continue;
             };
             let (level, elevation) = self.level_for(id, p.z0);

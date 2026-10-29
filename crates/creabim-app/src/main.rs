@@ -18,6 +18,7 @@ mod icons;
 mod memberstool;
 mod modal;
 mod objecttool;
+mod optionbar;
 mod outline;
 mod paneface;
 mod planview;

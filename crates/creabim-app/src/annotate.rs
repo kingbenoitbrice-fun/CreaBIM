@@ -987,7 +987,7 @@ pub fn look_ui(
         .map_or("Default", |s| s.1.as_str())
         .to_string();
     let mut out = LookEdit::None;
-    egui::ComboBox::from_label("Text style")
+    crate::app::helpui::combo(ui, "Text style")
         .selected_text(name)
         .show_ui(ui, |ui| {
             if ui.selectable_value(style, None, "Default").changed() {
@@ -1047,7 +1047,7 @@ pub fn set_style(kind: &mut ElementKind, id: ElementId) {
 /// A text style's font, size, colour, weight and slant.
 pub fn style_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
     let mut label = None;
-    egui::ComboBox::from_label("Font")
+    crate::app::helpui::combo(ui, "Font")
         .selected_text(s.font.label())
         .show_ui(ui, |ui| {
             for f in Font::ALL {
@@ -1162,7 +1162,7 @@ pub fn ends_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
             label = Some("Terminator size");
         }
     });
-    egui::ComboBox::from_label("Tag shape")
+    crate::app::helpui::combo(ui, "Tag shape")
         .selected_text(s.tag_shape.label())
         .show_ui(ui, |ui| {
             for k in TagShape::ALL {
@@ -1174,7 +1174,7 @@ pub fn ends_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
                 }
             }
         });
-    egui::ComboBox::from_label("Meant for")
+    crate::app::helpui::combo(ui, "Meant for")
         .selected_text(s.purpose.label())
         .show_ui(ui, |ui| {
             for k in StyleUse::ALL {

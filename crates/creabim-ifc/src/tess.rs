@@ -199,6 +199,23 @@ pub fn triangulate(outer: &[DVec2], holes: &[Vec<DVec2>]) -> Vec<[usize; 3]> {
             if crosses(&ring) || others.iter().any(|r| crosses(r)) {
                 return false;
             }
+            // nor may it run through another corner, as a bridge to the
+            // far corner of a square hole would
+            let len2 = pv.distance_squared(pm);
+            let through = |r: &[usize]| {
+                r.iter().any(|&i| {
+                    let p = pts[i];
+                    let t = (p - pm).dot(pv - pm) / len2.max(1e-300);
+                    p != pm
+                        && p != pv
+                        && t > 0.0
+                        && t < 1.0
+                        && (p - pm).perp_dot(pv - pm).abs() <= 1e-12 * len2
+                })
+            };
+            if through(&ring) || others.iter().any(|r| through(r)) {
+                return false;
+            }
             let mid = (pm + pv) / 2.0;
             let loop_of = |r: &[usize]| r.iter().map(|&i| pts[i]).collect::<Vec<_>>();
             inside(mid, &loop_of(&ring)) && !inside(mid, &loop_of(hole))
@@ -512,6 +529,28 @@ mod tests {
         assert!(tris
             .iter()
             .all(|t| area2(&[all[t[0]], all[t[1]], all[t[2]]]) > 0.0));
+    }
+
+    #[test]
+    fn a_bridge_does_not_run_through_a_hole_corner() {
+        // the hole's corner nearest the outline's is in line with the
+        // hole's opposite corner, so the shortest bridge passes through it
+        let outer = vec![
+            DVec2::new(0.0, 0.0),
+            DVec2::new(0.0, -6.0),
+            DVec2::new(4.0, -6.0),
+            DVec2::new(4.0, 0.0),
+        ];
+        let hole = vec![
+            DVec2::new(1.0, -1.0),
+            DVec2::new(2.0, -1.0),
+            DVec2::new(2.0, -2.0),
+            DVec2::new(1.0, -2.0),
+        ];
+        let tris = triangulate(&outer, std::slice::from_ref(&hole));
+        let mut all = outer.clone();
+        all.extend(hole);
+        assert!((tri_area(&all, &tris) - 23.0).abs() < 1e-9, "{tris:?}");
     }
 
     #[test]

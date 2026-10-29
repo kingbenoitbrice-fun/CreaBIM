@@ -38,6 +38,8 @@ usage: (<model> is a .creabim project or a legacy .creabim.json file)
   creabim view <model> <view-name> <out.svg>
                                        draw any view (plan, section, elevation)
   creabim views <model>                list the model's views
+  creabim label-clashes <model>        list labels, tags and notes that still
+                                       overlap in each plan
   creabim sheets <model>               list the model's sheets
   creabim sheet <model> <number> <out.svg>
                                        draw one sheet
@@ -224,6 +226,26 @@ fn main() -> ExitCode {
                 }
             }
         }),
+        ["label-clashes", input] => load(input).map(|m| {
+            for e in m.iter() {
+                let creabim_core::ElementKind::View(v) = &e.kind else {
+                    continue;
+                };
+                if !matches!(v.kind, creabim_core::ViewKind::Plan { .. }) {
+                    continue;
+                }
+                let Some(d) = creabim_geom::section::view_drawing(&m, e.id) else {
+                    continue;
+                };
+                let mm = v.scale / 1000.0;
+                let clashes = creabim_geom::declutter::overlapping_labels(&d.items, mm);
+                println!("{}: {} overlapping", e.name, clashes.len());
+                for (a, b) in clashes {
+                    let text = |k: usize| creabim_geom::declutter::label_text(&d.items[k]);
+                    println!("  {:?} and {:?}", text(a), text(b));
+                }
+            }
+        }),
         ["sheets", input] => load(input).map(|m| {
             for (id, s) in sheets(&m) {
                 let name = m.get(id).map(|e| e.name.as_str()).unwrap_or("");
@@ -332,11 +354,28 @@ fn save_import(r: ImportResult, out: &str) -> Result<(), String> {
     for w in &r.warnings {
         eprintln!("warning: {w}");
     }
+    if !r.details.is_empty() {
+        eprintln!("details, element by element:");
+        for d in &r.details {
+            eprintln!("  {d}");
+        }
+    }
+    // native elements and meshes apart: "13 IfcWall (6 meshes)"
     let mut counts = std::collections::BTreeMap::new();
     for e in r.model.iter() {
-        *counts.entry(e.ifc_class().to_string()).or_insert(0) += 1;
+        let c: &mut (usize, usize) = counts.entry(e.ifc_class().to_string()).or_default();
+        c.0 += 1;
+        c.1 += usize::from(matches!(e.kind, creabim_core::ElementKind::FreeMesh(_)));
     }
-    let summary: Vec<String> = counts.iter().map(|(c, n)| format!("{n} {c}")).collect();
+    let summary: Vec<String> = counts
+        .iter()
+        .map(|(c, (n, meshes))| match meshes {
+            0 => format!("{n} {c}"),
+            m if m == n => format!("{n} {c} (meshes)"),
+            1 => format!("{n} {c} (1 mesh)"),
+            m => format!("{n} {c} ({m} meshes)"),
+        })
+        .collect();
     eprintln!("imported {} ({})", r.schema, summary.join(", "));
     if is_json(out) {
         std::fs::write(out, r.model.to_json()).map_err(|e| e.to_string())

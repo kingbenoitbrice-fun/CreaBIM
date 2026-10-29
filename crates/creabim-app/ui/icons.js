@@ -98,6 +98,8 @@ window.ICONS = {
 "x": "<path d=\"M18 6 6 18\" /> <path d=\"m6 6 12 12\" />",
 "arrow-right": "<path d=\"M5 12h14\" /> <path d=\"m12 5 7 7-7 7\" />",
 "info": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"M12 16v-4\" /> <path d=\"M12 8h.01\" />",
+"chevrons-down-up": "<path d=\"m7 20 5-5 5 5\" /> <path d=\"m7 4 5 5 5-5\" />",
+"chevrons-up-down": "<path d=\"m7 15 5 5 5-5\" /> <path d=\"m7 9 5-5 5 5\" />",
 "snap-endpoint": "<rect x=\"6\" y=\"6\" width=\"12\" height=\"12\" />",
 "snap-midpoint": "<path d=\"M12 5.5 19.5 18.5h-15z\" />",
 "snap-intersection": "<path d=\"m6 6 12 12M18 6 6 18\" />",

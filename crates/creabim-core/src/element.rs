@@ -1289,6 +1289,12 @@ pub struct View {
     /// without the furniture and floors below.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ceiling_plan: bool,
+    /// A plan's line weights, below-cut fill and view depth.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::graphics::PlanGraphics::is_default"
+    )]
+    pub graphics: crate::graphics::PlanGraphics,
 }
 
 /// What a plan shows faintly under its own level (Revit's underlay).
@@ -1470,6 +1476,7 @@ impl View {
             hidden_in_colour: false,
             room_colours: false,
             ceiling_plan: false,
+            graphics: Default::default(),
         }
     }
 
@@ -1490,6 +1497,7 @@ impl View {
             hidden_in_colour: false,
             room_colours: false,
             ceiling_plan: false,
+            graphics: Default::default(),
         }
     }
 }
@@ -1507,6 +1515,7 @@ impl View {
             hidden_in_colour: false,
             room_colours: false,
             ceiling_plan: false,
+            graphics: Default::default(),
         }
     }
 
@@ -1525,6 +1534,7 @@ impl View {
             hidden_in_colour: false,
             room_colours: false,
             ceiling_plan: false,
+            graphics: Default::default(),
         }
     }
 

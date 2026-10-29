@@ -530,7 +530,7 @@ pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<D
     };
     let mut d = match &v.kind {
         creabim_core::ViewKind::Plan { level, cut_height } => {
-            let mut d = crate::plan_view(model, *level, *cut_height);
+            let mut d = crate::plan::plan_view_with(model, *level, *cut_height, &v.graphics);
             if reveal {
                 crate::plan::reveal_covered(model, &mut d.items);
             }
@@ -539,6 +539,8 @@ pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<D
             }
             // rooms under everything, separators and ceilings with them
             let mut rooms = crate::rooms::plan_items(model, v, *level, *cut_height);
+            // with the pens the view's graphics give their categories
+            crate::plan::category_pens(model, &mut rooms, &v.graphics);
             rooms.append(&mut d.items);
             d.items = rooms;
             // another level traced underneath, drawn first so it stays below
@@ -589,6 +591,10 @@ pub fn view_drawing_with(model: &Model, view: ElementId, xray: bool) -> Option<D
     d.items.extend(crate::annotate::annotations(model, view, v));
     if !hidden.is_empty() {
         d.items.retain(|it| !hidden.contains(&it.id()));
+    }
+    // a plan's names, notes and tags moved off lines and each other
+    if matches!(v.kind, creabim_core::ViewKind::Plan { .. }) {
+        crate::declutter::place_labels(&mut d.items, v.scale / 1000.0);
     }
     Some(d)
 }

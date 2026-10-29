@@ -25,6 +25,8 @@ pub struct PlacedView {
     pub title: String,
     pub map: PaperMap,
     pub drawing: Drawing,
+    /// The pens it is drawn with: its view's line weights.
+    pub weights: creabim_core::LineWeights,
     /// The drawing's extent on paper, mm.
     pub bounds: (DVec2, DVec2),
 }
@@ -126,6 +128,7 @@ pub fn placed_views(
                 .unwrap_or_default(),
             map,
             drawing: d,
+            weights: view.graphics.weights_at(view.paper_scale()),
             bounds,
         });
     }
@@ -493,7 +496,7 @@ pub fn draw_sheet(
     let title = model.get(sheet).map(|e| e.name.as_str()).unwrap_or("");
     draw_frame(c, model, s, title, &scale_text(model, views), info);
     for v in views {
-        paper::draw(c, &v.drawing, &v.map);
+        paper::draw_with(c, &v.drawing, &v.map, &v.weights);
         draw_view_title(c, v);
     }
     draw_sheet_notes(c, model, sheet);

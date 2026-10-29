@@ -173,6 +173,84 @@ impl Canvas for EguiCanvas<'_> {
 
 const ACCENT: Color32 = Color32::from_rgb(230, 120, 30);
 
+/// Draw `d` as it prints, as large as fits in `rect`: a type's preview.
+/// Lines keep their printed weights at three pixels a millimetre.
+pub fn draw_fit(painter: &egui::Painter, rect: Rect, d: &creabim_geom::PlanView) {
+    let Some((lo, hi)) = d.bounds() else { return };
+    let size = (hi - lo).max(DVec2::splat(0.1));
+    let zoom = 3.0f32;
+    // paper millimetres a model metre, for the drawing to fill the rect
+    let k = (rect.width() as f64 / zoom as f64 / size.x)
+        .min(rect.height() as f64 / zoom as f64 / size.y)
+        * 0.86;
+    let map = paper::PaperMap {
+        model: (lo + hi) / 2.0,
+        paper: DVec2::ZERO,
+        scale: 1000.0 / k.max(1e-6),
+    };
+    let mut canvas = EguiCanvas {
+        painter,
+        xf: PaperXf {
+            rect,
+            center: DVec2::ZERO,
+            zoom,
+        },
+    };
+    paper::draw(&mut canvas, d, &map);
+}
+
+/// The scales a view is usually drawn at on a sheet, as denominators.
+pub const SCALES: [f64; 10] = [1.0, 2.0, 5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 500.0];
+
+/// Where a viewport's centre goes when its view's scale changes from
+/// `old` to `new` (denominators), so that the drawing grows or shrinks
+/// about `mid`, the middle of what it shows (drawing coordinates), and not
+/// about the point it is pinned by.
+pub fn rescaled_center(vp: &creabim_core::Viewport, mid: DVec2, old: f64, new: f64) -> DVec2 {
+    let at = |scale: f64| (mid - vp.target) * (1000.0 / scale);
+    vp.center + at(old) - at(new)
+}
+
+/// A dropdown of the usual scales and a box for any other: the new
+/// denominator when one is picked or typed.
+pub fn scale_picker(ui: &mut egui::Ui, salt: ElementId, scale: f64) -> Option<f64> {
+    let mut out = None;
+    ui.horizontal(|ui| {
+        ui.label("Scale");
+        let standard = SCALES.iter().any(|s| (s - scale).abs() < 1e-6);
+        egui::ComboBox::from_id_salt(("scale", salt))
+            .selected_text(if standard {
+                format!("1:{scale:.0}")
+            } else {
+                format!("1:{scale:.0} (custom)")
+            })
+            .show_ui(ui, |ui| {
+                for s in SCALES {
+                    if ui
+                        .selectable_label((s - scale).abs() < 1e-6, format!("1:{s:.0}"))
+                        .clicked()
+                    {
+                        out = Some(s);
+                    }
+                }
+            });
+        let mut v = scale;
+        if ui
+            .add(
+                egui::DragValue::new(&mut v)
+                    .speed(1.0)
+                    .range(1.0..=5000.0)
+                    .prefix("1:"),
+            )
+            .on_hover_text("Any other scale: type its denominator")
+            .changed()
+        {
+            out = Some(v.round().max(1.0));
+        }
+    });
+    out
+}
+
 fn contains(v: &PlacedView, p: DVec2) -> bool {
     let (lo, hi) = v.bounds;
     let pad = DVec2::splat(2.0);
@@ -258,7 +336,7 @@ pub fn show(
     );
     for v in views {
         if state.active != Some(v.viewport) {
-            paper::draw(&mut canvas, &v.drawing, &v.map);
+            paper::draw_with(&mut canvas, &v.drawing, &v.map, &v.weights);
         }
         sheet::draw_view_title(&mut canvas, v);
         if selection.contains(v.viewport) && state.active.is_none() {
@@ -434,6 +512,18 @@ pub fn show(
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !plan.busy() {
         state.active = None;
     }
+    // right-click a view for its menu: its scale, and opening it
+    if response.secondary_clicked()
+        && state.active.is_none()
+        && plan.tool == planview::Tool::Select
+        && plan.web_menus
+    {
+        if let Some(v) = hit {
+            selection.only(v.viewport);
+        }
+        plan.menu_at = None;
+        plan.menu_request = pointer;
+    }
     if response.drag_started_by(egui::PointerButton::Primary) && state.crop_drag.is_none() {
         let press = ui.input(|i| i.pointer.press_origin()).or(pointer);
         let hit = press.and_then(|p| {
@@ -527,4 +617,37 @@ pub fn show(
         Color32::from_gray(60),
     );
     error
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_scale_grows_the_view_about_its_middle() {
+        // pinned by the drawing's corner (0, 0) at 100, 100 on the sheet;
+        // its middle (10, 5) is then at 200, 150 at 1:100
+        let vp = creabim_core::Viewport {
+            sheet: ElementId::NIL,
+            view: ElementId::NIL,
+            center: DVec2::new(100.0, 100.0),
+            target: DVec2::ZERO,
+            crop: None,
+        };
+        let mid = DVec2::new(10.0, 5.0);
+        let map = |c: DVec2, s: f64| c + (mid - vp.target) * (1000.0 / s);
+        assert_eq!(map(vp.center, 100.0), DVec2::new(200.0, 150.0));
+        for new in [50.0, 200.0, 20.0] {
+            let c = rescaled_center(&vp, mid, 100.0, new);
+            // the middle stays where it was on the sheet
+            assert!(
+                (map(c, new) - DVec2::new(200.0, 150.0)).length() < 1e-9,
+                "1:{new}"
+            );
+        }
+        // pinned by its middle: the pin doesn't move
+        let pinned = creabim_core::Viewport { target: mid, ..vp };
+        assert_eq!(rescaled_center(&pinned, mid, 100.0, 50.0), vp.center);
+        assert!(SCALES.contains(&50.0) && SCALES.contains(&1.0) && SCALES.contains(&500.0));
+    }
 }
