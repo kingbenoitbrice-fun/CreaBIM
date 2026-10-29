@@ -22,6 +22,7 @@ mod outline;
 mod paneface;
 mod planview;
 mod render3d;
+mod roomtool;
 mod schedulepane;
 mod selection;
 mod sheetview;

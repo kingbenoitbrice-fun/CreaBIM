@@ -32,6 +32,8 @@ pub struct Outline {
     pub roof: Option<(creabim_core::RoofShape, f64)>,
     /// Draw a shaft from the level up instead of a slab.
     pub shaft: bool,
+    /// Draw a room or a ceiling instead of a slab.
+    pub space: Option<crate::roomtool::Space>,
     /// Draw a hole in this slab or roof instead.
     pub hole_in: Option<ElementId>,
     /// The type the new slab or roof is an instance of.
@@ -67,6 +69,7 @@ impl Outline {
             wall,
             roof: None,
             shaft: false,
+            space: None,
             hole_in: None,
             of_type: None,
         })
@@ -90,6 +93,7 @@ impl Outline {
             wall: false,
             roof: None,
             shaft: false,
+            space: None,
             hole_in: Some(id),
             of_type: None,
         })
@@ -107,6 +111,7 @@ impl Outline {
             wall: false,
             roof: None,
             shaft: false,
+            space: None,
             hole_in: None,
             of_type: None,
         }
@@ -126,6 +131,10 @@ impl Outline {
             "Drawing a hole"
         } else if self.shaft {
             "Drawing a shaft"
+        } else if self.space == Some(crate::roomtool::Space::Room) {
+            "Drawing a room"
+        } else if self.space == Some(crate::roomtool::Space::Ceiling) {
+            "Drawing a ceiling"
         } else if self.roof.is_some() {
             "Drawing a roof"
         } else {
@@ -228,6 +237,8 @@ impl Outline {
                     "Hole cancelled."
                 } else if self.shaft {
                     "Shaft cancelled. Right-click again to leave the Shaft tool."
+                } else if self.space.is_some() {
+                    "Outline cancelled. Right-click again to leave the tool."
                 } else {
                     "Slab cancelled. Right-click again to leave the Slab tool."
                 });
@@ -265,6 +276,11 @@ impl Outline {
             slab.make_ccw();
             if let Some(host) = self.hole_in {
                 return add_hole(doc, host, slab.outline());
+            }
+            if let Some(space) = self.space {
+                let mut sel = crate::selection::Selection::default();
+                let msg = crate::roomtool::drawn(doc, space, self.level, slab.outline(), &mut sel)?;
+                return Ok((msg, sel.active));
             }
             if self.shaft {
                 let e = shaft_from_outline(doc.model(), self.level, slab.outline());

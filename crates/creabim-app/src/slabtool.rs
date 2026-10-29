@@ -275,6 +275,7 @@ pub fn click(
                 o.roof = Some((state.members.roof_shape, state.members.roof_pitch));
             }
             o.shaft = state.tool == crate::planview::Tool::Shaft;
+            o.space = crate::roomtool::Space::of(state.tool);
             let cat = if o.roof.is_some() {
                 creabim_core::TypeCategory::Roof
             } else {
@@ -296,6 +297,12 @@ pub fn click(
                 if (hi - lo).min_element() < 0.01 {
                     return Ok(());
                 }
+                let rect = vec![lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)];
+                if let Some(space) = crate::roomtool::Space::of(state.tool) {
+                    state.status =
+                        Some(crate::roomtool::drawn(doc, space, level, rect, selection)?);
+                    return Ok(());
+                }
                 let (e, label) = crate::memberstool::outline_element(
                     doc.model(),
                     state,
@@ -311,6 +318,10 @@ pub fn click(
             }
         },
         SlabMode::FillRoom => {
+            if let Some(space) = crate::roomtool::Space::of(state.tool) {
+                state.status = Some(crate::roomtool::fill(doc, space, level, p, selection)?);
+                return Ok(());
+            }
             let Some(outline) = creabim_core::room_outline(doc.model(), level, p) else {
                 state.status = Some(
                     "That spot isn't closed in by walls on this level, so there's no room to fill. Click inside a room, or draw a polygon (1).".into(),
@@ -337,6 +348,24 @@ pub fn click(
                 );
                 return Ok(());
             };
+            if let Some(space) = crate::roomtool::Space::of(state.tool) {
+                let Some(ElementKind::Sketch(sk)) = doc.model().get(id).map(|e| &e.kind) else {
+                    return Ok(());
+                };
+                match creabim_core::slab_from_sketch(doc.model(), sk, NEW_SLAB_THICKNESS) {
+                    Ok(slab) => {
+                        state.status = Some(crate::roomtool::drawn(
+                            doc,
+                            space,
+                            slab.level,
+                            slab.outline(),
+                            selection,
+                        )?);
+                    }
+                    Err(m) => state.status = Some(m),
+                }
+                return Ok(());
+            }
             if state.tool == crate::planview::Tool::Shaft {
                 let Some(ElementKind::Sketch(sk)) = doc.model().get(id).map(|e| &e.kind) else {
                     return Ok(());

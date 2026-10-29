@@ -72,6 +72,8 @@ pub const PAGES: &[(&str, &str, &str)] = &[
     page!("Building the model", "grids"),
     page!("Building the model", "furniture"),
     page!("Building the model", "fixtures"),
+    page!("Building the model", "rooms"),
+    page!("Building the model", "ceilings"),
     page!("Views and drawings", "views"),
     page!("Views and drawings", "sections"),
     page!("Views and drawings", "visibility"),
@@ -224,6 +226,8 @@ pub fn tool_page(t: Tool) -> &'static str {
         Tool::Level => "levels",
         Tool::Align => "align",
         Tool::Object => "furniture",
+        Tool::Room | Tool::RoomSeparator => "rooms",
+        Tool::Ceiling => "ceilings",
     }
 }
 
@@ -250,6 +254,8 @@ pub fn element_page(kind: &ElementKind) -> &'static str {
         ElementKind::Shaft(_) => "holes#shafts",
         ElementKind::CropBox(_) => "crop-boxes",
         ElementKind::Object(_) => "furniture",
+        ElementKind::Room(_) | ElementKind::RoomSeparator(_) => "rooms",
+        ElementKind::Ceiling(_) => "ceilings",
         ElementKind::Dimension(_) => "dimensions",
         ElementKind::Tag(_) => "tags",
         ElementKind::Note(_) => "notes",

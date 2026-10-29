@@ -60,10 +60,16 @@ pub enum Tool {
     Align,
     /// A piece of furniture or a fixture from the catalogue.
     Object,
+    /// A room: click inside walls, or draw its outline.
+    Room,
+    /// A line that splits a room in two where there is no wall.
+    RoomSeparator,
+    /// A ceiling under a room, or drawn.
+    Ceiling,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 29] = [
+    pub const ALL: [Tool; 32] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
@@ -79,6 +85,9 @@ impl Tool {
         Tool::Railing,
         Tool::Footing,
         Tool::Object,
+        Tool::Room,
+        Tool::RoomSeparator,
+        Tool::Ceiling,
         Tool::Section,
         Tool::Elevation,
         Tool::Dimension,
@@ -131,6 +140,9 @@ impl Tool {
             Tool::Level => "Level",
             Tool::Align => "Align",
             Tool::Object => "Object",
+            Tool::Room => "Room",
+            Tool::RoomSeparator => "Room separator",
+            Tool::Ceiling => "Ceiling",
         }
     }
 
@@ -147,7 +159,7 @@ impl Tool {
             Tool::Section => "Click two points for the section line. It looks to the left of the direction you draw.",
             Tool::Elevation => "Click two points for the elevation line, outside the building. It looks to the left of the direction you draw.",
             Tool::Dimension => "Click two points to measure, then click where the dimension line goes. Points snap to wall corners, door and window edges and levels, and stay attached to them.",
-            Tool::Tag => "Click a door, window, wall, slab, roof, column, beam, stair or railing, then click where its tag goes.",
+            Tool::Tag => "Click a door, window, wall, slab, roof, column, beam, stair, railing, room or ceiling, then click where its tag goes.",
             Tool::Angle => "Click two lines (wall faces, edges) for the angle between them, or click the corner and a point on each arm. Then click where the arc goes.",
             Tool::Radius => "Click an arc or circle, or three points on one. Then click where the dimension line goes.",
             Tool::Diameter => "Click an arc or circle, or three points on one. Then click where the dimension line goes.",
@@ -165,12 +177,18 @@ impl Tool {
             Tool::Level => "In a section or elevation, click where the level line starts (its height), then where it ends; its floor plan is made with it. In other views the Levels window opens to add, rename and move levels.",
             Tool::Align => "Click a reference line (a wall face, slab edge, guide or grid line), then the edge of what to align: it turns parallel and moves flush. In Extend mode a wall, beam or grid line end stretches to the reference instead; in Stretch mode the face moves and the rest stays. Centre lines (dashed purple) can be picked too, both ways. In 3D, click a face, edge, corner, centre line or grid line, then a face.",
             Tool::Object => "Click to place the object picked in the Catalogue window. Sinks, WCs, kitchen units, beds and sofas back onto the nearest wall; Space turns the next one a quarter.",
+            Tool::Room => "Click inside walls for a room that follows them (3, Fill room), or draw its outline (1 Polygon, 2 Rectangle, 4 From sketch) where no walls close it off. Its name, number and finishes are in Properties.",
+            Tool::RoomSeparator => "Click two points for a line that splits a room in two where there is no wall, such as between a kitchen and a dining room.",
+            Tool::Ceiling => "Click inside a room for a ceiling over it that follows its walls (3, Fill room), or draw its outline (1 Polygon, 2 Rectangle, 4 From sketch). Set its height and thickness in the top bar or Properties.",
         }
     }
 
     /// Tools that draw an outline the way the Slab tool does.
     pub fn draws_outline(self) -> bool {
-        matches!(self, Tool::Slab | Tool::Roof | Tool::Shaft)
+        matches!(
+            self,
+            Tool::Slab | Tool::Roof | Tool::Shaft | Tool::Room | Tool::Ceiling
+        )
     }
 
     /// The hint for this tool in a section or elevation.
@@ -1383,7 +1401,8 @@ pub fn show(
             | Tool::Beam
             | Tool::Stair
             | Tool::Railing
-            | Tool::Footing => {
+            | Tool::Footing
+            | Tool::RoomSeparator => {
                 let level = match kind {
                     PaneKind::Plan { level } => Some(level),
                     _ => None,
@@ -1417,7 +1436,7 @@ pub fn show(
                     accent.color,
                 );
             }
-            Tool::Slab | Tool::Roof | Tool::Shaft => {
+            Tool::Slab | Tool::Roof | Tool::Shaft | Tool::Room | Tool::Ceiling => {
                 painter.rect_stroke(
                     Rect::from_two_pos(xf.to_screen(a), xf.to_screen(b)),
                     0.0,
@@ -1914,13 +1933,14 @@ fn plan_click(
         | Tool::ArcLength
         | Tool::Note
         | Tool::Sketch => Ok(()),
-        Tool::Slab | Tool::Roof | Tool::Shaft => {
+        Tool::Slab | Tool::Roof | Tool::Shaft | Tool::Room | Tool::Ceiling => {
             crate::slabtool::click(doc, level, p, state, selection)
         }
         Tool::Column | Tool::Beam | Tool::Stair | Tool::Railing | Tool::Footing => {
             crate::memberstool::click(doc, level, tool, p, state, selection)
         }
         Tool::Object => crate::objecttool::click(doc, level, p, state, selection),
+        Tool::RoomSeparator => crate::roomtool::separator_click(doc, level, p, state, selection),
         Tool::Guide => match state.pending.take() {
             None => {
                 state.pending = Some(p);
@@ -3838,6 +3858,8 @@ pub fn is_taggable(model: &creabim_core::Model, id: ElementId) -> bool {
                 | ElementKind::Stair(_)
                 | ElementKind::Railing(_)
                 | ElementKind::Object(_)
+                | ElementKind::Room(_)
+                | ElementKind::Ceiling(_)
         )
     ) && annotate::centre(model, id).is_some()
 }
@@ -4002,6 +4024,21 @@ fn drag_annotation(
             } => {
                 let n = (*b - *a).normalize_or_zero().perp() * *offset;
                 (segment_distance(w, *a + n, *b + n) < 6.0 / xf.scale as f64).then_some(*id)
+            }
+            // a room's tag, drawn as its lines of text
+            PlanItem::Annotation { id, item }
+                if matches!(
+                    doc.model().get(*id).map(|e| &e.kind),
+                    Some(ElementKind::Tag(_))
+                ) =>
+            {
+                let pts = item.extent();
+                let first = *pts.first()?;
+                let (lo, hi) = pts
+                    .iter()
+                    .fold((first, first), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+                let pad = DVec2::splat(mm);
+                (w.cmpge(lo - pad).all() && w.cmple(hi + pad).all()).then_some(*id)
             }
             _ => None,
         });

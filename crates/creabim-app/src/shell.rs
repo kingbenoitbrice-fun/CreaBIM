@@ -111,6 +111,9 @@ fn tool_icon(t: Tool) -> &'static str {
         Tool::Level => "level",
         Tool::Align => "align-tool",
         Tool::Object => "sofa",
+        Tool::Room => "room",
+        Tool::RoomSeparator => "room-separator",
+        Tool::Ceiling => "ceiling",
     }
 }
 
@@ -130,7 +133,10 @@ fn tool_group(t: Tool) -> u8 {
         | Tool::Stair
         | Tool::Railing
         | Tool::Footing
-        | Tool::Object => 1,
+        | Tool::Object
+        | Tool::Room
+        | Tool::RoomSeparator
+        | Tool::Ceiling => 1,
         Tool::Section | Tool::Elevation => 2,
         Tool::Dimension
         | Tool::Tag
@@ -208,6 +214,7 @@ fn schedule_icon(c: ScheduleCategory) -> &'static str {
         ScheduleCategory::Structure => "rectangle-vertical",
         ScheduleCategory::Furniture => "sofa",
         ScheduleCategory::Fixtures => "fixtures",
+        ScheduleCategory::Rooms => "room",
     }
 }
 
@@ -657,6 +664,16 @@ impl CreaBimApp {
                         .hint(
                             "Wall, curtain wall, door, window, slab, roof, column, beam and object types",
                         ),
+                );
+                items.push(
+                    Item::new("rooms.fromnotes", "Rooms from room notes")
+                        .icon("room")
+                        .hint("Turn room labels written as notes (a name over an area) into rooms with tags, wherever walls close them off"),
+                );
+                items.push(
+                    Item::new("check.doorways", "Check doorways")
+                        .icon("door-open")
+                        .hint("List and select the furniture and fixtures standing in a doorway, a window or a door's swing"),
                 );
                 items.push(
                     Item::new("level.add", "Level above the top one")
@@ -1208,7 +1225,19 @@ impl CreaBimApp {
                 }
             }
             "view.shaded" | "view.tag" | "view.tagfixtures" | "view.reveal" | "view.colour"
-            | "view.xray" => self.view_action(head),
+            | "view.xray" | "view.rooms" | "view.ceiling" | "view.tagrooms" => {
+                self.view_action(head)
+            }
+            "rooms.fromnotes" => {
+                self.status = crate::roomtool::rooms_from_notes(&mut self.doc);
+            }
+            "check.doorways" => {
+                let (ids, msg) = crate::roomtool::check_doorways(self.doc.model());
+                if !ids.is_empty() {
+                    self.selection.extend(ids, false);
+                }
+                self.status = msg;
+            }
             "hidden.colour3d" => self.set_hidden_colour_3d(!self.shell.settings.hidden_colour_3d),
             "object" => {
                 if crate::objecttool::toggle_option(&mut self.plan, arg) {
@@ -1421,6 +1450,27 @@ impl CreaBimApp {
                     .doc
                     .edit_merged(id, "Change view", |e| e.kind = ElementKind::View(v.clone()));
                 self.report(r, "View changed.");
+            }
+            "view.rooms" | "view.ceiling" => {
+                let Some(mut v) = self.view(id).cloned() else {
+                    return;
+                };
+                if what == "view.rooms" {
+                    v.room_colours = !v.room_colours;
+                } else {
+                    v.ceiling_plan = !v.ceiling_plan;
+                }
+                let r = self
+                    .doc
+                    .edit_merged(id, "Change view", |e| e.kind = ElementKind::View(v.clone()));
+                self.report(r, "View changed.");
+            }
+            "view.tagrooms" => {
+                self.status = match crate::roomtool::tag_rooms(&mut self.doc, id) {
+                    Ok(0) => "Every room on this plan is tagged already.".into(),
+                    Ok(n) => format!("Tagged {n} rooms. Drag a tag to move it; pick what it shows in Properties."),
+                    Err(e) => format!("Couldn't do that: {e}"),
+                };
             }
             "view.reveal" => self.toggle_hidden_elements(id),
             "view.colour" => self.toggle_hidden_colour(id),
@@ -1680,6 +1730,24 @@ impl CreaBimApp {
                 options.push(json!({
                     "kind": "button", "id": "view.tagfixtures", "label": "Tag fixtures", "icon": "fixtures",
                     "hint": "Tag every socket, switch, light, drain, radiator and other fixture on this plan with its type's mark",
+                }));
+                let shown = self.active_view.and_then(|id| self.view(id)).cloned();
+                let (ceiling, colours) = shown
+                    .as_ref()
+                    .map_or((false, false), |v| (v.ceiling_plan, v.room_colours));
+                options.push(json!({
+                    "kind": "button", "id": "view.tagrooms", "label": "Tag rooms", "icon": "room",
+                    "hint": "Tag every room on this plan that has no tag here yet",
+                }));
+                options.push(json!({
+                    "kind": "toggle", "id": "view.ceiling", "label": "Ceiling plan",
+                    "on": ceiling, "icon": "ceiling",
+                    "hint": "A reflected ceiling plan: the ceilings, their grids and what hangs from them, not the floor and furniture",
+                }));
+                options.push(json!({
+                    "kind": "toggle", "id": "view.rooms", "label": "Room colours",
+                    "on": colours, "icon": "palette",
+                    "hint": "Fill each room with a colour of its own, the same in every view",
                 }));
             }
         }
