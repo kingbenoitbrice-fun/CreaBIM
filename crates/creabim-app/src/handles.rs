@@ -1062,7 +1062,25 @@ fn draw_rings(
         let edges = if r.closed { n } else { n - 1 };
         let width = if picked { 2.6 } else { 1.6 };
         for i in 0..edges {
-            painter.line_segment([pts[i], pts[(i + 1) % n]], Stroke::new(width, color));
+            // a slab's bent edge is traced along its arc
+            let arc = match (&e.kind, r.ring) {
+                (ElementKind::Slab(s), Ring::Outline) if s.bulge(i) != 0.0 => {
+                    let c = s.edge(i);
+                    let z = r.corners[i].z;
+                    (0..=16)
+                        .map(|k| (input.project)(c.at(k as f64 / 16.0).extend(z)))
+                        .collect::<Option<Vec<Pos2>>>()
+                }
+                _ => None,
+            };
+            match arc {
+                Some(line) => {
+                    painter.add(egui::Shape::line(line, Stroke::new(width, color)));
+                }
+                None => {
+                    painter.line_segment([pts[i], pts[(i + 1) % n]], Stroke::new(width, color));
+                }
+            }
         }
     }
 }
@@ -2074,7 +2092,10 @@ fn follow(
                     .filter_map(|m| model.get(m).map(|e| e.name.clone()))
                     .collect();
                 if !missed.is_empty() {
-                    said += &format!("  ⚠ doesn't cut {}: it crosses the edge", missed.join(", "));
+                    said += &format!(
+                        "  Warning: it doesn't cut {}, as it crosses the edge",
+                        missed.join(", ")
+                    );
                 }
             }
             if let (true, Some(k), Some(p), Some(e)) = (outline, d.kind, pointer, changed.first()) {
@@ -2102,7 +2123,7 @@ fn follow(
                     );
                 }
                 if let Some(p) = pointer {
-                    note(painter, p, &format!("✕ {e}"), INVALID);
+                    note(painter, p, &format!("Not allowed: {e}"), INVALID);
                 }
             }
             *status = Some(format!(

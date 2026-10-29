@@ -1689,7 +1689,7 @@ pub fn show(
             egui::Align2::LEFT_BOTTOM,
             match (kind, tool) {
                 (PaneKind::Plan { .. }, Tool::Select) => {
-                    "Click to select, Shift+click to add, drag on empty paper for a box. Drag grips to stretch; double-click a slab edge grip to add a corner. M move, G grab, R rotate, S scale, Shift+D duplicate."
+                    "Click to select, Shift+click to add, drag on empty paper for a box. Drag grips to stretch; Enter or a double-click opens Edit mode to add and remove corners. M move, G grab, R rotate, S scale, Shift+D duplicate."
                 }
                 (PaneKind::Plan { .. }, t) => t.hint(),
                 (PaneKind::Section { .. }, t) => t.section_hint(),
