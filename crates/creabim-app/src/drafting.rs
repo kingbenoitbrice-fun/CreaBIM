@@ -844,7 +844,7 @@ impl CreaBimApp {
             .template
             .and_then(|t| list.iter().find(|l| l.0 == t))
             .map_or("Built-in".to_string(), |l| l.1.clone());
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             crate::app::helpui::combo(ui, "Title block")
                 .selected_text(now)
                 .show_ui(ui, |ui| {

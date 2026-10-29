@@ -2553,6 +2553,17 @@ impl CreaBimApp {
                     r.right() - w - 8.0
                 };
                 egui::Rect::from_min_size(egui::pos2(x, r.top() + 8.0), egui::vec2(w, NAV_H))
+            })
+            // a web pane draws over everything egui draws, so the buttons
+            // step aside while a window (Types, Assemblies, materials, a
+            // type's preview) lies over them
+            .filter(|n| {
+                !ctx.memory(|m| {
+                    m.areas().visible_layer_ids().into_iter().any(|l| {
+                        l.order == egui::Order::Middle
+                            && m.area_rect(l.id).is_some_and(|a| a.intersects(*n))
+                    })
+                })
             });
         let states = [
             (Pane::Top, top, self.top_state(&ctx)),

@@ -144,8 +144,23 @@ impl CreaBimApp {
         let ids = self.selection.all();
         let (tx, new) = footings_under(self.doc.model(), &self.plan, &ids);
         if new.is_empty() {
-            self.status =
-                "Select walls or columns without footings to put footings under them.".into();
+            let model = self.doc.model();
+            let hosts = ids
+                .iter()
+                .filter(|id| !creabim_core::footing::footings_under(model, **id).is_empty())
+                .count();
+            self.status = if hosts > 0 {
+                format!(
+                    "{hosts} {} picked, but each already has a footing.",
+                    if hosts == 1 {
+                        "wall or column"
+                    } else {
+                        "walls and columns"
+                    }
+                )
+            } else {
+                "Select walls or columns without footings to put footings under them.".into()
+            };
             return;
         }
         let r = self.doc.commit(tx);
