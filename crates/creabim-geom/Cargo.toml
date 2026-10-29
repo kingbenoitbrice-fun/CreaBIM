@@ -10,3 +10,6 @@ rust-version.workspace = true
 creabim-core.workspace = true
 glam.workspace = true
 miniz_oxide = "0.8"
+
+[dev-dependencies]
+serde_json.workspace = true
