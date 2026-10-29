@@ -27,15 +27,20 @@ pub enum DimensionKind {
     /// The length of the arc about `center` from `a` counter-clockwise to
     /// `b`, its line `offset` outside the arc.
     ArcLength,
+    /// A spot level: the height of `a` (a slab's top in a plan, or the
+    /// plan's own level: a level marker), written at `b` from the
+    /// dimension's pattern, such as "+0.45 FFL".
+    Spot,
 }
 
 impl DimensionKind {
-    pub const ALL: [DimensionKind; 5] = [
+    pub const ALL: [DimensionKind; 6] = [
         DimensionKind::Linear,
         DimensionKind::Angular,
         DimensionKind::Radius,
         DimensionKind::Diameter,
         DimensionKind::ArcLength,
+        DimensionKind::Spot,
     ];
 
     pub fn label(self) -> &'static str {
@@ -45,12 +50,13 @@ impl DimensionKind {
             DimensionKind::Radius => "Radius",
             DimensionKind::Diameter => "Diameter",
             DimensionKind::ArcLength => "Arc length",
+            DimensionKind::Spot => "Spot level",
         }
     }
 
     /// Does this kind measure about a centre point?
     pub fn has_center(self) -> bool {
-        self != DimensionKind::Linear
+        !matches!(self, DimensionKind::Linear | DimensionKind::Spot)
     }
 
     pub fn is_linear(&self) -> bool {
@@ -325,6 +331,10 @@ pub struct TextStyle {
     pub tag_shape: TagShape,
     #[serde(default, skip_serializing_if = "StyleUse::is_any")]
     pub purpose: StyleUse,
+    /// Dimension lines in this style leave a gap where a tag or a note
+    /// sits across them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub break_at_tags: bool,
 }
 
 /// Letter height of dimensions, tags and notes without a style, paper mm.
@@ -343,6 +353,7 @@ impl Default for TextStyle {
             end_size: None,
             tag_shape: TagShape::Auto,
             purpose: StyleUse::Any,
+            break_at_tags: false,
         }
     }
 }
@@ -369,6 +380,38 @@ impl TextStyle {
         }
         Ok(())
     }
+}
+
+/// The pattern a spot level is written with when it has none of its own.
+pub const SPOT_PATTERN: &str = "{elevation}";
+
+/// A spot level's text: `pattern` with `{elevation}` (signed, in the
+/// project's units), `{m}` (signed metres to two places, "+0.45"), `{m3}`
+/// (to three), `{mm}` (signed millimetres) and `{level}` (the name of the
+/// level at or below it) filled in for the height `z`.
+pub fn spot_text(model: &Model, pattern: &str, z: f64) -> String {
+    let signed = |v: f64, places: usize| {
+        let t = format!("{:.*}", places, v.abs());
+        if t.trim_start_matches(['0', '.']).is_empty() {
+            format!("±{t}")
+        } else if v < 0.0 {
+            format!("-{t}")
+        } else {
+            format!("+{t}")
+        }
+    };
+    let level = model
+        .levels()
+        .filter(|(_, l)| l.elevation <= z + 1e-6)
+        .max_by(|a, b| a.1.elevation.total_cmp(&b.1.elevation))
+        .map(|(e, _)| e.name.clone())
+        .unwrap_or_default();
+    pattern
+        .replace("{elevation}", &model.units().elevation(z))
+        .replace("{m3}", &signed(z, 3))
+        .replace("{m}", &signed(z, 2))
+        .replace("{mm}", &signed(z * 1000.0, 0))
+        .replace("{level}", &level)
 }
 
 /// The style an annotation refers to, or the default when it refers to
@@ -404,6 +447,13 @@ pub struct Note {
     /// Overrides the style's colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[f32; 3]>,
+    /// A bend in its leader, in the same units as `at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elbow: Option<DVec2>,
+    /// The mark at the leader's end; none is its style's (an arrow unless
+    /// the style says otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader_end: Option<Terminator>,
 }
 
 impl Note {
@@ -415,6 +465,8 @@ impl Note {
             leader: None,
             style: None,
             color: None,
+            elbow: None,
+            leader_end: None,
         }
     }
 
@@ -422,7 +474,7 @@ impl Note {
         let leader_ok = self
             .leader
             .is_none_or(|p| p.local.is_finite() && p.body.is_none_or(|b| b.is_finite()));
-        if self.at.is_finite() && leader_ok {
+        if self.at.is_finite() && leader_ok && self.elbow.is_none_or(|p| p.is_finite()) {
             Ok(())
         } else {
             Err("note position must be finite".into())

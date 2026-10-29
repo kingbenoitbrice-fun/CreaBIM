@@ -138,7 +138,12 @@ pub fn paint_ends(painter: &egui::Painter, xf: &Xf, ends: &Ends, color: Color32)
 pub fn is_tool(t: Tool) -> bool {
     matches!(
         t,
-        Tool::Angle | Tool::Radius | Tool::Diameter | Tool::ArcLength | Tool::Note
+        Tool::Angle
+            | Tool::Radius
+            | Tool::Diameter
+            | Tool::ArcLength
+            | Tool::Note
+            | Tool::SpotLevel
     )
 }
 
@@ -166,6 +171,11 @@ enum Ready {
     Leader {
         target: Picked,
     },
+    /// The point a spot level measures.
+    Spot {
+        point: Picked,
+        plan: bool,
+    },
 }
 
 /// What a drag in the Select tool holds.
@@ -177,6 +187,69 @@ pub enum Grab {
     Leader(ElementId),
     /// A dimension's line or arc.
     Shape(ElementId),
+    /// A note's leader elbow.
+    Elbow(ElementId),
+    /// A tag's leader end, and its host's centre in the drawing.
+    TagEnd(ElementId, DVec2),
+    /// A tag's leader elbow, and its host's centre in the drawing.
+    TagElbow(ElementId, DVec2),
+    /// A level's head in a section: the level, and its datum line's end.
+    LevelHead(ElementId, DVec2),
+}
+
+/// Where the elbow grip of a leader running `from` → `to` sits: its
+/// elbow, or halfway along when it has none.
+fn elbow_grip(elbow: Option<DVec2>, from: DVec2, to: DVec2) -> DVec2 {
+    elbow.unwrap_or((from + to) / 2.0)
+}
+
+/// The grips of a selected item: (where, what dragging it does).
+fn grips(model: &Model, it: &PlanItem, mm: f64) -> Vec<(DVec2, Grab)> {
+    match it {
+        PlanItem::Annotation { id, item } => match &item.shape {
+            Shape::Note {
+                leader: Some(tip),
+                elbow,
+                ..
+            } => {
+                let m = item.marks(mm);
+                let from = m
+                    .lines
+                    .last()
+                    .and_then(|l| l.first().copied())
+                    .unwrap_or(*tip);
+                vec![
+                    (*tip, Grab::Leader(*id)),
+                    (elbow_grip(*elbow, from, *tip), Grab::Elbow(*id)),
+                ]
+            }
+            // a level's head in a section or elevation, for this view only
+            Shape::Level { at, line_end, .. } => {
+                vec![(*at, Grab::LevelHead(*id, line_end.unwrap_or(*at)))]
+            }
+            _ => vec![],
+        },
+        PlanItem::Tag {
+            id,
+            anchor,
+            at,
+            elbow,
+            ..
+        } => {
+            let Some(ElementKind::Tag(t)) = model.get(*id).map(|e| &e.kind) else {
+                return vec![];
+            };
+            let centre = *anchor - t.end.unwrap_or(DVec2::ZERO);
+            vec![
+                (*anchor, Grab::TagEnd(*id, centre)),
+                (
+                    elbow_grip(*elbow, *at, *anchor),
+                    Grab::TagElbow(*id, centre),
+                ),
+            ]
+        }
+        _ => vec![],
+    }
 }
 
 /// The tools' clicks so far, and their options.
@@ -346,7 +419,22 @@ pub fn click(
     };
     if let Some(ready) = d.ready.take() {
         d.clear();
-        let e = d.styled(place(model, view_id, view, ready, tool, raw));
+        let mut e = d.styled(place(model, view_id, view, ready, tool, raw));
+        if let ElementKind::Dimension(dim) = &mut e.kind {
+            if dim.kind == DimensionKind::Spot {
+                // a new spot level reads like the last one made
+                dim.pattern = model
+                    .iter()
+                    .filter_map(|e| match &e.kind {
+                        ElementKind::Dimension(d) if d.kind == DimensionKind::Spot => {
+                            Some(d.pattern.clone())
+                        }
+                        _ => None,
+                    })
+                    .last()
+                    .flatten();
+            }
+        }
         let id = e.id;
         let label = match &e.kind {
             ElementKind::Note(_) => "Add note",
@@ -365,6 +453,18 @@ pub fn click(
             selection.only(e.id);
             doc.commit(Transaction::new("Add note").insert(e))?;
             Ok(added(tool, d))
+        }
+        Tool::SpotLevel => {
+            let point = match view.kind {
+                // in a plan, the top of the slab under the click
+                creabim_core::ViewKind::Plan { level, .. } => {
+                    (attach(model, view, slab_under(model, level, raw), raw), raw)
+                }
+                _ => (hp, p),
+            };
+            let plan = matches!(view.kind, creabim_core::ViewKind::Plan { .. });
+            d.ready = Some(Ready::Spot { point, plan });
+            Ok("Now click where its text goes.".into())
         }
         Tool::Note => {
             d.ready = Some(Ready::Leader { target: (hp, p) });
@@ -475,10 +575,28 @@ pub fn click(
     }
 }
 
+/// The topmost slab on `level` whose outline holds `p`.
+fn slab_under(model: &Model, level: ElementId, p: DVec2) -> Option<ElementId> {
+    model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Slab(s)
+                if s.level == level && creabim_core::polygon::contains(&s.boundary, p) =>
+            {
+                Some((e.id, s.top_offset))
+            }
+            _ => None,
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|s| s.0)
+}
+
 fn added(tool: Tool, d: &mut Draft) -> String {
     if tool == Tool::Note {
         d.focus_text = true;
         "Note added. Type its text in Properties; drag it to move it.".into()
+    } else if tool == Tool::SpotLevel {
+        "Spot level added. Its text pattern is in Properties; drag its text to move it.".into()
     } else {
         "Dimension added. Drag it to move its line; its style is in Properties.".into()
     }
@@ -532,6 +650,15 @@ fn place(
                 ElementKind::Dimension(Dimension::about(kind, view_id, center.0, on, on, extra)),
             )
         }
+        Ready::Spot { point, .. } => Element::new(
+            "Spot level",
+            ElementKind::Dimension(Dimension::spot(
+                view_id,
+                point.0,
+                attach(model, view, point.0.host, at),
+                None,
+            )),
+        ),
         Ready::Arc { center, a, b } => {
             let offset = at.distance(center.1) - center.1.distance(a.1);
             Element::new(
@@ -558,6 +685,14 @@ fn place(
 /// The annotation a placing click at `at` would make, for the preview.
 fn shape_of(ready: Ready, at: DVec2) -> (Shape, String) {
     match ready {
+        Ready::Spot { point, plan } => (
+            Shape::Spot {
+                at: point.1,
+                text_at: at,
+                plan,
+            },
+            "Spot level".into(),
+        ),
         Ready::Angle { vertex, a, b } => {
             let (a, b) = if sweep(vertex.1, a.1, at) > sweep(vertex.1, a.1, b.1) {
                 (b.1, a.1)
@@ -616,6 +751,7 @@ fn shape_of(ready: Ready, at: DVec2) -> (Shape, String) {
             Shape::Note {
                 at,
                 leader: Some(target.1),
+                elbow: None,
             },
             "Note".into(),
         ),
@@ -708,6 +844,7 @@ pub fn preview(
 #[allow(clippy::too_many_arguments)]
 pub fn drag(
     doc: &mut Document,
+    view_id: Option<ElementId>,
     view: Option<&View>,
     items: &[PlanItem],
     xf: &Xf,
@@ -724,28 +861,42 @@ pub fn drag(
             .input(|i| i.pointer.press_origin())
             .or(response.interact_pointer_pos())?;
         let w = xf.to_world(press);
-        d.grab = items.iter().rev().find_map(|it| {
-            let PlanItem::Annotation { id, item } = it else {
+        let model = doc.model();
+        // the grips of what is selected come first
+        let grip = items.iter().rev().find_map(|it| {
+            if !selection.contains(it.id()) {
                 return None;
-            };
-            if let Shape::Note {
-                leader: Some(tip), ..
-            } = item.shape
-            {
-                if selection.contains(*id) && xf.to_screen(tip).distance(press) < 9.0 {
-                    return Some(Grab::Leader(*id));
+            }
+            grips(model, it, mm)
+                .into_iter()
+                .find(|(p, _)| xf.to_screen(*p).distance(press) < 9.0)
+                .map(|g| g.1)
+        });
+        d.grab = grip.or_else(|| {
+            items.iter().rev().find_map(|it| {
+                let PlanItem::Annotation { id, item } = it else {
+                    return None;
+                };
+                if !item.hit(w, tol, mm) {
+                    return None;
                 }
-            }
-            if !item.hit(w, tol, mm) {
-                return None;
-            }
-            Some(match item.shape {
-                Shape::Note { at, .. } => Grab::Note(*id, w, at),
-                _ => Grab::Shape(*id),
+                Some(match item.shape {
+                    Shape::Note { at, .. } => Grab::Note(*id, w, at),
+                    _ => Grab::Shape(*id),
+                })
             })
         });
-        if let Some(Grab::Note(id, ..) | Grab::Leader(id) | Grab::Shape(id)) = d.grab {
-            selection.only(id);
+        match d.grab {
+            Some(
+                Grab::Note(id, ..)
+                | Grab::Leader(id)
+                | Grab::Shape(id)
+                | Grab::Elbow(id)
+                | Grab::TagEnd(id, _)
+                | Grab::TagElbow(id, _)
+                | Grab::LevelHead(id, _),
+            ) => selection.only(id),
+            None => {}
         }
     }
     let grab = d.grab?;
@@ -794,7 +945,34 @@ pub fn drag(
                     Shape::ArcLength { center, a, .. } => {
                         dim.offset = p.distance(center) - a.distance(center)
                     }
+                    // a spot level's text moves, staying with what it is on
+                    Shape::Spot { .. } => dim.b = attach(&model, view, dim.a.host, p),
                     Shape::Note { .. } | Shape::Level { .. } => {}
+                }
+            })
+        }
+        Grab::Elbow(id) => doc.edit_merged(id, "Move leader elbow", |e| {
+            if let ElementKind::Note(n) = &mut e.kind {
+                n.elbow = Some(p);
+            }
+        }),
+        Grab::TagEnd(id, centre) => doc.edit_merged(id, "Move leader", |e| {
+            if let ElementKind::Tag(t) = &mut e.kind {
+                t.end = Some(p - centre);
+            }
+        }),
+        Grab::TagElbow(id, centre) => doc.edit_merged(id, "Move leader elbow", |e| {
+            if let ElementKind::Tag(t) = &mut e.kind {
+                t.elbow = Some(p - centre);
+            }
+        }),
+        Grab::LevelHead(level, end) => {
+            let Some(view_id) = view_id else {
+                return Some(None);
+            };
+            doc.edit_merged(view_id, "Move level head", |e| {
+                if let ElementKind::View(v) = &mut e.kind {
+                    v.level_heads.entry(level).or_default().offset = Some(p - end);
                 }
             })
         }
@@ -802,19 +980,28 @@ pub fn drag(
     Some(r.err().map(|e| e.to_string()))
 }
 
-/// The grip drawn on a selected note's leader arrow.
-pub fn draw_grips(painter: &egui::Painter, xf: &Xf, items: &[PlanItem], selection: &Selection) {
+/// The grips drawn on selected notes' and tags' leaders (their ends and
+/// elbows) and on selected levels' heads.
+pub fn draw_grips(
+    painter: &egui::Painter,
+    xf: &Xf,
+    model: &Model,
+    items: &[PlanItem],
+    selection: &Selection,
+    mm: f64,
+) {
     for it in items {
-        if let PlanItem::Annotation { id, item } = it {
-            if let (
-                true,
-                Shape::Note {
-                    leader: Some(tip), ..
-                },
-            ) = (selection.contains(*id), &item.shape)
-            {
+        if !selection.contains(it.id()) {
+            continue;
+        }
+        for (p, g) in grips(model, it, mm) {
+            let elbow = matches!(g, Grab::Elbow(_) | Grab::TagElbow(..));
+            let r = egui::Rect::from_center_size(xf.to_screen(p), Vec2::splat(7.0));
+            if elbow {
+                painter.circle(r.center(), 3.5, Color32::WHITE, Stroke::new(1.5, ACCENT));
+            } else {
                 painter.rect(
-                    egui::Rect::from_center_size(xf.to_screen(*tip), Vec2::splat(7.0)),
+                    r,
                     0.0,
                     Color32::WHITE,
                     Stroke::new(1.5, ACCENT),
@@ -863,7 +1050,7 @@ pub fn sheet_input(
             }
         }
     }
-    draw_grips(painter, xf, &items, selection);
+    draw_grips(painter, xf, doc.model(), &items, selection, 1.0);
     let pointer = response.hover_pos().or(response.interact_pointer_pos());
     if tool == Tool::Note {
         let raw = pointer.map(to_paper);
@@ -886,7 +1073,9 @@ pub fn sheet_input(
     if tool != Tool::Select {
         return false;
     }
-    if let Some(r) = drag(doc, None, &items, xf, response, d, selection, 1.0, None) {
+    if let Some(r) = drag(
+        doc, None, None, &items, xf, response, d, selection, 1.0, None,
+    ) {
         if let Some(e) = r {
             *error = Some(e);
         }
@@ -1121,6 +1310,32 @@ fn terminator_combo(
     changed
 }
 
+/// The end of one tag's or note's leader, and its elbow: picked here or
+/// left to its style. Returns the undo label of a change.
+pub fn leader_ui(
+    ui: &mut egui::Ui,
+    end: &mut Option<Terminator>,
+    usual: &str,
+    elbow: &mut Option<DVec2>,
+) -> Option<&'static str> {
+    let mut label = None;
+    ui.horizontal(|ui| {
+        if terminator_combo(ui, "leader_end_own", "Leader end", usual, end) {
+            label = Some("Leader end");
+        }
+    });
+    if elbow.is_some()
+        && ui
+            .button("Straighten the leader")
+            .on_hover_text("Take its elbow out; drag the round grip on the leader to bend it again")
+            .clicked()
+    {
+        *elbow = None;
+        label = Some("Straighten leader");
+    }
+    label
+}
+
 /// A style's line ends, tag shape and what it is for.
 pub fn ends_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
     let mut label = None;
@@ -1174,6 +1389,15 @@ pub fn ends_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
                 }
             }
         });
+    if ui
+        .checkbox(&mut s.break_at_tags, "Break dimension lines at tags")
+        .on_hover_text(
+            "Dimension lines in this style leave a gap where a tag or a note sits across them",
+        )
+        .changed()
+    {
+        label = Some("Dimension breaks");
+    }
     crate::app::helpui::combo(ui, "Meant for")
         .selected_text(s.purpose.label())
         .show_ui(ui, |ui| {
@@ -1249,6 +1473,7 @@ pub fn offset_label(kind: DimensionKind) -> &'static str {
         DimensionKind::Angular => "Arc radius",
         DimensionKind::Radius | DimensionKind::Diameter => "Line past circle",
         DimensionKind::ArcLength => "Line offset",
+        DimensionKind::Spot => "Offset",
     }
 }
 

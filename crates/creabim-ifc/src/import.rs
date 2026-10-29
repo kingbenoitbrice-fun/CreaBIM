@@ -86,7 +86,8 @@ pub fn import_ifc(text: &str) -> Result<ImportResult, ImportError> {
         ));
     }
     imp.run();
-    let elements = std::mem::take(&mut imp.out);
+    let mut elements = std::mem::take(&mut imp.out);
+    read_tags(&file, &mut elements);
     let mut warnings = std::mem::take(&mut imp.g.warnings);
     let model = build_model(elements, &mut warnings)?;
     let (warnings, details) = warnings.into_parts();
@@ -152,6 +153,42 @@ pub(crate) fn build_model(
     doc.commit(tx)
         .map_err(|e| ImportError::Model(e.to_string()))?;
     Ok(doc.model().clone())
+}
+
+/// Give elements the marks their IFC entities carry as their Tag (the
+/// attribute after Representation, on every IfcElement). Tags of bare
+/// digits are left out: some programs write their own element numbers there.
+fn read_tags(f: &StepFile, elements: &mut [Element]) {
+    const SPATIAL: &[&str] = &[
+        "IFCPROJECT",
+        "IFCSITE",
+        "IFCBUILDING",
+        "IFCBUILDINGSTOREY",
+        "IFCSPACE",
+        "IFCSPATIALZONE",
+        "IFCEXTERNALSPATIALELEMENT",
+    ];
+    let mut tags: HashMap<ElementId, String> = HashMap::new();
+    for e in f.entities.values() {
+        if SPATIAL.contains(&e.class.as_str()) || crate::classes::product_class(&e.class).is_none()
+        {
+            continue;
+        }
+        let Some(tag) = e.arg(7).as_str().map(str::trim) else {
+            continue;
+        };
+        if tag.is_empty() || tag.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if let Some(id) = e.arg(0).as_str().and_then(ElementId::from_ifc_guid) {
+            tags.insert(id, tag.to_string());
+        }
+    }
+    for e in elements {
+        if let Some(t) = tags.remove(&e.id) {
+            e.mark = Some(t);
+        }
+    }
 }
 
 /// Classes with no physical body of their own, or handled separately.
@@ -519,6 +556,7 @@ impl<'a> Importer<'a> {
             let eid = self.new_id(e);
             let name = Self::name(e, "Type");
             self.type_elems.push(Element {
+                mark: None,
                 id: eid,
                 name,
                 kind: ElementKind::ElementType(t),
@@ -584,6 +622,7 @@ impl<'a> Importer<'a> {
             top_z: z + height,
         });
         self.wall_elems.push(Element {
+            mark: None,
             source: None,
             of_type: self.type_ref(id),
             id: eid,
@@ -608,6 +647,7 @@ impl<'a> Importer<'a> {
         let eid = self.new_id(e);
         let name = Self::name(e, f.kind.label());
         self.opening_elems.push(Element {
+            mark: None,
             source: None,
             of_type: self.type_ref(id),
             id: eid,
@@ -645,6 +685,7 @@ impl<'a> Importer<'a> {
                 let (offset, sill, width, height) = self.snap_to_void(&wall, r);
                 let eid = self.new_id(o);
                 self.opening_elems.push(Element {
+                    mark: None,
                     source: None,
                     of_type: None,
                     id: eid,
@@ -827,6 +868,7 @@ impl<'a> Importer<'a> {
                     .unwrap_or_else(|| format!("Level {i}"));
             }
             self.level_elems.push(Element {
+                mark: None,
                 source: None,
                 id: lid,
                 name,
@@ -1404,6 +1446,7 @@ impl<'a> Importer<'a> {
                 .insert(eid, voids.into_iter().map(|v| (v, false)).collect());
         }
         self.wall_elems.push(Element {
+            mark: None,
             source: None,
             of_type: self.type_ref(id),
             id: eid,
@@ -1608,6 +1651,7 @@ impl<'a> Importer<'a> {
         let eid = self.new_id(e);
         self.slabs.insert(id, self.wall_elems.len());
         self.wall_elems.push(Element {
+            mark: None,
             source: None,
             of_type: self.type_ref(id),
             id: eid,
@@ -1799,6 +1843,7 @@ impl<'a> Importer<'a> {
             "Window"
         };
         self.opening_elems.push(Element {
+            mark: None,
             source: None,
             of_type: self.type_ref(id),
             id: eid,
@@ -1866,6 +1911,7 @@ impl<'a> Importer<'a> {
         let material = self.material_for(id);
         let eid = self.new_id(e);
         self.other_elems.push(Element {
+            mark: None,
             source: None,
             id: eid,
             name: Self::name(e, class),

@@ -38,9 +38,18 @@ struct Ctx {
     axis: Ref,
     z_axis: Ref,
     x_axis: Ref,
+    /// Each element's mark, written as its IFC Tag.
+    marks: HashMap<ElementId, String>,
 }
 
 impl Ctx {
+    /// An element's Tag attribute: its mark, or unset.
+    fn tag(&self, id: ElementId) -> String {
+        self.marks
+            .get(&id)
+            .map_or_else(|| "$".into(), |m| string(m))
+    }
+
     fn guid(&self) -> String {
         string(&ElementId::new().ifc_guid())
     }
@@ -200,6 +209,7 @@ pub fn export_ifc4(model: &Model, opts: &ExportOptions) -> String {
         axis,
         z_axis,
         x_axis,
+        marks: element_marks(model),
     };
 
     let units = [
@@ -1190,9 +1200,10 @@ fn object_type(
         let r = c.w.add(
             &kind.class.to_ascii_uppercase(),
             format!(
-                "{},$,{},$,{object_type},{pl},{shape},$,.{}.",
+                "{},$,{},$,{object_type},{pl},{shape},{},.{}.",
                 string(&oe.id.ifc_guid()),
                 string(&oe.name),
+                c.tag(oe.id),
                 kind.predefined
             ),
         );
@@ -1511,6 +1522,15 @@ fn spaces(
 }
 
 fn product(c: &mut Ctx, class: &str, e: &Element, pl: Ref, shape: Ref, tail: &str) -> Ref {
+    // the tail starts with the Tag, unset: the element's mark goes there
+    let tagged;
+    let tail = match tail.strip_prefix(",$") {
+        Some(rest) if c.marks.contains_key(&e.id) => {
+            tagged = format!(",{}{rest}", c.tag(e.id));
+            tagged.as_str()
+        }
+        _ => tail,
+    };
     c.w.add(
         class,
         format!(
@@ -1519,6 +1539,19 @@ fn product(c: &mut Ctx, class: &str, e: &Element, pl: Ref, shape: Ref, tail: &st
             string(&e.name)
         ),
     )
+}
+
+/// The marks of everything that has one, objects' from their types.
+fn element_marks(model: &Model) -> HashMap<ElementId, String> {
+    let mut out = creabim_core::marks(model);
+    for e in model.iter() {
+        if matches!(e.kind, ElementKind::Object(_)) {
+            if let Some(m) = creabim_core::marks::object_mark(model, e) {
+                out.insert(e.id, m);
+            }
+        }
+    }
+    out
 }
 
 /// The STEP entity and record tail (Tag, PredefinedType) of a member.

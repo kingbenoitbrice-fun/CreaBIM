@@ -571,12 +571,17 @@ pub enum PlanItem {
         text: String,
         look: crate::annotation::TextLook,
         witness: Option<[DVec2; 2]>,
+        /// Stretches of the dimension line left out where tags and notes
+        /// sit across it, as fractions of the way from `a` to `b`.
+        breaks: Vec<[f64; 2]>,
     },
     /// A tag: `text` in a bubble at `at`, with a leader back to `anchor`.
     Tag {
         id: ElementId,
         anchor: DVec2,
         at: DVec2,
+        /// A bend in the leader.
+        elbow: Option<DVec2>,
         text: String,
         round: bool,
         look: crate::annotation::TextLook,
@@ -696,8 +701,11 @@ impl PlanItem {
                 let n = (*b - *a).normalize_or_zero().perp() * *offset;
                 pts.extend([*a, *b, *a + n, *b + n]);
             }
-            PlanItem::Tag { anchor, at, .. } => {
-                pts.extend([*anchor, *at - DVec2::splat(0.3), *at + DVec2::splat(0.3)])
+            PlanItem::Tag {
+                anchor, at, elbow, ..
+            } => {
+                pts.extend([*anchor, *at - DVec2::splat(0.3), *at + DVec2::splat(0.3)]);
+                pts.extend(*elbow);
             }
             PlanItem::Annotation { item, .. } => pts.extend(item.extent()),
             PlanItem::Image { lo, hi, clip, .. } => match clip {

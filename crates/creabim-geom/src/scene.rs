@@ -413,6 +413,7 @@ pub fn build_scene(model: &Model) -> Vec<SceneItem> {
             | ElementKind::TextStyle(_)
             | ElementKind::SheetTemplate(_)
             | ElementKind::Units(_)
+            | ElementKind::MarkRules(_)
             | ElementKind::ElementType(_)
             | ElementKind::Sketch(_)
             | ElementKind::Cut(_)

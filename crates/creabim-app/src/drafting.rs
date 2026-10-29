@@ -65,9 +65,12 @@ impl CreaBimApp {
             out.push(seg(items));
         }
         let style_menu = match tool {
-            Tool::Dimension | Tool::Angle | Tool::Radius | Tool::Diameter | Tool::ArcLength => {
-                Some(("dimstyle", self.plan.anno.dim_style))
-            }
+            Tool::Dimension
+            | Tool::Angle
+            | Tool::Radius
+            | Tool::Diameter
+            | Tool::ArcLength
+            | Tool::SpotLevel => Some(("dimstyle", self.plan.anno.dim_style)),
             Tool::Note => Some(("notestyle", self.plan.anno.note_style)),
             Tool::Tag => Some(("tagstyle", self.plan.anno.tag_style)),
             _ => None,
@@ -988,11 +991,13 @@ fn style_preview(ui: &mut egui::Ui, s: &TextStyle) {
             text: "4000".into(),
             look,
             witness: None,
+            breaks: vec![],
         },
         PlanItem::Tag {
             id: ElementId::new(),
             anchor: DVec2::new(62.0, 2.0),
             at: DVec2::new(74.0, 12.0),
+            elbow: None,
             text: "D01".into(),
             round: false,
             look,

@@ -46,6 +46,8 @@ pub enum Tool {
     Diameter,
     ArcLength,
     Note,
+    /// A spot level or a level marker: the height of a point.
+    SpotLevel,
     Sketch,
     Guide,
     Grid,
@@ -69,7 +71,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 32] = [
+    pub const ALL: [Tool; 33] = [
         Tool::Select,
         Tool::Wall,
         Tool::Door,
@@ -97,6 +99,7 @@ impl Tool {
         Tool::Diameter,
         Tool::ArcLength,
         Tool::Note,
+        Tool::SpotLevel,
         Tool::Sketch,
         Tool::Guide,
         Tool::Grid,
@@ -128,6 +131,7 @@ impl Tool {
             Tool::Diameter => "Diameter",
             Tool::ArcLength => "Arc length",
             Tool::Note => "Note",
+            Tool::SpotLevel => "Spot level",
             Tool::Sketch => "Sketch",
             Tool::Guide => "Guide",
             Tool::Grid => "Grid",
@@ -164,6 +168,7 @@ impl Tool {
             Tool::Radius => "Click an arc or circle, or three points on one. Then click where the dimension line goes.",
             Tool::Diameter => "Click an arc or circle, or three points on one. Then click where the dimension line goes.",
             Tool::ArcLength => "Click an arc, or its start, a point on it and its end. Then click where the dimension line goes.",
+            Tool::SpotLevel => "Click a point on a floor, slab or roof in a section or elevation, or on a slab in a plan (elsewhere in a plan it marks the plan's level), then click where its text goes. Its text pattern is in Properties.",
             Tool::Note => "Click what the note points at, then where its text goes (turn Leader off to just click). Type its text in Properties. Works on sheets too.",
             Tool::Sketch => "Click the corners of a sketch on this level. Click the first corner to close it, Enter or right-click to leave it open, Esc to cancel. L, A and C draw lines, arcs and circles. Then E extrudes it.",
             Tool::Guide => "Click two points for a guide through them. Or click an edge, then click where its parallel guide goes. Everything snaps to guides.",
@@ -733,7 +738,7 @@ pub fn show(
         let pts: Vec<Pos2> = points.iter().map(|p| xf.to_screen(*p)).collect();
         painter.add(egui::Shape::closed_line(pts, Stroke::new(2.0, SLAB_EDGE)));
     }
-    crate::annotate::draw_grips(&painter, &xf, &plan.items, selection);
+    crate::annotate::draw_grips(&painter, &xf, doc.model(), &plan.items, selection, mm);
     crate::sketch::draw_marks_in_pane(&painter, doc.model(), selection.active, kind, &xf);
     // the centre lines the Align tool can take here
     let centre_lines = match (tool, kind) {
@@ -1221,6 +1226,7 @@ pub fn show(
         };
         if let Some(r) = crate::annotate::drag(
             doc,
+            Some(view),
             view_def.as_ref(),
             &plan.items,
             &xf,
@@ -1403,6 +1409,7 @@ pub fn show(
                         id: host,
                         anchor: proj.project(c),
                         at: xf.to_world(h),
+                        elbow: None,
                         text,
                         round,
                         look: annotate::look_of(doc.model(), None, None),
@@ -1796,6 +1803,17 @@ fn drag_level(
 ) -> Option<Option<String>> {
     if response.drag_started_by(egui::PointerButton::Primary) {
         let press = response.ctx.input(|i| i.pointer.press_origin())?;
+        // the grip on a selected level's head moves the head instead
+        let on_head = plan.items.iter().any(|it| match it {
+            PlanItem::Annotation { id, item } => {
+                selection.contains(*id)
+                    && matches!(item.shape, creabim_geom::annotation::Shape::Level { at, .. } if xf.to_screen(at).distance(press) < 9.0)
+            }
+            _ => false,
+        });
+        if on_head {
+            return None;
+        }
         let w = xf.to_world(press);
         let id = hit_test(&plan.items, w, 6.0 / xf.scale as f64, mm)?;
         let l = doc.model().level(id)?;
@@ -1986,6 +2004,7 @@ fn plan_click(
         | Tool::Diameter
         | Tool::ArcLength
         | Tool::Note
+        | Tool::SpotLevel
         | Tool::Sketch => Ok(()),
         Tool::Slab | Tool::Roof | Tool::Shaft | Tool::Room | Tool::Ceiling => {
             crate::slabtool::click(doc, level, p, state, selection)
@@ -3415,10 +3434,12 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
             text,
             look,
             witness,
+            breaks,
             ..
         } => {
             let ink = crate::annotate::ink(look, selected, highlight);
-            draw_dimension(painter, xf, *a, *b, *offset, *witness, text, look, mm, ink);
+            let d = (*a, *b, *offset, *witness);
+            draw_dimension(painter, xf, d, breaks, text, look, mm, ink);
         }
         PlanItem::Annotation { item, .. } => {
             let ink = crate::annotate::ink(&item.look, selected, highlight);
@@ -3427,16 +3448,19 @@ pub fn draw_item(painter: &egui::Painter, xf: &Xf, item: &PlanItem, selected: bo
         PlanItem::Tag {
             anchor,
             at,
+            elbow,
             text,
             round,
             look,
             ..
         } => {
-            let g = tag_geometry(*anchor, *at, text, *round, look, mm);
+            let g = tag_geometry(*anchor, *at, *elbow, text, *round, look, mm);
             let pts: Vec<Pos2> = g.outline.iter().map(|p| xf.to_screen(*p)).collect();
             let ink = crate::annotate::ink(look, selected, highlight);
-            if let Some((p, q)) = g.leader {
-                painter.line_segment([xf.to_screen(p), xf.to_screen(q)], Stroke::new(1.0, ink));
+            if !g.leader.is_empty() {
+                let line: Vec<Pos2> = g.leader.iter().map(|p| xf.to_screen(*p)).collect();
+                painter.add(egui::Shape::line(line, Stroke::new(1.0, ink)));
+                crate::annotate::paint_ends(painter, xf, &g.ends, ink);
             }
             if g.closed {
                 painter.add(egui::Shape::convex_polygon(
@@ -3624,16 +3648,15 @@ pub fn draw_hover(painter: &egui::Painter, xf: &Xf, items: &[PlanItem], id: Elem
 fn draw_dimension(
     painter: &egui::Painter,
     xf: &Xf,
-    a: DVec2,
-    b: DVec2,
-    offset: f64,
-    witness: Option<[DVec2; 2]>,
+    (a, b, offset, witness): (DVec2, DVec2, f64, Option<[DVec2; 2]>),
+    breaks: &[[f64; 2]],
     text: &str,
     look: &TextLook,
     mm: f64,
     ink: Color32,
 ) {
-    let g = dimension_geometry(a, b, offset, witness, look, mm);
+    let mut g = dimension_geometry(a, b, offset, witness, look, mm);
+    g.break_line(breaks);
     for (p, q) in g.lines {
         painter.line_segment([xf.to_screen(p), xf.to_screen(q)], Stroke::new(1.0, ink));
     }
@@ -3668,7 +3691,16 @@ fn preview_dimension(
         return;
     };
     let text = annotate::dimension_text(&crate::units::get(), a, b2);
-    draw_dimension(painter, xf, a, b2, offset, witness, &text, look, mm, accent);
+    draw_dimension(
+        painter,
+        xf,
+        (a, b2, offset, witness),
+        &[],
+        &text,
+        look,
+        mm,
+        accent,
+    );
 }
 
 /// The point a dimension click lands on, what it attaches to, and the snap

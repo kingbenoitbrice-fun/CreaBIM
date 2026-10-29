@@ -54,15 +54,15 @@ pub use document::{Document, Step, StepId};
 pub use editmesh::EditMesh;
 pub use element::{
     Cut, Dimension, Element, ElementKind, FreeMesh, Grid, GridGroup, Guide, Hatch, HostPoint,
-    Level, Material, Opening, OpeningFrame, OpeningKind, ScheduleCategory, Sheet, Sketch, Slab,
-    Source, Tag, Underlay, View, ViewKind, ViewStyle, Viewport, Wall, Workplane,
+    Level, LevelHead, Material, Opening, OpeningFrame, OpeningKind, ScheduleCategory, Sheet,
+    Sketch, Slab, Source, Tag, Underlay, View, ViewKind, ViewStyle, Viewport, Wall, Workplane,
 };
 pub use element::{LocationLine, WallTop};
 pub use footing::{Footing, FootingKind};
 pub use graphics::{LineWeights, PlanGraphics};
 pub use id::ElementId;
 pub use joins::{wall_joins, Gap, WallEnds};
-pub use marks::{marks, material_of};
+pub use marks::{marks, material_of, MarkClass, MarkOrder, MarkRule, MarkRules};
 pub use members::{Beam, Column, Landing, Profile, Railing, Roof, RoofShape, Stair, StairSide};
 pub use model::Model;
 pub use modifiers::{Axis, Modifier, ModifierKind};

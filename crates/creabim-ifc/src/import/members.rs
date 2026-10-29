@@ -68,6 +68,7 @@ impl Importer<'_> {
             _ => "Railing",
         };
         let element = Element {
+            mark: None,
             source: None,
             of_type: self.type_ref(id),
             id: self.new_id(e),

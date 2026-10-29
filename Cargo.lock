@@ -936,6 +936,7 @@ dependencies = [
  "creabim-core",
  "glam",
  "miniz_oxide 0.8.9",
+ "serde_json",
 ]
 
 [[package]]

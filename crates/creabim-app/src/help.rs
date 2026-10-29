@@ -82,6 +82,8 @@ pub const PAGES: &[(&str, &str, &str)] = &[
     page!("Views and drawings", "sheets"),
     page!("Annotation", "dimensions"),
     page!("Annotation", "tags"),
+    page!("Annotation", "marks"),
+    page!("Annotation", "spot-levels"),
     page!("Annotation", "notes"),
     page!("Annotation", "styles"),
     page!("Drawing aids", "snaps"),
@@ -216,6 +218,7 @@ pub fn tool_page(t: Tool) -> &'static str {
         Tool::ArcLength => "dimensions#arc-length",
         Tool::Tag => "tags",
         Tool::Note => "notes",
+        Tool::SpotLevel => "spot-levels",
         Tool::Sketch => "sketches",
         Tool::Guide => "guides",
         Tool::Grid => "grids",
@@ -269,6 +272,7 @@ pub fn element_page(kind: &ElementKind) -> &'static str {
             _ => "views",
         },
         ElementKind::Units(_) => "units",
+        ElementKind::MarkRules(_) => "marks",
     }
 }
 

@@ -105,12 +105,13 @@ pub fn text_box(item: &PlanItem, mm: f64) -> Option<(TextBox, bool)> {
         PlanItem::Tag {
             anchor,
             at,
+            elbow,
             text,
             round,
             look,
             ..
         } => {
-            let g = tag_geometry(*anchor, *at, text, *round, look, mm);
+            let g = tag_geometry(*anchor, *at, *elbow, text, *round, look, mm);
             let b = TextBox::around(g.outline.iter().copied()).or_else(|| {
                 let half = DVec2::new(look.width(text) / 2.0, look.size * 0.6) * mm;
                 Some(TextBox {
@@ -229,13 +230,15 @@ fn obstacles(items: &[PlanItem], mm: f64) -> Vec<(DVec2, DVec2, f64, usize)> {
             PlanItem::Tag {
                 anchor,
                 at,
+                elbow,
                 text,
                 round,
                 look,
                 ..
             } => {
-                if let Some((p, q)) = tag_geometry(*anchor, *at, text, *round, look, mm).leader {
-                    out.push((p, q, 1.0, k));
+                let leader = tag_geometry(*anchor, *at, *elbow, text, *round, look, mm).leader;
+                for w in leader.windows(2) {
+                    out.push((w[0], w[1], 1.0, k));
                 }
             }
             PlanItem::Annotation { item, .. } => {
@@ -372,7 +375,7 @@ fn shift(
         }
         PlanItem::Tag { at, .. } => *at += d,
         PlanItem::Annotation { item, .. } => {
-            if let Shape::Note { at, leader } = &mut item.shape {
+            if let Shape::Note { at, leader, .. } = &mut item.shape {
                 *at += d;
                 if far && leader.is_none() {
                     *leader = Some(was);

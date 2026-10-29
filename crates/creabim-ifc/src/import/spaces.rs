@@ -73,6 +73,7 @@ impl Importer<'_> {
             self.done.insert(id);
             let eid = self.new_id(e);
             self.other_elems.push(Element {
+                mark: None,
                 source: None,
                 of_type: None,
                 id: eid,
@@ -97,6 +98,7 @@ impl Importer<'_> {
             self.done.insert(id);
             let eid = self.new_id(e);
             self.other_elems.push(Element {
+                mark: None,
                 source: None,
                 of_type: None,
                 id: eid,
@@ -135,6 +137,7 @@ impl Importer<'_> {
             self.done.insert(id);
             let eid = self.new_id(e);
             self.other_elems.push(Element {
+                mark: None,
                 source: None,
                 of_type: None,
                 id: eid,

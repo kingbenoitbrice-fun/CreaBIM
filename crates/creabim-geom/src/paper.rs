@@ -286,9 +286,11 @@ pub fn draw_with(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap, w:
                 text,
                 look,
                 witness,
+                breaks,
                 ..
             } => {
-                let g = dimension_geometry(*a, *b, *offset, *witness, look, 1.0 / map.k());
+                let mut g = dimension_geometry(*a, *b, *offset, *witness, look, 1.0 / map.k());
+                g.break_line(breaks);
                 for (p, q) in g.lines {
                     ink_line(canvas, &[to(p), to(q)], DIMENSION, look);
                 }
@@ -298,12 +300,13 @@ pub fn draw_with(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap, w:
             PlanItem::Tag {
                 anchor,
                 at,
+                elbow,
                 text,
                 round,
                 look,
                 ..
             } => {
-                let g = tag_geometry(*anchor, *at, text, *round, look, 1.0 / map.k());
+                let g = tag_geometry(*anchor, *at, *elbow, text, *round, look, 1.0 / map.k());
                 let mut pts: Vec<DVec2> = g.outline.iter().map(|p| to(*p)).collect();
                 if g.closed {
                     canvas.fill(&pts, 1.0);
@@ -312,8 +315,10 @@ pub fn draw_with(canvas: &mut dyn Canvas, drawing: &PlanView, map: &PaperMap, w:
                 if pts.len() > 1 {
                     ink_line(canvas, &pts, SYMBOL, look);
                 }
-                if let Some((p, q)) = g.leader {
-                    ink_line(canvas, &[to(p), to(q)], DIMENSION, look);
+                if !g.leader.is_empty() {
+                    let pts: Vec<DVec2> = g.leader.iter().map(|p| to(*p)).collect();
+                    ink_line(canvas, &pts, DIMENSION, look);
+                    draw_ends(canvas, &g.ends, look, &to);
                 }
                 canvas.styled_text(to(*at), text, Anchor::Middle, 0.0, look);
             }
