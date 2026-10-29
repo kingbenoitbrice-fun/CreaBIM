@@ -22,6 +22,10 @@ usage: (<model> is a .creabim project or a legacy .creabim.json file)
   creabim sample-furnished <out.creabim.json>
                                        the sample house furnished from the
                                        starter catalogue
+  creabim sample-garden <out.creabim.json>
+                                       the sample house in its garden: a
+                                       chimney, a screen wall, terrain,
+                                       paving, planting and a car
   creabim catalogue [out-dir]          list the starter catalogue, or write
                                        each object as a catalogue file
   creabim catalogue-import <file> <dir>
@@ -74,6 +78,10 @@ fn main() -> ExitCode {
         }
         ["sample-furnished", out] if is_json(out) => {
             std::fs::write(out, creabim_core::sample::furnished_house().to_json())
+                .map_err(|e| e.to_string())
+        }
+        ["sample-garden", out] if is_json(out) => {
+            std::fs::write(out, creabim_core::garden::garden_house().to_json())
                 .map_err(|e| e.to_string())
         }
         ["catalogue"] => {
