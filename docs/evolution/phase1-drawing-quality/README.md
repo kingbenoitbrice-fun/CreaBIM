@@ -80,6 +80,14 @@ The weights belong to each view: in a plan's *Properties*, under *Graphics*, unt
 
 **Below-cut tint.** Furniture, sanitary ware, kitchen runs and imported meshes that lie wholly below the cut get a light tint of their material's colour under their lines. The tint is on by default. In *Graphics* you can set its strength, switch it to grey, or turn it off. Building services, such as lights and sockets, are left untinted.
 
+### 6. The plan's graphics in Properties
+
+`07-plan-graphics-in-properties.png`: the *Graphics* group of the Ground Floor plan, which *Properties* shows when nothing is selected or when the view is selected. In this shot *Line weights from the scale* is unticked so the six pen widths can be set, and *Pens by category* is open.
+
+### 7. Window reveals in 3D
+
+`08-window-reveals-in-3d-after.png`: the first-floor windows of the starter house in the 3D view, from this branch. The jambs and heads show the white render and plaster. For the yellow insulation they showed before, see `02b-readme-hero.png` in `phase1-starter-house`.
+
 ## Other changes
 
 - **View depth.** *Graphics* in a plan's *Properties* has a *View depth*. It sets how far below the floor the plan looks through holes in the floor. By default the plan looks down to the level below. Above the floor and below the cut is *below*, drawn in projection. Under the floor, down to the view depth, is *beyond*.
