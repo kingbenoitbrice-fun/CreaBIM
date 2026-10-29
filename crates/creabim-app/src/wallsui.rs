@@ -485,6 +485,11 @@ impl CreaBimApp {
                     .icon("link")
                     .hint("A disallowed end stays square and free: it doesn't join, and isn't pulled along"),
             );
+            items.push(
+                Item::new(format!("wall.split:{}", id.0), "Split wall here")
+                    .icon("scissors")
+                    .hint("Two walls, meeting where you right-clicked; doors and windows stay where they are"),
+            );
         }
         if !walls.is_empty() {
             items.push(
@@ -508,6 +513,27 @@ impl CreaBimApp {
             "wall.flip" => self.flip_selected(false),
             "wall.hand" => self.flip_selected(true),
             "wall.attach" => self.attach_selected(true),
+            "wall.split" => {
+                let at = if self.shell.context_3d {
+                    self.menu_at_3d
+                } else {
+                    self.plan.menu_at
+                };
+                let id = self
+                    .doc
+                    .model()
+                    .iter()
+                    .find(|e| e.id.0.to_string() == arg)
+                    .map(|e| e.id);
+                let r = match (id, at) {
+                    (Some(id), Some(at)) => {
+                        creabim_core::walls::split_wall(self.doc.model(), id, at.truncate())
+                            .and_then(|tx| self.doc.commit(tx).map_err(|e| e.to_string()))
+                    }
+                    _ => Err("right-click the wall where it should split".into()),
+                };
+                self.report(r, "Split the wall in two. Ctrl+Z to undo.");
+            }
             "wall.detach" => self.attach_selected(false),
             "wall.join" => {
                 let (id, end) = arg.rsplit_once(':').unwrap_or((arg, "0"));

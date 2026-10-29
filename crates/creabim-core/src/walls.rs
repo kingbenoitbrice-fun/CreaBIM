@@ -365,6 +365,61 @@ pub fn flip_facing(o: &mut Opening) {
     o.flip_facing = !o.flip_facing;
 }
 
+/// Split wall `id` in two at the point of it nearest `at`: it keeps the
+/// part from its start, a new wall the rest; the doors and windows past
+/// the split move to the new one. Refused at an end, or through an
+/// opening.
+pub fn split_wall(model: &Model, id: ElementId, at: DVec2) -> Result<Transaction, String> {
+    let e = model.get(id).ok_or("that wall is gone")?;
+    let ElementKind::Wall(w) = &e.kind else {
+        return Err("only a wall splits".into());
+    };
+    let len = w.length();
+    let u = w.direction();
+    let along = (at - w.start).dot(u);
+    if along < 0.05 || along > len - 0.05 {
+        return Err("too close to an end of the wall to split it there".into());
+    }
+    let p = w.start + u * along;
+    let mut first = e.clone();
+    let mut second = e.clone();
+    second.id = ElementId::new();
+    second.source = None;
+    second.name = format!("{} (2)", e.name);
+    if let ElementKind::Wall(a) = &mut first.kind {
+        a.end = p;
+        a.disallow_join[1] = false;
+    }
+    if let ElementKind::Wall(b) = &mut second.kind {
+        b.start = p;
+        b.disallow_join[0] = false;
+    }
+    let mut tx = Transaction::new(format!("Split {}", e.name)).insert(second.clone());
+    for o in model.iter() {
+        let ElementKind::Opening(op) = &o.kind else {
+            continue;
+        };
+        if op.host != id {
+            continue;
+        }
+        if op.offset < along && op.offset + op.width > along {
+            return Err(format!(
+                "{} is in the way: split the wall beside it",
+                o.name
+            ));
+        }
+        if op.offset >= along {
+            let mut moved = o.clone();
+            if let ElementKind::Opening(m) = &mut moved.kind {
+                m.host = second.id;
+                m.offset -= along;
+            }
+            tx = tx.replace(o.clone(), moved);
+        }
+    }
+    Ok(tx.replace(e.clone(), first))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,5 +635,49 @@ mod tests {
             p.breaks(DVec2::new(-2.0, 0.3), DVec2::new(8.0, 0.3)).len(),
             4
         );
+    }
+
+    #[test]
+    fn a_wall_splits_in_two_and_its_openings_go_with_their_half() {
+        let m = crate::sample::sample_house();
+        let (host, door) = m
+            .iter()
+            .find_map(|e| match &e.kind {
+                ElementKind::Opening(o) => Some((o.host, e.id)),
+                _ => None,
+            })
+            .unwrap();
+        let ElementKind::Wall(w) = &m.get(host).unwrap().kind else {
+            panic!()
+        };
+        let ElementKind::Opening(o) = &m.get(door).unwrap().kind else {
+            panic!()
+        };
+        let len = w.length();
+        // through the opening: refused
+        let mid = w.start + w.direction() * (o.offset + o.width / 2.0);
+        assert!(split_wall(&m, host, mid).is_err());
+        assert!(split_wall(&m, host, w.start).is_err());
+        // before the opening: it moves to the second wall
+        let cut = o.offset / 2.0;
+        assert!(cut > 0.05, "the sample door is clear of the wall start");
+        let mut m2 = m.clone();
+        split_wall(&m, host, w.start + w.direction() * cut)
+            .unwrap()
+            .apply(&mut m2)
+            .unwrap();
+        let ElementKind::Wall(a) = &m2.get(host).unwrap().kind else {
+            panic!()
+        };
+        assert!((a.length() - cut).abs() < 1e-9);
+        let ElementKind::Opening(moved) = &m2.get(door).unwrap().kind else {
+            panic!()
+        };
+        assert_ne!(moved.host, host);
+        assert!((moved.offset - (o.offset - cut)).abs() < 1e-9);
+        let ElementKind::Wall(b) = &m2.get(moved.host).unwrap().kind else {
+            panic!()
+        };
+        assert!((a.length() + b.length() - len).abs() < 1e-9);
     }
 }

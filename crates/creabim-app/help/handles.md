@@ -7,6 +7,13 @@ A selected element shows small handles you can drag to change it directly, in 3D
 
 Grips snap to what they land on, and the readout shows the new value. Every drag is one undo step.
 
+## Turning, sliding and sizing
+
+- A selected **object** (furniture or a fixture) has a square grip in front of it: drag it round to turn the object about its middle, in steps of 5°. The arrow beside it turns it round to face the other way.
+- A **column** has a turning grip beside it, and round grips on its sides for its width and depth (a round column's diameter); it stays on its point.
+- A **stair** has a turning grip behind its first riser.
+- A **wall** has a round grip off the face opposite its thickness grip: drag it to slide the whole wall square to itself, and the walls joined to it stretch to stay joined. Right-click a wall and pick *Split wall here* to make two walls meeting at that point; doors and windows stay where they are.
+
 ## Walls stay joined
 
 Drag a wall's end and the walls joined to it follow, so the corner stays closed. To drag an end on its own, hold `Ctrl` or `Alt` while dragging, or disallow the join at that end (see [Walls](walls#joins)).

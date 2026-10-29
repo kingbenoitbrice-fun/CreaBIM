@@ -147,6 +147,15 @@ pub enum HandleKind {
     /// A shaft's base and its top, up and down.
     ShaftBase,
     ShaftTop,
+    /// Turn an object, a column or a stair about its own point.
+    Rotate,
+    /// A rectangular column's width (along its own x) or depth; a round
+    /// one's diameter.
+    ColumnSize {
+        depth: bool,
+    },
+    /// Slide a whole wall square to itself; the walls joined to it stretch.
+    WallSlide,
 }
 
 impl HandleKind {
@@ -174,6 +183,9 @@ impl HandleKind {
             | HandleKind::Edge { .. }
             | HandleKind::AddVertex { .. }
             | HandleKind::Ring { .. } => "Reshape",
+            HandleKind::Rotate => "Rotate",
+            HandleKind::ColumnSize { .. } => "Resize",
+            HandleKind::WallSlide => "Slide",
             HandleKind::WallFace | HandleKind::SlabUnderside | HandleKind::SlabTop => {
                 "Change thickness of"
             }
@@ -225,6 +237,10 @@ impl HandleKind {
             HandleKind::Face(_) => "Drag: push or pull the face",
             HandleKind::ViewDepth => "Drag: change how deep it sees",
             HandleKind::CropFace(_) => "Drag: move the crop face",
+            HandleKind::Rotate => "Drag: turn it (steps of 5°) · Tab: type a length",
+            HandleKind::ColumnSize { depth: false } => "Drag: change the width",
+            HandleKind::ColumnSize { depth: true } => "Drag: change the depth",
+            HandleKind::WallSlide => "Drag: slide the wall square to itself (joined walls follow)",
             _ => "Drag to change it",
         }
     }
@@ -291,6 +307,12 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
                 line(
                     HandleKind::WallFace,
                     (mid + n * w.thickness / 2.0).extend(z0 + w.height / 2.0),
+                    n.extend(0.0),
+                ),
+                // off the other face, clear of the thickness grip
+                line(
+                    HandleKind::WallSlide,
+                    (mid - n * (w.thickness / 2.0 + 0.3)).extend(z0 + w.height / 2.0),
                     n.extend(0.0),
                 ),
             ]
@@ -393,6 +415,14 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
             }
             vec![line(HandleKind::Face(f), c, n)]
         }
+        ElementKind::Object(o) => {
+            let z = creabim_core::objects::base_z(model, e).unwrap_or(0.0);
+            let (lo, hi) = creabim_core::objects::type_of(model, e)
+                .map(|t| t.bounds())
+                .unwrap_or((DVec3::new(-0.3, -0.6, 0.0), DVec3::new(0.3, 0.0, 1.0)));
+            let front = DVec2::new((lo.x + hi.x) / 2.0, lo.y - 0.35);
+            vec![flat(HandleKind::Rotate, o.to_plan(front).extend(z))]
+        }
         _ => creabim_core::members::grips(model, e)
             .into_iter()
             .enumerate()
@@ -411,7 +441,92 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
                     line(HandleKind::Member { i, free: false }, g.at, d.extend(0.0))
                 }
             })
+            .chain(member_extras(model, e))
             .collect(),
+    }
+}
+
+/// The grips a column and a stair have besides their members' own: a
+/// turning grip, and a column's width and depth.
+fn member_extras(model: &Model, e: &Element) -> Vec<Handle> {
+    let line = |kind, at: DVec3, dir: DVec2| Handle {
+        kind,
+        at,
+        constraint: Constraint::Line {
+            point: at,
+            dir: dir.normalize().extend(0.0),
+        },
+        nudge: 0.0,
+    };
+    let flat = |kind, at: DVec3| Handle {
+        kind,
+        at,
+        constraint: Constraint::Plane {
+            point: at,
+            normal: DVec3::Z,
+        },
+        nudge: 0.0,
+    };
+    match &e.kind {
+        ElementKind::Column(c) => {
+            let (z0, _) = c.span(model);
+            let x = DVec2::from_angle(c.rotation.to_radians());
+            let (w, d) = match c.profile {
+                creabim_core::members::Profile::Rectangle { width, depth } => (width, depth),
+                creabim_core::members::Profile::Round { diameter } => (diameter, diameter),
+            };
+            let mut out = vec![
+                flat(
+                    HandleKind::Rotate,
+                    (c.position + x * (w / 2.0 + 0.35)).extend(z0),
+                ),
+                line(
+                    HandleKind::ColumnSize { depth: false },
+                    (c.position + x * w / 2.0).extend(z0),
+                    x,
+                ),
+            ];
+            if matches!(c.profile, creabim_core::members::Profile::Rectangle { .. }) {
+                out.push(line(
+                    HandleKind::ColumnSize { depth: true },
+                    (c.position + x.perp() * d / 2.0).extend(z0),
+                    x.perp(),
+                ));
+            }
+            out
+        }
+        ElementKind::Stair(s) => {
+            let dir = DVec2::from_angle(s.direction.to_radians());
+            vec![flat(
+                HandleKind::Rotate,
+                (s.start - dir * 0.6).extend(s.base(model)),
+            )]
+        }
+        _ => vec![],
+    }
+}
+
+/// The point a rotate grip turns its element about, in plan.
+fn pivot_of(model: &Model, e: &Element) -> Option<DVec2> {
+    match &e.kind {
+        ElementKind::Object(o) => {
+            let (lo, hi) = creabim_core::objects::type_of(model, e)?.bounds();
+            Some(o.to_plan((lo.truncate() + hi.truncate()) / 2.0))
+        }
+        ElementKind::Column(c) => Some(c.position),
+        ElementKind::Stair(s) => Some(s.start),
+        _ => None,
+    }
+}
+
+/// An object turned `by` degrees about the middle of its footprint.
+pub fn turn_object(model: &Model, e: &mut Element, by: f64) {
+    let pivot = pivot_of(model, e);
+    if let ElementKind::Object(o) = &mut e.kind {
+        let c = pivot.unwrap_or(o.position);
+        let r = DVec2::from_angle(by.to_radians());
+        o.position = c + r.rotate(o.position - c);
+        o.rotation = (o.rotation + by).rem_euclid(360.0);
     }
 }
 
@@ -636,6 +751,42 @@ pub fn apply(
             let by = to - c.min;
             c.min += by;
             c.max += by;
+        }
+        (ElementKind::Wall(w), HandleKind::WallSlide) => {
+            let n = w.direction().perp();
+            let by = n * round(d.truncate().dot(n), step);
+            w.start += by;
+            w.end += by;
+        }
+        (ElementKind::Column(c), HandleKind::ColumnSize { depth }) => {
+            let x = DVec2::from_angle(c.rotation.to_radians());
+            let axis = if depth { x.perp() } else { x };
+            // both sides move: the column stays on its point
+            let by = round(2.0 * d.truncate().dot(axis), step / 5.0);
+            match &mut c.profile {
+                creabim_core::members::Profile::Rectangle { width, depth: dp } => {
+                    let v = if depth { dp } else { width };
+                    *v = (*v + by).max(0.05);
+                }
+                creabim_core::members::Profile::Round { diameter } => {
+                    *diameter = (*diameter + by).max(0.05);
+                }
+            }
+        }
+        (_, HandleKind::Rotate) => {
+            let original = originals.first().ok_or("nothing to turn")?;
+            let c = pivot_of(model, original).ok_or("this doesn't turn")?;
+            let (a0, a1) = (grab.truncate() - c, now.truncate() - c);
+            if a1.length() < 1e-6 {
+                return Err("too close to its middle".into());
+            }
+            let by = round(a0.angle_to(a1).to_degrees(), 5.0);
+            match &mut first.kind {
+                ElementKind::Object(_) => turn_object(model, first, by),
+                ElementKind::Column(col) => col.rotation = (col.rotation + by).rem_euclid(360.0),
+                ElementKind::Stair(s) => s.direction = (s.direction + by).rem_euclid(360.0),
+                _ => return Err("this doesn't turn".into()),
+            }
         }
         (_, HandleKind::Member { i, .. }) => {
             creabim_core::members::drag_grip(model, first, i, grab, now, step)?
@@ -1321,6 +1472,8 @@ pub enum Flip {
     Hand,
     /// The way a section or elevation looks.
     View,
+    /// Turn an object round to face the other way.
+    Object,
 }
 
 impl Flip {
@@ -1330,6 +1483,7 @@ impl Flip {
             Flip::Facing => "Flip facing",
             Flip::Hand => "Flip door hand",
             Flip::View => "Flip view direction",
+            Flip::Object => "Turn it round",
         }
     }
 }
@@ -1361,6 +1515,20 @@ pub fn flip_arrows(model: &Model, id: ElementId) -> Vec<FlipArrow> {
             }
             _ => vec![],
         },
+        Some(ElementKind::Object(o)) => {
+            let e = model.get(id).expect("just found");
+            let Some((lo, hi)) = creabim_core::objects::type_of(model, e).map(|t| t.bounds())
+            else {
+                return vec![];
+            };
+            let z = creabim_core::objects::base_z(model, e).unwrap_or(0.0);
+            let side = o.to_plan(DVec2::new(hi.x + 0.4, (lo.y + hi.y) / 2.0));
+            vec![FlipArrow {
+                flip: Flip::Object,
+                at: side.extend(z),
+                dir: o.facing().normalize_or_zero(),
+            }]
+        }
         Some(ElementKind::Wall(w)) if w.length() > 0.1 => {
             let z = walls::base_z(model, w);
             let n = w.direction().perp();
@@ -1705,7 +1873,9 @@ pub fn interact(
             return true;
         }
         if let (Some(f), true) = (hit, response.clicked()) {
+            let model = doc.model().clone();
             let r = doc.edit(id, f.label(), |e| match (&mut e.kind, f) {
+                (ElementKind::Object(_), Flip::Object) => turn_object(&model, e, 180.0),
                 (ElementKind::Wall(w), Flip::Wall) => walls::flip_wall(w),
                 (ElementKind::Opening(o), Flip::Hand) => walls::flip_hand(o),
                 (ElementKind::Opening(o), _) => walls::flip_facing(o),
@@ -2647,5 +2817,108 @@ mod tests {
         sel.corners = (0..b.len()).map(|i| (Ring::Outline, i)).collect();
         assert!(delete_picked(&mut doc, id, &mut sel).is_err());
         assert!(doc.model().get(id).is_some());
+    }
+
+    fn drag_to(
+        m: &Model,
+        id: ElementId,
+        kind: HandleKind,
+        to: impl Fn(&Handle) -> DVec3,
+    ) -> Element {
+        let h = handles_in(m, id, None, false)
+            .into_iter()
+            .find(|h| h.kind == kind)
+            .unwrap_or_else(|| panic!("no {kind:?}"));
+        let (orig, joined) = originals(m, id, kind);
+        apply(m, &orig, &joined, kind, h.at, to(&h), 0.05).unwrap()[0].clone()
+    }
+
+    #[test]
+    fn a_wall_slides_square_to_itself() {
+        let m = sample_house();
+        let (id, w) = m
+            .iter()
+            .find_map(|e| match &e.kind {
+                ElementKind::Wall(w) => Some((e.id, w.clone())),
+                _ => None,
+            })
+            .unwrap();
+        let n = w.direction().perp();
+        let out = drag_to(&m, id, HandleKind::WallSlide, |h| {
+            h.at + n.extend(0.0) * 0.5
+        });
+        let ElementKind::Wall(s) = &out.kind else {
+            panic!()
+        };
+        assert!(s.start.distance(w.start + n * 0.5) < 1e-9);
+        assert!(s.end.distance(w.end + n * 0.5) < 1e-9);
+        assert!((s.thickness - w.thickness).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_column_turns_and_changes_width_and_depth() {
+        let m = creabim_core::sample::layered_house();
+        let Some(id) = m
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::Column(_)))
+            .map(|e| e.id)
+        else {
+            return;
+        };
+        let ElementKind::Column(c) = &m.get(id).unwrap().kind else {
+            panic!()
+        };
+        // a quarter turn about its point
+        let out = drag_to(&m, id, HandleKind::Rotate, |h| {
+            let r = h.at.truncate() - c.position;
+            (c.position + r.perp()).extend(h.at.z)
+        });
+        let ElementKind::Column(t) = &out.kind else {
+            panic!()
+        };
+        assert!(((t.rotation - c.rotation).rem_euclid(360.0) - 90.0).abs() < 1e-6);
+        let creabim_core::members::Profile::Rectangle { width, .. } = c.profile else {
+            return;
+        };
+        let x = DVec2::from_angle(c.rotation.to_radians());
+        let out = drag_to(&m, id, HandleKind::ColumnSize { depth: false }, |h| {
+            h.at + x.extend(0.0) * 0.05
+        });
+        let ElementKind::Column(t) = &out.kind else {
+            panic!()
+        };
+        let creabim_core::members::Profile::Rectangle { width: w2, .. } = t.profile else {
+            panic!()
+        };
+        assert!((w2 - (width + 0.1)).abs() < 1e-9);
+        assert!(t.position.distance(c.position) < 1e-12);
+    }
+
+    #[test]
+    fn an_object_turns_about_its_middle_and_turns_round() {
+        let m = creabim_core::starter::starter_house();
+        let Some(e) = m
+            .iter()
+            .find(|e| {
+                matches!(e.kind, ElementKind::Object(_))
+                    && creabim_core::objects::type_of(&m, e).is_some()
+            })
+            .cloned()
+        else {
+            return;
+        };
+        let mid = pivot_of(&m, &e).unwrap();
+        let mut turned = e.clone();
+        turn_object(&m, &mut turned, 180.0);
+        // the footprint stays where it was, facing the other way
+        assert!(pivot_of(&m, &turned).unwrap().distance(mid) < 1e-9);
+        let (ElementKind::Object(a), ElementKind::Object(b)) = (&e.kind, &turned.kind) else {
+            panic!()
+        };
+        assert!((a.facing() + b.facing()).length() < 1e-9);
+        assert!(handles(&m, e.id, None)
+            .iter()
+            .any(|h| h.kind == HandleKind::Rotate));
+        assert!(flip_arrows(&m, e.id).iter().any(|f| f.flip == Flip::Object));
     }
 }
