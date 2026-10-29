@@ -9,6 +9,23 @@ use crate::help;
 use crate::ui_model::Item;
 use serde_json::{json, Value};
 
+/// Below this width a drop-down's label goes above it instead of beside it.
+pub(crate) const NARROW: f32 = 250.0;
+
+/// A labelled drop-down for a panel that can be dragged narrow: the label
+/// beside the box while there is room, on its own line above once there
+/// is not, so neither is squeezed into a column of single letters. Keeps
+/// the same id either way, so an open list stays open.
+pub(crate) fn combo(ui: &mut egui::Ui, label: &str) -> egui::ComboBox {
+    if ui.available_width() >= NARROW {
+        egui::ComboBox::from_label(label)
+    } else {
+        ui.label(label);
+        let w = ui.available_width().min(ui.spacing().combo_width);
+        egui::ComboBox::from_id_salt(label).width(w)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct HelpState {
     pub open: bool,

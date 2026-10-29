@@ -274,7 +274,7 @@ impl CreaBimApp {
             self.drafting.style = list.first().map(|l| l.0);
         }
         ui.horizontal(|ui| {
-            egui::ComboBox::from_label("Show")
+            crate::app::helpui::combo(ui, "Show")
                 .selected_text(self.drafting.filter.label())
                 .show_ui(ui, |ui| {
                     for k in StyleUse::ALL {
@@ -614,7 +614,7 @@ impl CreaBimApp {
                 self.report(r, "Template renamed.");
             }
         });
-        egui::ComboBox::from_label("Sits in the")
+        crate::app::helpui::combo(ui, "Sits in the")
             .selected_text(t.corner.label())
             .show_ui(ui, |ui| {
                 for c in Corner::ALL {
@@ -845,7 +845,7 @@ impl CreaBimApp {
             .and_then(|t| list.iter().find(|l| l.0 == t))
             .map_or("Built-in".to_string(), |l| l.1.clone());
         ui.horizontal(|ui| {
-            egui::ComboBox::from_label("Title block")
+            crate::app::helpui::combo(ui, "Title block")
                 .selected_text(now)
                 .show_ui(ui, |ui| {
                     if ui

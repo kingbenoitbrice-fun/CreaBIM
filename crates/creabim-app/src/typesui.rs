@@ -683,9 +683,9 @@ impl CreaBimApp {
         let mut asks = vec![];
         let mut chosen = current;
         ui.horizontal(|ui| {
-            egui::ComboBox::from_label("Type")
+            crate::app::helpui::combo(ui, "Type")
                 .selected_text(shown)
-                .width(180.0)
+                .width(ui.available_width().min(180.0))
                 .show_ui(ui, |ui| {
                     // an object is its type: it can change type, not lose it
                     if cat != TypeCategory::Object {

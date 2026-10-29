@@ -1298,7 +1298,7 @@ impl CreaBimApp {
             .collect();
         let current = grids::group_of(model, g).map(|(e, _)| e.name.clone());
         let mut pick = None;
-        egui::ComboBox::from_label("Grid system")
+        crate::app::helpui::combo(ui, "Grid system")
             .selected_text(current.unwrap_or_else(|| "None".into()))
             .show_ui(ui, |ui| {
                 if ui.selectable_label(g.group.is_none(), "None").clicked() {

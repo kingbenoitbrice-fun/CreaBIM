@@ -34,7 +34,7 @@ mod editui;
 #[path = "gridvis.rs"]
 mod gridvis;
 #[path = "helpui.rs"]
-mod helpui;
+pub(crate) mod helpui;
 #[path = "levelcopy.rs"]
 mod levelcopy;
 #[path = "levelsui.rs"]
@@ -3557,7 +3557,7 @@ impl CreaBimApp {
             .to_string();
         let mut changed = false;
         let mut create = false;
-        egui::ComboBox::from_label("Material")
+        crate::app::helpui::combo(ui, "Material")
             .selected_text(name)
             .show_ui(ui, |ui| {
                 changed |= ui.selectable_value(current, None, "By type").changed();
@@ -4094,7 +4094,7 @@ impl CreaBimApp {
                 }
                 ElementKind::View(v) if matches!(v.kind, ViewKind::Schedule { .. }) => {
                     if let ViewKind::Schedule { category, by_type } = &mut v.kind {
-                        egui::ComboBox::from_label("Lists")
+                        crate::app::helpui::combo(ui, "Lists")
                             .selected_text(category.label())
                             .show_ui(ui, |ui| {
                                 for c in ScheduleCategory::ALL {
@@ -4132,7 +4132,7 @@ impl CreaBimApp {
                                 .iter()
                                 .find(|(u, _)| *u == v.underlay)
                                 .map_or("None".to_string(), |(_, l)| l.clone());
-                            egui::ComboBox::from_label("Underlay")
+                            crate::app::helpui::combo(ui, "Underlay")
                                 .selected_text(current)
                                 .show_ui(ui, |ui| {
                                     for (u, l) in &choices {
@@ -4220,7 +4220,7 @@ impl CreaBimApp {
                         }
                     });
                     let current = sh.size_name().unwrap_or("Custom");
-                    egui::ComboBox::from_label("Paper")
+                    crate::app::helpui::combo(ui, "Paper")
                         .selected_text(current)
                         .show_ui(ui, |ui| {
                             for (name, w, h) in Sheet::SIZES {
@@ -4320,7 +4320,7 @@ impl CreaBimApp {
                         id.and_then(|i| levels.iter().find(|l| l.0 == i))
                             .map_or("One storey up".to_string(), |l| l.1.clone())
                     };
-                    egui::ComboBox::from_label("Base level")
+                    crate::app::helpui::combo(ui, "Base level")
                         .selected_text(name(Some(s.level)))
                         .show_ui(ui, |ui| {
                             for (lid, n) in &levels {
@@ -4332,7 +4332,7 @@ impl CreaBimApp {
                     if num(ui, "Base offset", &mut s.base_offset, -100.0, 100.0) {
                         label = "Shaft base"
                     }
-                    egui::ComboBox::from_label("Top level")
+                    crate::app::helpui::combo(ui, "Top level")
                         .selected_text(name(s.top_level))
                         .show_ui(ui, |ui| {
                             if ui
@@ -4414,7 +4414,7 @@ impl CreaBimApp {
                         label = "Move dimension line"
                     }
                     if d.kind == creabim_core::DimensionKind::Linear {
-                        egui::ComboBox::from_label("Measures")
+                        crate::app::helpui::combo(ui, "Measures")
                             .selected_text(d.axis.label())
                             .show_ui(ui, |ui| {
                                 for a in creabim_core::DimAxis::ALL {
@@ -4565,7 +4565,7 @@ impl CreaBimApp {
                     }
                 }
                 ElementKind::FreeMesh(m) => {
-                    egui::ComboBox::from_label("IFC class")
+                    crate::app::helpui::combo(ui, "IFC class")
                         .selected_text(m.ifc_class.clone())
                         .show_ui(ui, |ui| {
                             for c in FREE_MESH_CLASSES {
