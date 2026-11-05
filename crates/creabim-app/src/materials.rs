@@ -298,7 +298,7 @@ pub(super) fn material_fields(ui: &mut egui::Ui, m: &mut Material) -> &'static s
                     });
                 if m.rate.is_some()
                     && ui
-                        .small_button("✕")
+                        .small_button("Clear")
                         .on_hover_text("No rate: leave it out of the priced total")
                         .clicked()
                 {

@@ -31,7 +31,11 @@ The screenshots were taken in the running app on a small L corner cut out of the
 | 2 | Align, mirror, offset, move, rotate on the face | **Done** (below): new Mirror and Offset commands, in plan and on a face; Move, Rotate and Align follow a face workplane; push/pull on an extrusion drawn on a face. |
 | 3 (3.6) | Edge palette on a selected element's outline edge, in 3D and plan: Offset edge, Offset all, Insert point | **Done** (below). |
 | 3 (3.6) | Drag with snaps, or type a distance | **Done** (below). |
-| 4–7 | | Not started. |
+| 4 (5.1) | Schedules to Excel: one sheet per category plus a summary | **Done** (below). |
+| 4 (5.2) | Quantities per assembly layer (m², m³) | **Done** (below). |
+| 4 (5.2) | A rate per unit on each material, entered by the user | **Done** (below). |
+| 4 (5.2) | A live Take-off pane, with totals by material and by level | **Done** (below), as a new kind of schedule. |
+| 5–7 | | Not started. |
 
 ## 1. Layer editing
 
@@ -238,3 +242,52 @@ Also in this round: Mirror and Offset no longer use Ctrl for two things. Ctrl on
 - A wall has no outline edges here. Its faces push and pull with Move › Face, and its ends with their grips.
 - The palette uses words, not icons. Icons wait for the owner's OK.
 
+## 4. Take-off
+
+Shots 40 to 44 are the starter house with rates typed on 12 of its 20 materials. Shots 45 to 48 are the Excel file it exports, opened in a spreadsheet program and printed.
+
+**Excel export.** *File › Export › Schedules to Excel (.xlsx)*, or **Export Excel** beside *Export CSV* on any schedule, writes one workbook. It holds a *Summary*, a sheet for each schedule that lists something, then *Take-off* and *Take-off lines*. Numbers go in as numbers, with their unit in the column heading ("Width (mm)", "Area (m²)"), so the spreadsheet can sum and sort them. Text columns, such as room numbers like 0.10, stay text. Each sheet prints landscape, one page wide, with its headings repeated. On the command line, `creabim xlsx <model> <out.xlsx>` writes the same file.
+
+**Quantities by layer.** Walls, slabs, roofs, ceilings, columns, beams and footings each give a line per material:
+
+- an element with an assembly gives a line per layer, leaving out an air gap with no material;
+- anything else gives one line.
+
+Each line has an area: a wall's face less its doors and windows, a slab's or ceiling's plan area less holes, or a roof's slope area. It also has a volume (area × layer thickness, or section × length), a length for walls, members and strip footings, and a count.
+
+**Rates.** A material has a *Rate*: a number per m², m³, m or piece, in the Materials window or in the take-off table. *Clear* takes it away. The rate is saved with the material and goes through the JSON format (`rate`, `rate_per`).
+
+**The Take-off pane.** *New schedule › Take-off* opens a table read live from the model, like the other schedules. It has a row per material with its element count, area, volume, length, rate and cost, and the priced total at the bottom. *Group by level* puts each level's materials under a heading with that level's totals. A click on a material's name selects everything made of it. The rate and its unit can be edited in the table.
+
+![File menu, Schedules to Excel](40-file-export-excel.png)
+
+![Take-off by material, priced](41-takeoff-by-material.png)
+
+![Take-off grouped by level](42-takeoff-by-level.png)
+
+![A click on Concrete selects the 19 elements made of it](43-takeoff-select-material.png)
+
+![A rate in the Materials window](44-material-rate.png)
+
+![The Take-off sheet in Excel](45-excel-takeoff.png)
+
+![The Take-off lines sheet: every element's materials, layer by layer](46-excel-takeoff-lines.png)
+
+![The Summary sheet](47-excel-summary.png)
+
+![The wall schedule sheet, numbers as numbers](48-excel-wall-schedule.png)
+
+### Acceptance
+
+| Check | Result |
+| --- | --- |
+| The workbook opens in a spreadsheet program, with a summary and one sheet per listed schedule | Pass (45 to 48; read back with a second program, and test `the_workbook_has_a_summary_and_a_sheet_per_listed_schedule`). |
+| A layered wall gives one line per layer, each covering the face, with its own volume | Pass (46; test `a_layered_wall_gives_a_line_per_layer_whose_volumes_add_up`). |
+| A rate prices its material, and the levels' costs add up to the total | Pass (41, 42; test `rates_cost_out_totals_by_material_and_by_level`). |
+| A rate is saved, and a material without one saves as before | Pass (test `a_rate_survives_saving_and_a_material_without_one_saves_as_before`; JSON format round trip). |
+
+**Gaps still open** (in [KNOWN_GAPS](../../KNOWN_GAPS.md)):
+
+- Stairs, railings, parts (extrusions and sweeps), masses, doors, windows and placed objects are not in the take-off yet. Objects are counted in the Furniture and Fixtures schedules.
+- A wall's area is its length × height less openings. It is not trimmed where walls meet, and a layered wall's layers all take the same face area.
+- Rates have no currency symbol, and there is one rate per material, not per element type or per layer use.

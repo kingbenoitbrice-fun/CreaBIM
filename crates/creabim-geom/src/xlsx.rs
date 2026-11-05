@@ -5,7 +5,7 @@
 
 use crate::schedule::{self, Schedule};
 use creabim_core::{takeoff, ElementId, Model, ScheduleCategory};
-use rust_xlsxwriter::{Format, FormatBorder, Workbook, Worksheet, XlsxError};
+use rust_xlsxwriter::{Format, FormatAlign, FormatBorder, Workbook, Worksheet, XlsxError};
 
 /// A cell read back from a schedule's text: a number with the unit it was
 /// written in, or text.
@@ -141,6 +141,12 @@ fn title(s: &Schedule) -> String {
     }
 }
 
+/// Printed landscape, as wide as one page, as many pages down as it takes.
+fn print_setup(ws: &mut Worksheet) {
+    ws.set_landscape();
+    ws.set_print_fit_to_pages(1, 0);
+}
+
 fn write_cell(
     ws: &mut Worksheet,
     row: u32,
@@ -180,8 +186,14 @@ fn write_schedule(
     let total = Format::new().set_bold().set_border_top(FormatBorder::Thin);
     ws.write_string_with_format(0, 0, title, &Format::new().set_bold().set_font_size(14))?;
     let heads = headings(model, s);
+    let head_num = head.clone().set_align(FormatAlign::Right);
     for (c, h) in heads.iter().enumerate() {
-        ws.write_string_with_format(2, c as u16, h, &head)?;
+        let f = if s.columns[c].numeric {
+            &head_num
+        } else {
+            &head
+        };
+        ws.write_string_with_format(2, c as u16, h, f)?;
     }
     let mut row = 3;
     for r in &s.rows {
@@ -212,6 +224,8 @@ fn write_schedule(
         ws.set_column_width(c as u16, (widest as f64 + 2.0).clamp(8.0, 48.0))?;
     }
     ws.set_freeze_panes(3, 0)?;
+    print_setup(ws);
+    ws.set_repeat_rows(2, 2)?;
     Ok(())
 }
 
@@ -239,24 +253,41 @@ fn build(model: &Model, project: &str) -> Result<Vec<u8>, XlsxError> {
     {
         let ws = book.add_worksheet();
         ws.set_name("Summary")?;
+        print_setup(ws);
         let head = Format::new()
             .set_bold()
             .set_background_color("E8ECE6")
             .set_border_bottom(FormatBorder::Thin);
         ws.write_string_with_format(0, 0, project, &Format::new().set_bold().set_font_size(14))?;
         ws.write_string(1, 0, "Schedules, read from the model when exported")?;
-        for (c, h) in ["Schedule", "Listed", "Totals"].iter().enumerate() {
+        for (c, h) in ["Schedule", "Totals"].iter().enumerate() {
             ws.write_string_with_format(3, c as u16, *h, &head)?;
         }
-        for (i, s) in all.iter().enumerate() {
-            let r = 4 + i as u32;
+        let mut r = 4;
+        for s in &all {
             ws.write_string(r, 0, s.category.label())?;
-            ws.write_number(r, 1, s.listed as f64)?;
-            ws.write_string(r, 2, totals_line(model, s))?;
+            ws.write_string(r, 1, totals_line(model, s))?;
+            r += 1;
+        }
+        let lines = takeoff::lines(model);
+        let cost = takeoff::total_cost(model, &lines);
+        if !lines.is_empty() {
+            let priced = takeoff::by_material(model, &lines)
+                .iter()
+                .filter(|t| t.cost.is_some())
+                .count();
+            ws.write_string(r, 0, "Take-off")?;
+            ws.write_string(
+                r,
+                1,
+                format!(
+                    "{} materials · {priced} priced · Cost {cost:.2}",
+                    takeoff::by_material(model, &lines).len()
+                ),
+            )?;
         }
         ws.set_column_width(0, 22)?;
-        ws.set_column_width(1, 10)?;
-        ws.set_column_width(2, 60)?;
+        ws.set_column_width(1, 64)?;
     }
     for s in &all {
         let ws = book.add_worksheet();
@@ -284,6 +315,7 @@ fn write_takeoff(
     lines: &[takeoff::Line],
 ) -> Result<(), XlsxError> {
     ws.set_name("Take-off")?;
+    print_setup(ws);
     let head = Format::new()
         .set_bold()
         .set_background_color("E8ECE6")
@@ -293,6 +325,7 @@ fn write_takeoff(
         .set_bold()
         .set_border_top(FormatBorder::Thin)
         .set_num_format("0.00");
+    let head_num = head.clone().set_align(FormatAlign::Right);
     let bold = Format::new().set_bold().set_font_size(14);
     ws.write_string_with_format(0, 0, "Take-off by material", &bold)?;
     let heads = [
@@ -308,7 +341,13 @@ fn write_takeoff(
     let write_heads = |ws: &mut Worksheet, row: u32, first: &str| -> Result<(), XlsxError> {
         for (c, h) in heads.iter().enumerate() {
             let h = if c == 0 { first } else { h };
-            ws.write_string_with_format(row, c as u16, h, &head)?;
+            // numbers' headings sit over them, on the right
+            let f = if (1..=5).contains(&c) || c == 7 {
+                &head_num
+            } else {
+                &head
+            };
+            ws.write_string_with_format(row, c as u16, h, f)?;
         }
         Ok(())
     };
@@ -363,6 +402,8 @@ fn write_takeoff_lines(
     lines: &[takeoff::Line],
 ) -> Result<(), XlsxError> {
     ws.set_name("Take-off lines")?;
+    print_setup(ws);
+    ws.set_repeat_rows(0, 0)?;
     let head = Format::new()
         .set_bold()
         .set_background_color("E8ECE6")
@@ -380,7 +421,12 @@ fn write_takeoff_lines(
         "Length (m)",
     ];
     for (c, h) in heads.iter().enumerate() {
-        ws.write_string_with_format(0, c as u16, *h, &head)?;
+        let f = if c >= 5 {
+            head.clone().set_align(FormatAlign::Right)
+        } else {
+            head.clone()
+        };
+        ws.write_string_with_format(0, c as u16, *h, &f)?;
     }
     for (i, l) in lines.iter().enumerate() {
         let r = 1 + i as u32;

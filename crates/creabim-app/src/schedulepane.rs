@@ -70,27 +70,41 @@ pub fn show(
     // the fade at a scrolled edge takes the pane's dark colour, not the paper's
     ui.spacing_mut().scroll.fade.strength = 0.0;
     ui.add_space(20.0);
-    let noun = category.label().to_lowercase();
+    let takeoff = category == ScheduleCategory::Materials;
+    let noun = if takeoff {
+        "materials".to_string()
+    } else {
+        category.label().to_lowercase()
+    };
     let count = format!(
-        "{} {} · read live from the model · edit a cell to change it",
+        "{} {} · read live from the model · {}",
         listed,
         if listed == 1 {
             noun.trim_end_matches('s').to_string()
         } else {
             noun.clone()
+        },
+        if takeoff {
+            "set a material's rate in the table to price it"
+        } else {
+            "edit a cell to change it"
         }
     );
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(format!(
-                "{} schedule",
-                // "Walls" reads "Wall schedule"; "Columns and beams" stays as is
-                if category.label().contains(' ') {
-                    category.label()
-                } else {
-                    category.label().trim_end_matches('s')
-                }
-            ))
+            egui::RichText::new(if takeoff {
+                "Take-off".to_string()
+            } else {
+                format!(
+                    "{} schedule",
+                    // "Walls" reads "Wall schedule"; "Columns and beams" stays as is
+                    if category.label().contains(' ') {
+                        category.label()
+                    } else {
+                        category.label().trim_end_matches('s')
+                    }
+                )
+            })
             .size(17.0)
             .strong()
             .color(INK),
@@ -155,11 +169,13 @@ pub fn show(
             let editor: f32 = match c.field {
                 Some(f) if f.is_length() => 64.0,
                 Some(Field::Name) | Some(Field::Material) => 120.0,
+                Some(Field::Rate) => 64.0,
+                Some(Field::RatePer) => 70.0,
                 _ => 0.0,
             };
             cells.max(editor)
                 + 2.0 * PAD
-                + if c.field == Some(Field::Material) {
+                + if matches!(c.field, Some(Field::Material) | Some(Field::RatePer)) {
                     22.0
                 } else {
                     0.0

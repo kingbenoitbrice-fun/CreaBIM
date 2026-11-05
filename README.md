@@ -33,7 +33,8 @@ CreaBIM opens on the **Maple Lane House**, a contemporary two-storey family hous
 - **Sheets with live views:** place plans, sections, elevations and 3D views on A0 to A4 sheets with a title block. Views on a sheet are generated from the current model, so they never go stale. Drag a view to move it; double-click it to work on the model right there, with the same tools as the view itself (orbit a 3D view by dragging). *File → Export sheets as PDF* writes every sheet as a vector PDF page.
 - **Clean joins and materials:** wall corners are mitred and walls meeting another wall's side are trimmed to its face, in 3D, plans, sections and IFC. Walls cut through the slabs that sit in them. Each material has its own hatch pattern and colour, used for cut faces, shaded views and 3D, and exported to IFC.
 - **Dimensions and tags:** draw dimensions that snap to wall corners, openings and levels. They stay attached, so moving a door updates its dimensions. Select a wall, grid line, door or column to see temporary dimensions to its neighbours: click one and type to move it there, or lock it with the padlock to hold the spacing. Tag doors and windows with their marks (D01, W01) and walls with their material and thickness, one at a time or all at once.
-- **Schedules:** door, window, wall, slab, structure, furniture and fixture schedules are views too. Edit sizes and materials right in the table, place them on sheets and export them as CSV.
+- **Schedules:** door, window, wall, slab, structure, furniture and fixture schedules are views too. Edit sizes and materials right in the table, place them on sheets and export them as CSV or to Excel.
+- **Take-off:** quantities by material and assembly layer (area, volume, length, pieces), priced by a rate on each material, in a live Take-off table and in the Excel export.
 - **Shaded and cropped views:** 3D views and elevations can be shaded in material colours, on screen, on sheets and in the PDF. Crop any view on a sheet by dragging its crop frame.
 - **Sections and elevations generated from the model:** cut walls, slabs and openings are drawn heavy; what lies beyond is projected with hidden lines removed. Level datums are labelled. Section and elevation marks appear in plans. Draw new ones with the *Section* and *Elevation* tools, in plans or inside another section, and drag a selected section line by its ends or middle. Walls, doors, windows, slabs and masses can be drawn in sections and elevations too. Progress screenshots are in [docs/evolution](docs/evolution).
 - **BIM elements:** levels, grids, walls, curtain walls, slabs, roofs, stairs, railings, shafts, columns, beams and footings. Doors, windows and openings are hosted by walls and cut real openings. Walls, slabs and roofs can be layered assemblies, and most elements can share types.
@@ -87,6 +88,7 @@ cargo run -p creabim-cli -- view house.creabim.json "Section A-A" a.svg
 cargo run -p creabim-cli -- sheets house.creabim.json            # list sheets
 cargo run -p creabim-cli -- pdf house.creabim.json house.pdf      # every sheet, one PDF
 cargo run -p creabim-cli -- schedule house.creabim.json windows w.csv  # doors, windows, walls or slabs
+cargo run -p creabim-cli -- xlsx house.creabim.json house.xlsx  # every schedule and the take-off
 python3 tools/validate_ifc.py house.ifc                          # needs: pip install ifcopenshell pytest
 # a whole model from a JSON description any script can write (docs/json-format.md)
 cargo run -p creabim-cli -- build examples/small-house.json small-house.creabim
@@ -110,7 +112,8 @@ cargo run -p creabim-cli -- export-json house.creabim house.json  # and back to 
 | Orbit a 3D view | Drag in it, on its own or on a sheet |
 | Dimension | Dimension tool, click two points (they snap to corners and levels), then a third for the offset. Drag a selected dimension to move its line |
 | Tag | Tag tool, click a door, window or wall. *Tag doors and windows* tags every untagged one in the view. Drag a tag to move it |
-| Schedule | *File → New schedule*, then edit cells in the table. *Export CSV* saves it |
+| Schedule | *File → New schedule*, then edit cells in the table. *Export CSV* saves it, *Export Excel* saves every schedule in one workbook |
+| Take-off | *File → New schedule → Take-off*; give materials a *Rate* in the Materials window or in the table |
 | Crop a view on a sheet | Select the viewport, drag the dashed frame's edge handles, or set the crop in Properties |
 | Materials | Select a material in the model list to change its hatch and colour; pick a wall's or slab's material in Properties |
 | Freeform mass | Mass tool, click to place; click a face in 3D, then E to extrude |

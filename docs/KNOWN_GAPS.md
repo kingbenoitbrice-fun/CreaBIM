@@ -55,8 +55,7 @@ Every item of *CreaBIM brief 02: consolidated*, approved by the owner on 2026-11
 | 3.5 | Drawing on a face and mirror, offset, move, rotate, align and push/pull there are done (Phase 4 item 2). Still to do: room outline and detail region on a face; the plan's 2D tools on a face; a mirrored object or asymmetric column keeps its own shape (only position and facing mirror); proper icons for Mirror and Offset (owner's OK); stray grey slivers in 3D while the workplane is on a face. | 4 | S | MU01-12 |
 | 3.6 | Edge palette done (offset edge, offset all, insert point, in 3D and plan). Still to do: icons for the palette (owner's OK); walls have no outline edges there. | 4 | S | B01-7 |
 | 3.7 | Layer editing is in (Phase 4 item 1). Left over: a layer run on by hand into the wall it meets overlaps that wall's layers in plan (Check layer joins lists it); a grip drag's preview leaves out the joins around it; thin layers' grips crowd together in plan at small scales; corner presets don't cover tees or three-way joints; a slab's arc edge keeps its bulge ratio when its layer moves; adding or removing an outline corner shifts the layer edits on the edges after it; the open JSON format doesn't carry layer ends, layer edges or corner presets yet (the project file does); an IFC read back takes a wall's layers from its layer set, so its parts, and the edits they show, are not read; Check layer joins covers wall ends only, not slab and roof edges. | 4 | S | MU08-01 |
-| 5.1 | Schedules don't export to Excel. | 4 | M | B01 |
-| 5.2 | No quantities per assembly layer, rates per material or Take-off pane. | 4 | L | B01 |
+| 5.2 | Take-off leaves out stairs, railings, parts, masses, doors, windows and objects; a wall's area isn't trimmed at joins; one rate per material, no currency. | 4 | M | B01 |
 | 5.3 | No image or PDF references with calibration. | 4 | L | B01 |
 | 5.4 | No profile library for beams and columns as sweep presets. | 4 | L | B01 |
 | 5.5 | No curved walls. | 4 | L | B01 |
@@ -346,6 +345,11 @@ Gaps reported by work that is still a pull request go here until it merges, then
 ---
 
 ## Recently fixed
+
+**In Brief 02, Phase 4, item 4, take-off (`claude/project-thread-2a2eta`, 2026-11-05;** screenshots in [evolution/brief02-phase4](evolution/brief02-phase4)**):**
+
+- Schedules export to Excel (5.1): *File › Export › Schedules to Excel*, *Export Excel* on a schedule, or `creabim xlsx`. The workbook has a summary, a sheet for each schedule with numbers as numbers, and Take-off sheets.
+- Quantities per assembly layer, a rate per material (per m², m³, m or piece) and a live Take-off schedule with totals by material and by level (5.2).
 
 **Help pictures (`claude/project-thread-2a2eta`, 2026-11-05):**
 
