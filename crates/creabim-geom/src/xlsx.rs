@@ -4,7 +4,7 @@
 //! sorting of a spreadsheet work on them.
 
 use crate::schedule::{self, Schedule};
-use creabim_core::{Model, ScheduleCategory};
+use creabim_core::{takeoff, ElementId, Model, ScheduleCategory};
 use rust_xlsxwriter::{Format, FormatBorder, Workbook, Worksheet, XlsxError};
 
 /// A cell read back from a schedule's text: a number with the unit it was
@@ -94,7 +94,7 @@ fn units_of(model: &Model, s: &Schedule) -> Vec<Option<String>> {
                     }
                 }
             }
-            let unit = match seen.flatten() {
+            match seen.flatten() {
                 Some(u) if same => Some(u),
                 // metric lengths are written without their unit
                 None if any
@@ -106,8 +106,7 @@ fn units_of(model: &Model, s: &Schedule) -> Vec<Option<String>> {
                     Some(units.length.symbol().to_string())
                 }
                 _ => None,
-            };
-            unit
+            }
         })
         .collect()
 }
@@ -220,6 +219,8 @@ fn write_schedule(
 pub fn schedules(model: &Model) -> Vec<Schedule> {
     ScheduleCategory::ALL
         .iter()
+        // the take-off has sheets of its own
+        .filter(|c| **c != ScheduleCategory::Materials)
         .map(|c| schedule::schedule(model, *c))
         .filter(|s| !s.rows.is_empty())
         .collect()
@@ -262,7 +263,147 @@ fn build(model: &Model, project: &str) -> Result<Vec<u8>, XlsxError> {
         ws.set_name(sheet_name(s.category.label()))?;
         write_schedule(ws, model, s, &title(s))?;
     }
+    let lines = takeoff::lines(model);
+    if !lines.is_empty() {
+        write_takeoff(book.add_worksheet(), model, &lines)?;
+        write_takeoff_lines(book.add_worksheet(), model, &lines)?;
+    }
     book.save_to_buffer()
+}
+
+fn name_of(model: &Model, id: Option<ElementId>, none: &str) -> String {
+    id.and_then(|id| model.get(id))
+        .map_or_else(|| none.to_string(), |e| e.name.clone())
+}
+
+/// The *Take-off* sheet: totals by material, priced where a material has a
+/// rate, then totals by level.
+fn write_takeoff(
+    ws: &mut Worksheet,
+    model: &Model,
+    lines: &[takeoff::Line],
+) -> Result<(), XlsxError> {
+    ws.set_name("Take-off")?;
+    let head = Format::new()
+        .set_bold()
+        .set_background_color("E8ECE6")
+        .set_border_bottom(FormatBorder::Thin);
+    let two = Format::new().set_num_format("0.00");
+    let total = Format::new()
+        .set_bold()
+        .set_border_top(FormatBorder::Thin)
+        .set_num_format("0.00");
+    let bold = Format::new().set_bold().set_font_size(14);
+    ws.write_string_with_format(0, 0, "Take-off by material", &bold)?;
+    let heads = [
+        "Material",
+        "Elements",
+        "Area (m²)",
+        "Volume (m³)",
+        "Length (m)",
+        "Rate",
+        "Per",
+        "Cost",
+    ];
+    let write_heads = |ws: &mut Worksheet, row: u32, first: &str| -> Result<(), XlsxError> {
+        for (c, h) in heads.iter().enumerate() {
+            let h = if c == 0 { first } else { h };
+            ws.write_string_with_format(row, c as u16, h, &head)?;
+        }
+        Ok(())
+    };
+    write_heads(ws, 2, "Material")?;
+    let mut row = 3;
+    let write_total = |ws: &mut Worksheet,
+                       row: u32,
+                       name: &str,
+                       t: &takeoff::Total,
+                       f: &Format|
+     -> Result<(), XlsxError> {
+        ws.write_string(row, 0, name)?;
+        ws.write_number(row, 1, t.elements as f64)?;
+        ws.write_number_with_format(row, 2, t.quantity.area, f)?;
+        ws.write_number_with_format(row, 3, t.quantity.volume, f)?;
+        ws.write_number_with_format(row, 4, t.quantity.length, f)?;
+        if let Some(r) = t.rate {
+            ws.write_number_with_format(row, 5, r.amount, f)?;
+            ws.write_string(row, 6, r.per.label())?;
+        }
+        if let Some(c) = t.cost {
+            ws.write_number_with_format(row, 7, c, f)?;
+        }
+        Ok(())
+    };
+    for t in takeoff::by_material(model, lines) {
+        write_total(ws, row, &name_of(model, t.key, "No material"), &t, &two)?;
+        row += 1;
+    }
+    ws.write_string_with_format(row, 0, "Priced total", &total)?;
+    ws.write_number_with_format(row, 7, takeoff::total_cost(model, lines), &total)?;
+    row += 3;
+    ws.write_string_with_format(row, 0, "Take-off by level", &bold)?;
+    row += 2;
+    write_heads(ws, row, "Level")?;
+    row += 1;
+    for t in takeoff::by_level(model, lines) {
+        write_total(ws, row, &name_of(model, t.key, "No level"), &t, &two)?;
+        row += 1;
+    }
+    ws.set_column_width(0, 34)?;
+    for c in 1..8 {
+        ws.set_column_width(c, 13)?;
+    }
+    Ok(())
+}
+
+/// The *Take-off lines* sheet: every element's materials, layer by layer.
+fn write_takeoff_lines(
+    ws: &mut Worksheet,
+    model: &Model,
+    lines: &[takeoff::Line],
+) -> Result<(), XlsxError> {
+    ws.set_name("Take-off lines")?;
+    let head = Format::new()
+        .set_bold()
+        .set_background_color("E8ECE6")
+        .set_border_bottom(FormatBorder::Thin);
+    let two = Format::new().set_num_format("0.00");
+    let heads = [
+        "Element",
+        "Category",
+        "Level",
+        "Layer",
+        "Material",
+        "Thickness (mm)",
+        "Area (m²)",
+        "Volume (m³)",
+        "Length (m)",
+    ];
+    for (c, h) in heads.iter().enumerate() {
+        ws.write_string_with_format(0, c as u16, *h, &head)?;
+    }
+    for (i, l) in lines.iter().enumerate() {
+        let r = 1 + i as u32;
+        ws.write_string(r, 0, name_of(model, Some(l.element), ""))?;
+        ws.write_string(r, 1, l.category)?;
+        ws.write_string(r, 2, name_of(model, l.level, ""))?;
+        if let Some((n, f)) = l.layer {
+            ws.write_string(r, 3, format!("{} {}", n + 1, f.label()))?;
+        }
+        ws.write_string(r, 4, name_of(model, l.material, "-"))?;
+        if l.thickness > 0.0 {
+            ws.write_number(r, 5, (l.thickness * 1000.0 * 10.0).round() / 10.0)?;
+        }
+        ws.write_number_with_format(r, 6, l.quantity.area, &two)?;
+        ws.write_number_with_format(r, 7, l.quantity.volume, &two)?;
+        ws.write_number_with_format(r, 8, l.quantity.length, &two)?;
+    }
+    for (c, w) in [28, 12, 16, 16, 30, 15, 12, 12, 12].iter().enumerate() {
+        ws.set_column_width(c as u16, *w)?;
+    }
+    ws.set_freeze_panes(1, 0)?;
+    ws.autofilter(0, 0, lines.len() as u32, heads.len() as u16 - 1)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -300,7 +441,8 @@ mod tests {
         // local header and in the central directory)
         let part = b"xl/worksheets/sheet";
         let parts = bytes.windows(part.len()).filter(|w| w == part).count();
-        assert_eq!(parts, 2 * (1 + all.len()));
+        // and the take-off's two sheets
+        assert_eq!(parts, 2 * (1 + all.len() + 2));
         let doors = all
             .iter()
             .find(|s| s.category == ScheduleCategory::Doors)

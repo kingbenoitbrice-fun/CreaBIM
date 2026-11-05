@@ -77,6 +77,7 @@ impl LibraryEntry {
             metallic: self.metallic,
             opacity: self.opacity,
             pattern: None,
+            rate: None,
         }
     }
 

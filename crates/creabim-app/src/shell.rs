@@ -281,6 +281,7 @@ fn schedule_icon(c: ScheduleCategory) -> &'static str {
         ScheduleCategory::Furniture => "sofa",
         ScheduleCategory::Fixtures => "fixtures",
         ScheduleCategory::Rooms => "room",
+        ScheduleCategory::Materials => "table-2",
     }
 }
 

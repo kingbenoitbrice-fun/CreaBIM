@@ -4457,13 +4457,24 @@ impl CreaBimApp {
                                     }
                                 }
                             });
-                        if crate::props::switch(ui, by_type, "Group by type")
-                            .on_hover_text(
-                                "List the rows under a heading per element type, with its count.",
+                        let (what, hint, undo) = if *category == ScheduleCategory::Materials {
+                            (
+                                "Group by level",
+                                "List each level's materials under a heading with its totals.",
+                                "Group take-off by level",
                             )
+                        } else {
+                            (
+                                "Group by type",
+                                "List the rows under a heading per element type, with its count.",
+                                "Group schedule by type",
+                            )
+                        };
+                        if crate::props::switch(ui, by_type, what)
+                            .on_hover_text(hint)
                             .changed()
                         {
-                            label = "Group schedule by type"
+                            label = undo
                         }
                     }
                     if self.active_view != Some(id) && ui.button("Open this schedule").clicked() {

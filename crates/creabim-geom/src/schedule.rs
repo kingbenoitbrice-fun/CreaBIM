@@ -17,6 +17,10 @@ pub enum Field {
     Thickness,
     WallHeight,
     Material,
+    /// A material's take-off rate (a plain number, not a length).
+    Rate,
+    /// What a material's rate is priced per.
+    RatePer,
 }
 
 impl Field {
@@ -117,6 +121,9 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
 /// The schedule of one category; `by_type` groups the rows by element
 /// type, each group under a heading row naming the type and its count.
 pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> Schedule {
+    if category == ScheduleCategory::Materials {
+        return takeoff_schedule(model, by_type);
+    }
     let units = model.units();
     let mm = |v: f64| units.dimension(v);
     let area = |v: f64| units.area(v);
@@ -461,6 +468,8 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
                 ],
             )
         }
+        // answered above, before the element schedules
+        ScheduleCategory::Materials => unreachable!("the take-off is built on its own"),
     };
     // marks sort as text (D01 < D02); walls and slabs by level, then model order
     rows.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
@@ -544,6 +553,100 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
         rows,
         totals,
         listed,
+    }
+}
+
+/// The take-off as a schedule: a row for each material with what it adds
+/// up to and what it costs at its rate. `by_level` puts each level's
+/// materials under a heading with the level's totals. Quantities are in
+/// metres, square metres and cubic metres, the units rates are priced in.
+fn takeoff_schedule(model: &Model, by_level: bool) -> Schedule {
+    use creabim_core::takeoff;
+    let columns = vec![
+        col("Material", None, 40.0, false),
+        col("Elements", None, 16.0, true),
+        col("Area", None, 22.0, true),
+        col("Volume", None, 22.0, true),
+        col("Length", None, 20.0, true),
+        col("Rate", Some(Field::Rate), 18.0, true),
+        col("Per", Some(Field::RatePer), 16.0, false),
+        col("Cost", None, 22.0, true),
+    ];
+    let name = |id: Option<ElementId>, none: &str| {
+        id.and_then(|id| model.get(id))
+            .map_or_else(|| none.to_string(), |e| e.name.clone())
+    };
+    let money = |v: Option<f64>| v.map_or_else(|| "-".to_string(), |v| format!("{v:.2}"));
+    let cells = |label: String, t: &takeoff::Total| {
+        vec![
+            label,
+            t.elements.to_string(),
+            format!("{:.2} m²", t.quantity.area),
+            format!("{:.2} m³", t.quantity.volume),
+            format!("{:.2} m", t.quantity.length),
+            t.rate
+                .map_or_else(|| "-".to_string(), |r| format!("{:.2}", r.amount)),
+            t.rate
+                .map_or_else(|| "-".to_string(), |r| r.per.label().to_string()),
+            money(t.cost),
+        ]
+    };
+    let lines = takeoff::lines(model);
+    let materials = takeoff::by_material(model, &lines);
+    let mut rows = Vec::new();
+    let material_rows = |lines: &[takeoff::Line], rows: &mut Vec<Row>| {
+        for t in takeoff::by_material(model, lines) {
+            rows.push(Row {
+                id: t.key.unwrap_or(ElementId::NIL),
+                cells: cells(name(t.key, "No material"), &t),
+                group: false,
+            });
+        }
+    };
+    if by_level {
+        for level in takeoff::by_level(model, &lines) {
+            let mine: Vec<takeoff::Line> = lines
+                .iter()
+                .filter(|l| l.level == level.key)
+                .cloned()
+                .collect();
+            let mut head = cells(name(level.key, "No level"), &level);
+            // a level has no rate of its own
+            head[5] = String::new();
+            head[6] = String::new();
+            rows.push(Row {
+                id: level.key.unwrap_or(ElementId::NIL),
+                cells: head,
+                group: true,
+            });
+            material_rows(&mine, &mut rows);
+        }
+    } else {
+        material_rows(&lines, &mut rows);
+    }
+    let sum =
+        |f: fn(&takeoff::Quantity) -> f64| materials.iter().map(|t| f(&t.quantity)).sum::<f64>();
+    let priced = materials.iter().any(|t| t.cost.is_some());
+    let totals = vec![
+        format!("{} materials", materials.len()),
+        String::new(),
+        format!("{:.2} m²", sum(|q| q.area)),
+        format!("{:.2} m³", sum(|q| q.volume)),
+        format!("{:.2} m", sum(|q| q.length)),
+        String::new(),
+        String::new(),
+        if priced {
+            money(Some(takeoff::total_cost(model, &lines)))
+        } else {
+            "-".to_string()
+        },
+    ];
+    Schedule {
+        category: ScheduleCategory::Materials,
+        columns,
+        rows,
+        totals,
+        listed: materials.len(),
     }
 }
 

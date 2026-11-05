@@ -264,6 +264,15 @@ The pattern on a material's cut faces.
 - `"concrete"`
 - `"timber"`
 
+### RatePer
+
+What a material's rate is priced per.
+
+- `"m2"`
+- `"m3"`
+- `"m"`
+- `"each"`
+
 ### Material
 
 What elements are made of: their colour in 3D and the hatch on their cut faces. Start from a library material by its name, or give the values yourself; any value given overrides the library's.
@@ -280,6 +289,8 @@ What elements are made of: their colour in 3D and the hatch on their cut faces. 
 | `roughness` | number |  | 0 mirror-smooth to 1 fully matte. |
 | `metallic` | number |  | 0 for almost everything, 1 for bare metal. |
 | `opacity` | number |  | 1 opaque; glass is about 0.3. |
+| `rate` | number |  | Its price for the take-off, in the project's currency, for each `rate_per`. |
+| `rate_per` | [RatePer](#rateper) |  | What `rate` prices: square metres (the default), cubic metres, metres or pieces. |
 
 ### AssemblyUsage
 
@@ -819,6 +830,7 @@ What a schedule lists.
 - `"furniture"`
 - `"fixtures"`
 - `"rooms"`
+- `"materials"`: The take-off by material.
 
 ### Callout
 

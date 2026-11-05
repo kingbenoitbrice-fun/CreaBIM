@@ -577,6 +577,10 @@ pub struct Material {
     /// faces; none uses the built-in pattern `hatch` names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
+    /// Its price for take-off, per m², m³, m or piece (see
+    /// [`crate::takeoff`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate: Option<crate::takeoff::Rate>,
 }
 
 /// The roughness of a material that doesn't say: matte, like most
@@ -610,6 +614,7 @@ impl Default for Material {
             metallic: 0.0,
             opacity: 1.0,
             pattern: None,
+            rate: None,
         }
     }
 }
@@ -1649,10 +1654,13 @@ pub enum ScheduleCategory {
     Fixtures,
     /// Rooms, with their areas totalled for each level.
     Rooms,
+    /// The take-off: what each material adds up to (area, volume, length,
+    /// pieces), priced by its rate; grouped, it goes level by level.
+    Materials,
 }
 
 impl ScheduleCategory {
-    pub const ALL: [ScheduleCategory; 8] = [
+    pub const ALL: [ScheduleCategory; 9] = [
         ScheduleCategory::Doors,
         ScheduleCategory::Windows,
         ScheduleCategory::Walls,
@@ -1661,6 +1669,7 @@ impl ScheduleCategory {
         ScheduleCategory::Furniture,
         ScheduleCategory::Fixtures,
         ScheduleCategory::Rooms,
+        ScheduleCategory::Materials,
     ];
 
     /// The name of a new schedule of it: "Door Schedule".
@@ -1674,6 +1683,7 @@ impl ScheduleCategory {
             ScheduleCategory::Furniture => "Furniture",
             ScheduleCategory::Fixtures => "Fixture",
             ScheduleCategory::Rooms => "Room",
+            ScheduleCategory::Materials => return "Take-off".into(),
         };
         format!("{one} Schedule")
     }
@@ -1696,6 +1706,7 @@ impl ScheduleCategory {
             ScheduleCategory::Furniture => "Furniture",
             ScheduleCategory::Fixtures => "Fixtures",
             ScheduleCategory::Rooms => "Rooms",
+            ScheduleCategory::Materials => "Take-off",
         }
     }
 }

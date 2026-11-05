@@ -133,6 +133,22 @@ spec_struct! {
         metallic: Option<f64>,
         /// 1 opaque; glass is about 0.3.
         opacity: Option<f64>,
+        /// Its price for the take-off, in the project's currency, for each
+        /// `rate_per`.
+        rate: Option<f64>,
+        /// What `rate` prices: square metres (the default), cubic metres,
+        /// metres or pieces.
+        rate_per: Option<RatePer>,
+    }
+}
+
+spec_enum! {
+    /// What a material's rate is priced per.
+    pub enum RatePer {
+        SquareMetre = "m2",
+        CubicMetre = "m3",
+        Metre = "m",
+        Each = "each",
     }
 }
 
@@ -888,6 +904,8 @@ spec_enum! {
         Furniture = "furniture",
         Fixtures = "fixtures",
         Rooms = "rooms",
+        /// The take-off by material.
+        Materials = "materials",
     }
 }
 
