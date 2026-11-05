@@ -1,0 +1,312 @@
+//! Excel workbooks (`.xlsx`) of the project's schedules: a summary sheet,
+//! then one sheet for each category that lists something. Numbers go in
+//! as numbers, with their unit in the column heading, so the sums and
+//! sorting of a spreadsheet work on them.
+
+use crate::schedule::{self, Schedule};
+use creabim_core::{Model, ScheduleCategory};
+use rust_xlsxwriter::{Format, FormatBorder, Workbook, Worksheet, XlsxError};
+
+/// A cell read back from a schedule's text: a number with the unit it was
+/// written in, or text.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Cell {
+    Number(f64, Option<String>),
+    Text(String),
+}
+
+/// Units a schedule writes after a number.
+const UNITS: [&str; 9] = ["m²", "m³", "ft²", "ft³", "mm", "cm", "m", "ft", "in"];
+
+/// `1200` is a number, `12.50 m²` a number in m², `3'-6"` and `GF Wall 1`
+/// are text.
+pub fn cell(text: &str) -> Cell {
+    let t = text.trim();
+    if let Ok(v) = t.parse::<f64>() {
+        if v.is_finite() {
+            return Cell::Number(v, None);
+        }
+    }
+    if let Some((num, unit)) = t.rsplit_once(' ') {
+        if UNITS.contains(&unit) {
+            if let Ok(v) = num.trim().parse::<f64>() {
+                if v.is_finite() {
+                    return Cell::Number(v, Some(unit.to_string()));
+                }
+            }
+        }
+    }
+    Cell::Text(t.to_string())
+}
+
+/// A sheet's name: at most 31 characters, none of `[]:*?/\`.
+fn sheet_name(label: &str) -> String {
+    let clean: String = label
+        .chars()
+        .map(|c| if "[]:*?/\\".contains(c) { '-' } else { c })
+        .collect();
+    clean.chars().take(31).collect()
+}
+
+/// Numeric columns that hold lengths, written without their unit in metric.
+const LENGTHS: [&str; 6] = [
+    "Width",
+    "Height",
+    "Sill",
+    "Thickness",
+    "Length",
+    "Perimeter",
+];
+
+/// The heading of each column, with the unit its numbers are in when they
+/// all share one: "Width (mm)", "Area (m²)".
+fn headings(model: &Model, s: &Schedule) -> Vec<String> {
+    units_of(model, s)
+        .into_iter()
+        .zip(&s.columns)
+        .map(|(u, c)| match u {
+            Some(u) => format!("{} ({u})", c.title),
+            None => c.title.to_string(),
+        })
+        .collect()
+}
+
+/// The unit each column's numbers share, if they share one.
+fn units_of(model: &Model, s: &Schedule) -> Vec<Option<String>> {
+    let units = model.units();
+    s.columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            if !c.numeric {
+                return None;
+            }
+            let mut seen: Option<Option<String>> = None;
+            let mut same = true;
+            let mut any = false;
+            for r in s.rows.iter().filter(|r| !r.group) {
+                if let Some(Cell::Number(_, u)) = r.cells.get(i).map(|t| cell(t)) {
+                    any = true;
+                    match &seen {
+                        None => seen = Some(u),
+                        Some(prev) if *prev != u => same = false,
+                        _ => {}
+                    }
+                }
+            }
+            let unit = match seen.flatten() {
+                Some(u) if same => Some(u),
+                // metric lengths are written without their unit
+                None if any
+                    && same
+                    && !units.is_imperial()
+                    && (c.field.is_some_and(|f| f.is_length())
+                        || (c.numeric && LENGTHS.contains(&c.title))) =>
+                {
+                    Some(units.length.symbol().to_string())
+                }
+                _ => None,
+            };
+            unit
+        })
+        .collect()
+}
+
+/// A schedule's totals in words for the summary: "25 walls · Length
+/// 149800 mm · Area 354.92 m²".
+fn totals_line(model: &Model, s: &Schedule) -> String {
+    let units = units_of(model, s);
+    s.totals
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.trim().is_empty())
+        .map(|(i, t)| {
+            let title = s.columns.get(i).map_or("", |c| c.title);
+            match (cell(t), units.get(i).cloned().flatten()) {
+                (Cell::Number(_, None), Some(u)) => format!("{title} {} {u}", t.trim()),
+                (Cell::Number(..), _) => format!("{title} {}", t.trim()),
+                (Cell::Text(t), _) => t,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// "Door schedule"; "Columns and beams schedule" stays plural, as in the app.
+fn title(s: &Schedule) -> String {
+    let label = s.category.label();
+    if label.contains(' ') {
+        format!("{label} schedule")
+    } else {
+        format!("{} schedule", label.trim_end_matches('s'))
+    }
+}
+
+fn write_cell(
+    ws: &mut Worksheet,
+    row: u32,
+    col: u16,
+    text: &str,
+    numeric: bool,
+    format: &Format,
+) -> Result<(), XlsxError> {
+    // a room number like 0.10 stays text
+    let read = if numeric {
+        cell(text)
+    } else {
+        Cell::Text(text.trim().to_string())
+    };
+    match read {
+        Cell::Number(v, _) => ws.write_number_with_format(row, col, v, format)?,
+        Cell::Text(t) if t.is_empty() => ws.write_blank(row, col, format)?,
+        Cell::Text(t) => ws.write_string_with_format(row, col, t, format)?,
+    };
+    Ok(())
+}
+
+/// Write one schedule as a sheet: a title, the headings, its rows (a type's
+/// heading row in bold when grouped) and its totals in bold.
+fn write_schedule(
+    ws: &mut Worksheet,
+    model: &Model,
+    s: &Schedule,
+    title: &str,
+) -> Result<(), XlsxError> {
+    let bold = Format::new().set_bold();
+    let head = Format::new()
+        .set_bold()
+        .set_background_color("E8ECE6")
+        .set_border_bottom(FormatBorder::Thin);
+    let plain = Format::new();
+    let total = Format::new().set_bold().set_border_top(FormatBorder::Thin);
+    ws.write_string_with_format(0, 0, title, &Format::new().set_bold().set_font_size(14))?;
+    let heads = headings(model, s);
+    for (c, h) in heads.iter().enumerate() {
+        ws.write_string_with_format(2, c as u16, h, &head)?;
+    }
+    let mut row = 3;
+    for r in &s.rows {
+        let f = if r.group { &bold } else { &plain };
+        for (c, t) in r.cells.iter().enumerate() {
+            let numeric = s.columns.get(c).is_some_and(|c| c.numeric);
+            write_cell(ws, row, c as u16, t, numeric, f)?;
+        }
+        row += 1;
+    }
+    for c in 0..s.columns.len() {
+        let t = s.totals.get(c).map(String::as_str).unwrap_or("");
+        let numeric = s.columns[c].numeric;
+        write_cell(ws, row, c as u16, t, numeric, &total)?;
+    }
+    // each column as wide as its widest text, within reason
+    for (c, h) in heads.iter().enumerate() {
+        let widest = std::iter::once(h.chars().count())
+            .chain(
+                s.rows
+                    .iter()
+                    .filter_map(|r| r.cells.get(c))
+                    .map(|t| t.chars().count()),
+            )
+            .chain(s.totals.get(c).map(|t| t.chars().count()))
+            .max()
+            .unwrap_or(8);
+        ws.set_column_width(c as u16, (widest as f64 + 2.0).clamp(8.0, 48.0))?;
+    }
+    ws.set_freeze_panes(3, 0)?;
+    Ok(())
+}
+
+/// The schedules that list something, in the order of the app's list.
+pub fn schedules(model: &Model) -> Vec<Schedule> {
+    ScheduleCategory::ALL
+        .iter()
+        .map(|c| schedule::schedule(model, *c))
+        .filter(|s| !s.rows.is_empty())
+        .collect()
+}
+
+/// The project's schedules as an Excel workbook: a *Summary* sheet listing
+/// each schedule with its count and totals, then a sheet for each.
+/// `project` heads the summary.
+pub fn schedules_xlsx(model: &Model, project: &str) -> Result<Vec<u8>, String> {
+    build(model, project).map_err(|e| e.to_string())
+}
+
+fn build(model: &Model, project: &str) -> Result<Vec<u8>, XlsxError> {
+    let mut book = Workbook::new();
+    let all = schedules(model);
+    {
+        let ws = book.add_worksheet();
+        ws.set_name("Summary")?;
+        let head = Format::new()
+            .set_bold()
+            .set_background_color("E8ECE6")
+            .set_border_bottom(FormatBorder::Thin);
+        ws.write_string_with_format(0, 0, project, &Format::new().set_bold().set_font_size(14))?;
+        ws.write_string(1, 0, "Schedules, read from the model when exported")?;
+        for (c, h) in ["Schedule", "Listed", "Totals"].iter().enumerate() {
+            ws.write_string_with_format(3, c as u16, *h, &head)?;
+        }
+        for (i, s) in all.iter().enumerate() {
+            let r = 4 + i as u32;
+            ws.write_string(r, 0, s.category.label())?;
+            ws.write_number(r, 1, s.listed as f64)?;
+            ws.write_string(r, 2, totals_line(model, s))?;
+        }
+        ws.set_column_width(0, 22)?;
+        ws.set_column_width(1, 10)?;
+        ws.set_column_width(2, 60)?;
+    }
+    for s in &all {
+        let ws = book.add_worksheet();
+        ws.set_name(sheet_name(s.category.label()))?;
+        write_schedule(ws, model, s, &title(s))?;
+    }
+    book.save_to_buffer()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use creabim_core::sample::sample_house;
+
+    #[test]
+    fn cells_read_back_as_numbers_with_their_units_or_as_text() {
+        assert_eq!(cell("1200"), Cell::Number(1200.0, None));
+        assert_eq!(cell(" 12.50 m² "), Cell::Number(12.5, Some("m²".into())));
+        assert_eq!(cell("3'-6\""), Cell::Text("3'-6\"".into()));
+        assert_eq!(cell("GF Wall 1"), Cell::Text("GF Wall 1".into()));
+        assert_eq!(cell("2 doors"), Cell::Text("2 doors".into()));
+        assert_eq!(cell("NaN"), Cell::Text("NaN".into()));
+    }
+
+    #[test]
+    fn sheet_names_are_short_and_clean() {
+        assert_eq!(sheet_name("Columns and beams"), "Columns and beams");
+        assert_eq!(sheet_name("a/b:c"), "a-b-c");
+        assert_eq!(sheet_name(&"x".repeat(40)).len(), 31);
+    }
+
+    #[test]
+    fn the_workbook_has_a_summary_and_a_sheet_per_listed_schedule() {
+        let model = sample_house();
+        let bytes = schedules_xlsx(&model, "Sample house").unwrap();
+        // an xlsx is a zip: its local file headers start with PK\x03\x04
+        assert_eq!(&bytes[..4], b"PK\x03\x04");
+        let all = schedules(&model);
+        assert!(all.iter().any(|s| s.category == ScheduleCategory::Doors));
+        // file names in a zip are stored as is: one worksheet part for the
+        // summary and one for each schedule (each name shows twice, in its
+        // local header and in the central directory)
+        let part = b"xl/worksheets/sheet";
+        let parts = bytes.windows(part.len()).filter(|w| w == part).count();
+        assert_eq!(parts, 2 * (1 + all.len()));
+        let doors = all
+            .iter()
+            .find(|s| s.category == ScheduleCategory::Doors)
+            .unwrap();
+        let heads = headings(&model, doors);
+        assert!(heads.iter().any(|h| h == "Width (mm)"), "{heads:?}");
+        assert!(heads.iter().any(|h| h == "Mark"));
+    }
+}

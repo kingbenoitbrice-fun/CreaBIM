@@ -83,7 +83,8 @@ impl LengthUnit {
         }
     }
 
-    fn symbol(self) -> &'static str {
+    /// The unit's symbol: `mm`, `m`, `'` for feet.
+    pub fn symbol(self) -> &'static str {
         match self {
             LengthUnit::Millimetres => "mm",
             LengthUnit::Centimetres => "cm",

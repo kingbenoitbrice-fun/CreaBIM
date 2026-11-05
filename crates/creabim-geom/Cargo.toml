@@ -10,6 +10,7 @@ rust-version.workspace = true
 creabim-core.workspace = true
 glam.workspace = true
 miniz_oxide = "0.8"
+rust_xlsxwriter = { version = "0.96", default-features = false }
 
 [dev-dependencies]
 serde_json.workspace = true

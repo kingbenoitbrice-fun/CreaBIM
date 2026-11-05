@@ -40,6 +40,7 @@ usage: (<model> is a .creabim project or a legacy .creabim.json file)
   creabim json-schema [out.json]       print or save the format's JSON Schema
   creabim save-db <in.creabim.json> <out.creabim>
                                        convert a JSON model to a project file
+  creabim xlsx <model> <out.xlsx>      export the schedules to Excel
   creabim ifc <model> <out.ifc>        export a model to IFC4
   creabim import-ifc <in.ifc> <out>    import an IFC2X3, IFC4 or IFC4X3 file
   creabim ifcx <model> <out.ifcx>      export to IFC5 IFCX JSON (experimental)
@@ -187,6 +188,15 @@ fn main() -> ExitCode {
         ["save-db", input, out] => creabim_store::import_json(input)
             .map_err(|e| format!("{input}: {e}"))
             .and_then(|doc| creabim_store::save(out, &doc).map_err(|e| format!("{out}: {e}"))),
+        ["xlsx", input, out] => load(input).and_then(|m| {
+            let project = std::path::Path::new(input)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.trim_end_matches(".creabim").to_string())
+                .unwrap_or_default();
+            creabim_geom::xlsx::schedules_xlsx(&m, &project)
+                .and_then(|b| std::fs::write(out, b).map_err(|e| format!("{out}: {e}")))
+        }),
         ["glb", input, out] => load(input).and_then(|m| {
             std::fs::write(out, creabim_exchange::gltf::export_glb(&m)).map_err(|e| e.to_string())
         }),

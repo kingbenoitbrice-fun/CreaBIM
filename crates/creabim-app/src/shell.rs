@@ -704,6 +704,9 @@ impl CreaBimApp {
                 .hint("Every element as a solid with its BIM type and CreaBIM id; open it in FreeCAD, edit, save, and link it back."),
             Item::new("export.pdf", "Sheets as PDF").icon("file-text"),
             Item::new("export.svg", "This view or sheet as SVG").icon("file"),
+            Item::new("export.xlsx", "Schedules to Excel (.xlsx)")
+                .icon("table-2")
+                .hint("A summary, then a sheet for each schedule, with numbers as numbers so the spreadsheet can sum them."),
         ]);
         items
     }
@@ -1437,7 +1440,7 @@ impl CreaBimApp {
                 }
             }
             "export.glb" | "export.fcstd" | "export.ifcx" | "export.ifc4" | "export.pdf"
-            | "export.svg" => self.export(head),
+            | "export.svg" | "export.xlsx" => self.export(head),
             "export.folder" => self.open_export_folder(),
             "footing.foundation" => self.show_foundation_plan(),
             "placement" => {
@@ -1688,6 +1691,16 @@ impl CreaBimApp {
                 };
                 let r = std::fs::write(&out, creabim_ifc::export_ifc4(self.doc.model(), &opts));
                 self.report(r, format!("Exported {out}"));
+            }
+            "export.xlsx" => {
+                let Some(out) = self.export_to(with_extension(&self.path, "xlsx")) else {
+                    return;
+                };
+                let model = self.doc.model();
+                let n = creabim_geom::xlsx::schedules(model).len();
+                let r = creabim_geom::xlsx::schedules_xlsx(model, &stem(&self.path))
+                    .and_then(|b| std::fs::write(&out, b).map_err(|e| e.to_string()));
+                self.report(r, format!("Exported {n} schedules and a summary to {out}"));
             }
             "export.pdf" => {
                 let Some(out) = self.export_to(with_extension(&self.path, "pdf")) else {

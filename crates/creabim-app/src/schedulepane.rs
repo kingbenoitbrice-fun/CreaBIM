@@ -48,7 +48,7 @@ pub fn show(
     view: ElementId,
     (category, by_type): (ScheduleCategory, bool),
     selection: &mut Selection,
-    csv_path: &str,
+    (csv_path, xlsx_path): (&str, &str),
 ) -> Option<String> {
     let table = schedule::schedule_by(doc.model(), category, by_type);
     let listed = table.listed;
@@ -95,6 +95,25 @@ pub fn show(
             .color(INK),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button("Export Excel")
+                .on_hover_text(format!(
+                    "Save every schedule as {xlsx_path}: a summary, then a sheet for each"
+                ))
+                .clicked()
+            {
+                let project = std::path::Path::new(xlsx_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Project")
+                    .to_string();
+                let r = creabim_geom::xlsx::schedules_xlsx(doc.model(), &project)
+                    .and_then(|b| std::fs::write(xlsx_path, b).map_err(|e| e.to_string()));
+                message = Some(match r {
+                    Ok(()) => format!("Exported {xlsx_path}"),
+                    Err(e) => format!("Couldn't export {xlsx_path}: {e}"),
+                });
+            }
             if ui
                 .button("Export CSV")
                 .on_hover_text(format!("Save the table as {csv_path}"))

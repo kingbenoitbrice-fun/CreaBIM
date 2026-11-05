@@ -3524,7 +3524,7 @@ impl CreaBimApp {
                 view,
                 (category, by_type),
                 &mut self.selection,
-                &csv,
+                (&csv, &with_extension(&self.path, "xlsx")),
             );
             if let Some(m) = msg {
                 self.status = m;
