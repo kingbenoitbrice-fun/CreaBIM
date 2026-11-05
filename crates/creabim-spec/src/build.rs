@@ -523,6 +523,21 @@ fn material(c: &mut Ctx, m: &f::Material, at: &Path) {
             *slot = v as f32;
         }
     }
+    if let Some(amount) = m.rate {
+        if !(amount.is_finite() && amount >= 0.0) {
+            c.errors.push(Problem::new(
+                &at.key("rate"),
+                format!("must be 0 or more, got {amount}"),
+            ));
+        }
+        let per = match m.rate_per {
+            None | Some(f::RatePer::SquareMetre) => core::takeoff::RateUnit::Area,
+            Some(f::RatePer::CubicMetre) => core::takeoff::RateUnit::Volume,
+            Some(f::RatePer::Metre) => core::takeoff::RateUnit::Length,
+            Some(f::RatePer::Each) => core::takeoff::RateUnit::Each,
+        };
+        mat.rate = Some(core::takeoff::Rate { amount, per });
+    }
     let name = m
         .name
         .clone()
@@ -1624,6 +1639,7 @@ fn view(c: &mut Ctx, v: &f::View, at: &Path) {
                 f::ScheduleCategory::Furniture => core::ScheduleCategory::Furniture,
                 f::ScheduleCategory::Fixtures => core::ScheduleCategory::Fixtures,
                 f::ScheduleCategory::Rooms => core::ScheduleCategory::Rooms,
+                f::ScheduleCategory::Materials => core::ScheduleCategory::Materials,
             };
             let mut view = core::View::schedule(category);
             view.kind = core::ViewKind::Schedule {

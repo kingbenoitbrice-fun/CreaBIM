@@ -187,7 +187,15 @@
           "type": "number",
           "description": "0 for almost everything, 1 for bare metal."
         },
-        "opacity": { "type": "number", "description": "1 opaque; glass is about 0.3." }
+        "opacity": { "type": "number", "description": "1 opaque; glass is about 0.3." },
+        "rate": {
+          "type": "number",
+          "description": "Its price for the take-off, in the project's currency, for each `rate_per`."
+        },
+        "rate_per": {
+          "$ref": "#/$defs/RatePer",
+          "description": "What `rate` prices: square metres (the default), cubic metres, metres or pieces."
+        }
       },
       "required": ["id"],
       "additionalProperties": false
@@ -196,6 +204,11 @@
       "type": "string",
       "description": "The pattern on a material's cut faces.",
       "enum": ["empty", "solid", "diagonal", "cross", "brick", "concrete", "timber"]
+    },
+    "RatePer": {
+      "type": "string",
+      "description": "What a material's rate is priced per.",
+      "enum": ["m2", "m3", "m", "each"]
     },
     "Assembly": {
       "type": "object",
@@ -1254,7 +1267,8 @@
         "structure",
         "furniture",
         "fixtures",
-        "rooms"
+        "rooms",
+        "materials"
       ]
     },
     "Callout": {

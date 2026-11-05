@@ -4,7 +4,7 @@ A **schedule** is a table of elements, made from the model: every door with its 
 
 ## Making one
 
-*File › New schedule* (or *Create › Schedule*), then *Doors*, *Windows*, *Walls*, *Slabs*, *Columns and beams*, *Furniture* or *Fixtures*. It opens in the 2D pane and appears under *Schedules* in the browser.
+*File › New schedule* (or *Create › Schedule*), then *Doors*, *Windows*, *Walls*, *Slabs*, *Columns and beams*, *Furniture*, *Fixtures*, *Rooms* or *Take-off* (see [Take-off](take-off)). It opens in the 2D pane and appears under *Schedules* in the browser.
 
 ## Furniture and fixtures
 
@@ -21,6 +21,6 @@ Click a line's mark to select every object of that type. Tick *Group by type* to
 - Click a row's mark to select that element.
 - Totals are at the bottom.
 - Tick *Group by type* in the schedule's *Properties* for a heading row per [type](types), with its count. Click a heading to select all of its rows.
-- **Export CSV** on the title line saves the table for a spreadsheet.
+- **Export CSV** on the title line saves the table for a spreadsheet. **Export Excel** saves every schedule in one workbook, with numbers as numbers; see [Take-off](take-off#to-excel).
 
 Place a schedule on a sheet like any view. See [Sheets](sheets).

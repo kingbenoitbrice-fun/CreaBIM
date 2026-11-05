@@ -7,6 +7,7 @@
 use super::*;
 use crate::ui_model::Item;
 use creabim_core::library::{self, CATEGORIES, LIBRARY};
+use creabim_core::takeoff::{Rate, RateUnit};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum MatTab {
@@ -263,6 +264,48 @@ pub(super) fn material_fields(ui: &mut egui::Ui, m: &mut Material) -> &'static s
             {
                 label = "Material opacity";
             }
+            ui.end_row();
+
+            ui.label("Rate");
+            ui.horizontal(|ui| {
+                let per = m.rate.map_or(RateUnit::Area, |r| r.per);
+                let mut amount = m.rate.map_or(0.0, |r| r.amount);
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut amount)
+                            .range(0.0..=1.0e9)
+                            .speed(0.5)
+                            .max_decimals(2),
+                    )
+                    .on_hover_text(
+                        "Its price for take-off, in the currency you price the project in",
+                    )
+                    .changed()
+                {
+                    m.rate = Some(Rate { amount, per });
+                    label = "Material rate";
+                }
+                egui::ComboBox::from_id_salt("mat_rate_per")
+                    .selected_text(per.label())
+                    .width(70.0)
+                    .show_ui(ui, |ui| {
+                        for u in RateUnit::ALL {
+                            if ui.selectable_label(per == u, u.label()).clicked() {
+                                m.rate = Some(Rate { amount, per: u });
+                                label = "Material rate";
+                            }
+                        }
+                    });
+                if m.rate.is_some()
+                    && ui
+                        .small_button("Clear")
+                        .on_hover_text("No rate: leave it out of the priced total")
+                        .clicked()
+                {
+                    m.rate = None;
+                    label = "Material rate";
+                }
+            });
             ui.end_row();
         });
     label

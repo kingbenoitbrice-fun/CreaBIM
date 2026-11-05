@@ -2,6 +2,7 @@
 //! model, so plans, sections, sheets and the 3D view update at once.
 
 use crate::selection::Selection;
+use creabim_core::takeoff::{self, Rate, RateUnit};
 use creabim_core::{Document, ElementId, ElementKind, ScheduleCategory};
 use creabim_geom::schedule::{self, Field};
 use eframe::egui::{self, Color32, Rect};
@@ -48,7 +49,7 @@ pub fn show(
     view: ElementId,
     (category, by_type): (ScheduleCategory, bool),
     selection: &mut Selection,
-    csv_path: &str,
+    (csv_path, xlsx_path): (&str, &str),
 ) -> Option<String> {
     let table = schedule::schedule_by(doc.model(), category, by_type);
     let listed = table.listed;
@@ -69,32 +70,65 @@ pub fn show(
     // the fade at a scrolled edge takes the pane's dark colour, not the paper's
     ui.spacing_mut().scroll.fade.strength = 0.0;
     ui.add_space(20.0);
-    let noun = category.label().to_lowercase();
+    let takeoff = category == ScheduleCategory::Materials;
+    let noun = if takeoff {
+        "materials".to_string()
+    } else {
+        category.label().to_lowercase()
+    };
     let count = format!(
-        "{} {} · read live from the model · edit a cell to change it",
+        "{} {} · read live from the model · {}",
         listed,
         if listed == 1 {
             noun.trim_end_matches('s').to_string()
         } else {
             noun.clone()
+        },
+        if takeoff {
+            "set a material's rate in the table to price it"
+        } else {
+            "edit a cell to change it"
         }
     );
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(format!(
-                "{} schedule",
-                // "Walls" reads "Wall schedule"; "Columns and beams" stays as is
-                if category.label().contains(' ') {
-                    category.label()
-                } else {
-                    category.label().trim_end_matches('s')
-                }
-            ))
+            egui::RichText::new(if takeoff {
+                "Take-off".to_string()
+            } else {
+                format!(
+                    "{} schedule",
+                    // "Walls" reads "Wall schedule"; "Columns and beams" stays as is
+                    if category.label().contains(' ') {
+                        category.label()
+                    } else {
+                        category.label().trim_end_matches('s')
+                    }
+                )
+            })
             .size(17.0)
             .strong()
             .color(INK),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button("Export Excel")
+                .on_hover_text(format!(
+                    "Save every schedule as {xlsx_path}: a summary, then a sheet for each"
+                ))
+                .clicked()
+            {
+                let project = std::path::Path::new(xlsx_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Project")
+                    .to_string();
+                let r = creabim_geom::xlsx::schedules_xlsx(doc.model(), &project)
+                    .and_then(|b| std::fs::write(xlsx_path, b).map_err(|e| e.to_string()));
+                message = Some(match r {
+                    Ok(()) => format!("Exported {xlsx_path}"),
+                    Err(e) => format!("Couldn't export {xlsx_path}: {e}"),
+                });
+            }
             if ui
                 .button("Export CSV")
                 .on_hover_text(format!("Save the table as {csv_path}"))
@@ -135,11 +169,13 @@ pub fn show(
             let editor: f32 = match c.field {
                 Some(f) if f.is_length() => 64.0,
                 Some(Field::Name) | Some(Field::Material) => 120.0,
+                Some(Field::Rate) => 64.0,
+                Some(Field::RatePer) => 70.0,
                 _ => 0.0,
             };
             cells.max(editor)
                 + 2.0 * PAD
-                + if c.field == Some(Field::Material) {
+                + if matches!(c.field, Some(Field::Material) | Some(Field::RatePer)) {
                     22.0
                 } else {
                     0.0
@@ -206,6 +242,17 @@ pub fn show(
                 );
                 let color = if resp.hovered() { ACCENT } else { INK };
                 text_at(ui, rr, &r.cells[0], false, color, true);
+                // a level's totals in the take-off sit in their columns
+                for (i, (c, col)) in cells(rr)
+                    .into_iter()
+                    .zip(&table.columns)
+                    .enumerate()
+                    .skip(1)
+                {
+                    if let Some(t) = r.cells.get(i).filter(|t| !t.is_empty()) {
+                        text_at(ui, c, t, col.numeric, INK, true);
+                    }
+                }
                 if r.id != ElementId::NIL
                     && resp
                         .on_hover_text("Click to select every instance of this type")
@@ -216,6 +263,11 @@ pub fn show(
                 continue;
             }
             let Some(e) = doc.model().get(r.id).cloned() else {
+                // a take-off line with no material: shown, not editable
+                let rr = row(ui, (n % 2 == 1).then_some(STRIPE));
+                for ((c, col), t) in cells(rr).into_iter().zip(&table.columns).zip(&r.cells) {
+                    text_at(ui, c, t, col.numeric, MUTED, false);
+                }
                 continue;
             };
             let selected = selection.contains(r.id);
@@ -248,6 +300,62 @@ pub fn show(
                             edit = Some((r.id, Box::new(move |e| e.name = name)));
                         }
                     }
+                    Some(Field::Rate) => {
+                        let ElementKind::Material(m) = &e.kind else {
+                            continue;
+                        };
+                        let per = m.rate.map_or(RateUnit::Area, |r| r.per);
+                        let mut amount = m.rate.map_or(0.0, |r| r.amount);
+                        let resp = ui.put(
+                            inner,
+                            egui::DragValue::new(&mut amount)
+                                .range(0.0..=1.0e9)
+                                .speed(0.5)
+                                .max_decimals(2),
+                        );
+                        if resp
+                            .on_hover_text("Its price, in the currency you price the project in")
+                            .changed()
+                        {
+                            edit = Some((
+                                r.id,
+                                Box::new(move |e| set_rate(e, Some(Rate { amount, per }))),
+                            ));
+                        }
+                    }
+                    Some(Field::RatePer) => {
+                        let ElementKind::Material(m) = &e.kind else {
+                            continue;
+                        };
+                        let current = m.rate;
+                        let per = current.map_or(RateUnit::Area, |r| r.per);
+                        let mut chosen = per;
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+                            egui::ComboBox::from_id_salt(("rate_per", n, r.id))
+                                .selected_text(per.label())
+                                .width(inner.width())
+                                .show_ui(ui, |ui| {
+                                    for u in RateUnit::ALL {
+                                        ui.selectable_value(&mut chosen, u, u.label());
+                                    }
+                                });
+                        });
+                        if chosen != per {
+                            let amount = current.map_or(0.0, |r| r.amount);
+                            edit = Some((
+                                r.id,
+                                Box::new(move |e| {
+                                    set_rate(
+                                        e,
+                                        Some(Rate {
+                                            amount,
+                                            per: chosen,
+                                        }),
+                                    )
+                                }),
+                            ));
+                        }
+                    }
                     Some(Field::Material) => {
                         let current = creabim_core::material_of(doc.model(), &e).map(|(m, _)| m.id);
                         let mut chosen = current;
@@ -278,13 +386,23 @@ pub fn show(
                         text_at(ui, c, text, col.numeric, color, false);
                         // a count of furniture or fixtures selects what it counts
                         let counted = matches!(e.kind, ElementKind::ElementType(_));
+                        // a take-off material selects what is made of it
+                        let material = matches!(e.kind, ElementKind::Material(_));
                         let hint = if counted {
                             "Click to select every one of this type"
+                        } else if material {
+                            "Click to select everything made of it"
                         } else {
                             "Click to select it"
                         };
                         if resp.on_hover_text(hint).clicked() {
-                            if counted {
+                            if material {
+                                let made = takeoff::lines(doc.model())
+                                    .into_iter()
+                                    .filter(|l| l.material == Some(r.id))
+                                    .map(|l| l.element);
+                                selection.extend(made, false);
+                            } else if counted {
                                 let all = creabim_core::types::instances(doc.model(), r.id);
                                 selection.extend(all, false);
                             } else {
@@ -303,10 +421,24 @@ pub fn show(
         }
     });
     if let Some((id, f)) = edit {
-        selection.only(id);
+        // a rate is edited on the material: what is selected stays
+        let on_material = matches!(
+            doc.model().get(id).map(|e| &e.kind),
+            Some(ElementKind::Material(_))
+        );
+        if !on_material {
+            selection.only(id);
+        }
         if let Err(e) = doc.edit_merged(id, "Edit in schedule", f) {
             message = Some(format!("Couldn't do that: {e}"));
         }
     }
     message
+}
+
+/// Set a material's rate.
+fn set_rate(e: &mut creabim_core::Element, rate: Option<Rate>) {
+    if let ElementKind::Material(m) = &mut e.kind {
+        m.rate = rate;
+    }
 }

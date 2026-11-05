@@ -13,6 +13,7 @@ CreaBIM comes with 52 common building materials in 17 categories. *Materials ›
 - Add, duplicate, rename and edit materials, with a live preview ball.
 - *Select them* selects the elements that use a material; *Assign to the selection* gives it to the selection.
 - *Delete* asks what the elements still using it should be made of instead.
+- *Rate* gives it a price per m², m³, m or piece for the [take-off](take-off).
 
 ![The material browser](img/materials.jpg)
 

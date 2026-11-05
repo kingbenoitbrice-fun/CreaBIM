@@ -608,6 +608,13 @@ fn material(e: &Element, id: &str, m: &core::Material) -> f::Material {
         roughness: unit(m.roughness, d.roughness),
         metallic: unit(m.metallic, d.metallic),
         opacity: unit(m.opacity, d.opacity),
+        rate: m.rate.map(|r| r.amount),
+        rate_per: m.rate.map(|r| match r.per {
+            core::takeoff::RateUnit::Area => f::RatePer::SquareMetre,
+            core::takeoff::RateUnit::Volume => f::RatePer::CubicMetre,
+            core::takeoff::RateUnit::Length => f::RatePer::Metre,
+            core::takeoff::RateUnit::Each => f::RatePer::Each,
+        }),
     }
 }
 
@@ -1040,6 +1047,7 @@ fn view(e: &Element, id: &str, v: &core::View, ids: &Ids) -> f::View {
                 core::ScheduleCategory::Furniture => f::ScheduleCategory::Furniture,
                 core::ScheduleCategory::Fixtures => f::ScheduleCategory::Fixtures,
                 core::ScheduleCategory::Rooms => f::ScheduleCategory::Rooms,
+                core::ScheduleCategory::Materials => f::ScheduleCategory::Materials,
             });
         }
     }

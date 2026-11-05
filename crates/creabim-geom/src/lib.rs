@@ -32,6 +32,7 @@ pub mod sheet;
 pub mod slice;
 pub mod triangulate;
 pub mod wall;
+pub mod xlsx;
 
 pub use mesh::TriMesh;
 pub use plan::{plan_view, PlanItem, PlanView};

@@ -928,7 +928,7 @@ dependencies = [
  "flate2",
  "roxmltree",
  "thiserror 2.0.21",
- "zip",
+ "zip 9.0.1",
 ]
 
 [[package]]
@@ -938,6 +938,7 @@ dependencies = [
  "creabim-core",
  "glam",
  "miniz_oxide 0.8.9",
+ "rust_xlsxwriter",
  "serde_json",
 ]
 
@@ -3645,6 +3646,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust_xlsxwriter"
+version = "0.96.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd1746025420e17b5d62528b930e550e016e857038794d74e169018126ef3d14"
+dependencies = [
+ "zip 7.4.0",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5929,6 +5939,20 @@ dependencies = [
 
 [[package]]
 name = "zip"
+version = "7.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc12baa6db2b15a140161ce53d72209dacea594230798c24774139b54ecaa980"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "typed-path",
+ "zopfli",
+]
+
+[[package]]
+name = "zip"
 version = "9.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e49ade69c4434c55dd651d36fe05f38e0578db948b773cbc01c48c4b5e560692"
@@ -5952,6 +5976,18 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zopfli"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaf7fc5d30c28483d93805c4a5e12b05bbb52407fa67c5f8bd552374cd01fb11"
+dependencies = [
+ "bumpalo",
+ "crc32fast",
+ "log",
+ "simd-adler32",
+]
 
 [[package]]
 name = "zune-core"
