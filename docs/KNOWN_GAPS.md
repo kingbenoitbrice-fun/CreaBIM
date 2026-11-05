@@ -347,6 +347,10 @@ Gaps reported by work that is still a pull request go here until it merges, then
 
 ## Recently fixed
 
+**Help pictures (`claude/project-thread-2a2eta`, 2026-11-05):**
+
+- All 27 pictures in the Help guide are retaken in the new light interface. The door and wall pages no longer mention the orange flip arrows, which are gone: flips are `Space`, `Shift+Space` and the Flip buttons in Properties.
+
 **In Brief 02, Phase 4, item 2, drawing on any face (`claude/project-thread-2a2eta`, 2026-11-05;** screenshots in [evolution/brief02-phase4](evolution/brief02-phase4)**):**
 
 - In the 3D view, Extrusion, Void, Sweep, Slab and Wall opening draw on the face under the pointer (or the workplane). An extrusion or void keeps its plane and runs square to it: a void on a sloped roof cuts square into the slope. A sweep's path runs on the face with its profile standing out of it. A slab goes on a level face. A wall opening is the rectangle around what is drawn on a wall face (3.5).

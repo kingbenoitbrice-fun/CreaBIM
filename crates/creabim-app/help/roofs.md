@@ -10,7 +10,7 @@
    - **Hip**: slopes on every side
 3. Draw its outline like a slab: `1` Polygon, `2` Rectangle, `3` Fill room, `4` From sketch.
 
-![A hip roof and a mono-pitch terrace roof](img/roofs.jpg)
+![The starter house: a gable roof, and a flat roof that runs on over the terrace](img/roofs.jpg)
 
 ## Changing a roof
 

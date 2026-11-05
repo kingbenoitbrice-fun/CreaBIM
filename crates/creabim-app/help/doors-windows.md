@@ -19,11 +19,11 @@ Select one, then:
 
 A door has a **hand** (which jamb the hinges are on) and a **swing** (which side it opens to). *Properties* reads, for example, *Hung right, in*.
 
-- `Space`, or the arrow across the wall, flips the swing.
-- `Shift+Space`, or the arrow along the wall, flips the hand.
-- A window flips inside and outside with `Space` or its arrow.
+- `Space`, or *Flip swing* in *Properties*, flips the swing.
+- `Shift+Space`, or *Flip hand*, flips the hand.
+- A window flips inside and outside with `Space`.
 
-![A door's flip arrows](img/door-flip.jpg)
+![A selected door, with Flip hand and Flip swing in Properties](img/door-flip.jpg)
 
 ## Tags and schedules
 

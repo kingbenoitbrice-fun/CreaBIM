@@ -11,7 +11,7 @@ Doors and windows live *in* a wall. They cut their own opening, and they move wi
 
 - With the **Select** tool, click a door or window. Set its *Width*, *Height* and *Sill* (how high a window starts above the floor) in *Properties*.
 - Drag it along its wall to move it.
-- Press `Space` to flip which way a door opens. `Shift+Space` flips its hinge side. Or click the orange flip arrows beside it in the plan.
+- Press `Space` to flip which way a door opens. `Shift+Space` flips its hinge side. Or use *Flip swing* and *Flip hand* in *Properties*.
 
 More: [Doors and windows](doors-windows). For a hole with nothing in it, see [Holes, wall openings and shafts](holes).
 
