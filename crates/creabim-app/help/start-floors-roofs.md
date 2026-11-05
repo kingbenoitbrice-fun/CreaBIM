@@ -17,7 +17,7 @@ Other ways to draw it: **Polygon** (`1`, click each corner), **Rectangle** (`2`,
 3. In the bar, choose its shape: **Flat**, **Mono-pitch**, **Gable** or **Hip**, and its **Pitch** (the slope in degrees).
 4. Draw its outline like a slab: **Rectangle** round the house is the quickest.
 
-![Roofs on the sample house](img/roofs.jpg)
+![Roofs on the starter house](img/roofs.jpg)
 
 The roof's overhang, thickness and which edges are eaves are in its *Properties*. See [Roofs](roofs).
 

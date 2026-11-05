@@ -34,7 +34,6 @@ Pick it in the tool options before drawing, or in *Properties* afterwards.
 Every wall has an exterior side. While drawing, `Space` (or *Exterior left*) chooses which side of the line it goes on; a tick in the preview shows it. To flip a wall later:
 
 - press `Space` with it selected;
-- click the orange flip arrow beside it in the plan;
 - use *Flip* in *Properties*, or *Flip wall* in the right-click menu.
 
 The wall turns about its location line, and its doors and windows turn with it.
